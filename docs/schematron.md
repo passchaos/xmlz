@@ -57,11 +57,15 @@ for (result.failures) |failure| {
   (optionally restricted to an ancestor such as `xs:appinfo`). The `rng` and
   `xsd` tools run embedded patterns automatically and combine the results
   with grammar/schema validation.
+- SVRL output: `writeSvrl` emits `svrl:schematron-output` with active
+  patterns, fired rules, failed assertions, successful reports, rendered
+  text, diagnostic references, property references, and XPath `location`
+  paths. The CLI `--svrl` mode writes the report to stdout.
 
 ## Limitations
-- The generated SVRL report format is not produced; findings are returned as
-  structured values. The CLI `--report` mode prints a tab-separated summary
-  for differential testing.
+
+- SVRL `location` paths use element names and positional predicates; they do
+  not rewrite namespaced names to prefix-independent XPath forms.
 
 ## Differential verification
 
@@ -75,8 +79,12 @@ reports, contexts, namespaces, lets, phases, message parts, diagnostics,
 properties, and XPath functions. Expected output:
 
 ```text
-37/37 Schematron differential checks passed
+42/42 Schematron differential checks passed
 ```
+
+SVRL output is compared structurally with lxml's report (active patterns,
+fired rules, finding kinds, test expressions, rendered text, and diagnostic
+references).
 
 Embedded patterns are verified by the RELAX NG and XSD differential steps,
 which extract patterns with lxml's `RNG2Schtrn.xsl`/`XSD2Schtrn.xsl` and

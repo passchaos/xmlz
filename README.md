@@ -88,10 +88,11 @@ then exposes them through a pull parser and reusable lexical primitives.
   `schematron.validate` evaluates rule contexts, assertions, reports,
   diagnostics, properties, lets, namespaces, phases, abstract rules
   (`extends`), and abstract patterns (`is-a` with parameter substitution)
-  with the XPath engine, with 37/37 differential checks against the ISO
+  with the XPath engine, with 42/42 differential checks against the ISO
   skeleton through lxml. `parsePatterns` compiles patterns embedded in RELAX
   NG grammars or XSD `xs:appinfo`, and the `rng`/`xsd` tools run them
-  automatically.
+  automatically. `writeSvrl` produces SVRL reports with active patterns,
+  fired rules, findings, and diagnostic/property references.
 - **RELAX NG.** `rng.parse` compiles XML-syntax grammars, `rng.parseCompact`
   parses the compact syntax (including `include`/`external`), and
   `rng.validate` checks instances against

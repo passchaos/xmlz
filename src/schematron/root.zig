@@ -4,6 +4,7 @@ const std = @import("std");
 const dom = @import("../dom.zig");
 
 pub const schema = @import("schema.zig");
+pub const svrl = @import("svrl.zig");
 pub const validate_mod = @import("validate.zig");
 
 pub const Schema = schema.Schema;
@@ -13,6 +14,9 @@ pub const Failure = validate_mod.Failure;
 pub const Reference = validate_mod.Reference;
 pub const ValidationResult = validate_mod.Result;
 pub const namespace_uri = schema.namespace_uri;
+
+/// Write an SVRL report for a validation result.
+pub const writeSvrl = svrl.write;
 
 /// Compile an ISO Schematron schema.
 pub fn parse(
@@ -107,6 +111,7 @@ pub fn validate(
 test {
     std.testing.refAllDecls(@This());
     _ = schema;
+    _ = svrl;
     _ = validate_mod;
 }
 

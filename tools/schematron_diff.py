@@ -326,6 +326,83 @@ CASES = [
 ]
 
 
+def svrl_shape(report):
+    """Extract active patterns, fired rules, and findings from SVRL."""
+    active = []
+    fired = []
+    findings = []
+    if report is None:
+        return active, fired, findings
+    for element in report.iter():
+        if not isinstance(element.tag, str):
+            continue
+        qname = etree.QName(element)
+        if qname.namespace != SVRL:
+            continue
+        if qname.localname == "active-pattern":
+            active.append(element.get("id"))
+        elif qname.localname == "fired-rule":
+            fired.append(element.get("context"))
+        elif qname.localname in ("failed-assert", "successful-report"):
+            text_element = element.find(f"{{{SVRL}}}text")
+            message = normalize("".join(text_element.itertext())) \
+                if text_element is not None else ""
+            diagnostics = []
+            for reference in element.findall(
+                f"{{{SVRL}}}diagnostic-reference"
+            ):
+                diagnostics.append((
+                    reference.get("diagnostic"),
+                    normalize("".join(reference.itertext())),
+                ))
+            findings.append((
+                qname.localname,
+                element.get("test"),
+                message,
+                tuple(diagnostics),
+            ))
+    return active, fired, findings
+
+
+SVRL_CASES = [
+    (
+        "svrl-diagnostics",
+        f"""<schema xmlns="{SCH}">
+          <pattern id="p">
+            <rule context="item">
+              <assert test="@id" diagnostics="d1 d2">item needs id</assert>
+              <report test="@id='bad'">bad id</report>
+            </rule>
+          </pattern>
+          <diagnostics>
+            <diagnostic id="d1">missing id</diagnostic>
+            <diagnostic id="d2">kind is <value-of select="@kind"/></diagnostic>
+          </diagnostics>
+        </schema>""",
+        [
+            "<root><item kind='k'/></root>",
+            "<root><item id='ok'/><item id='bad'/></root>",
+            "<root><item id='1' kind='k'/></root>",
+        ],
+        None,
+    ),
+    (
+        "svrl-phases",
+        f"""<schema xmlns="{SCH}" defaultPhase="p2">
+          <phase id="p1"><active pattern="a"/></phase>
+          <phase id="p2"><active pattern="b"/></phase>
+          <pattern id="a"><rule context="item"><assert test="@a">needs a</assert></rule></pattern>
+          <pattern id="b"><rule context="item"><assert test="@b">needs b</assert></rule></pattern>
+        </schema>""",
+        [
+            "<root><item a='1'/></root>",
+            "<root><item/></root>",
+        ],
+        "p1",
+    ),
+]
+
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
 
@@ -388,6 +465,61 @@ def main():
                     failures += 1
                     print(
                         f"FAIL {name} instance {index}: findings differ\n"
+                        f"  instance: {instance}\n"
+                        f"  lxml: {expected}\n"
+                        f"  xmlz: {found}"
+                    )
+    for name, schema_source, instances, phase in SVRL_CASES:
+        try:
+            schematron = Schematron(
+                etree.fromstring(schema_source.encode()),
+                phase=phase,
+                store_report=True,
+            )
+        except Exception as error:  # noqa: BLE001 - report lxml failures
+            print(f"SKIP {name}: libxml2 schema error: {error}")
+            continue
+        with tempfile.TemporaryDirectory() as directory:
+            schema_path = os.path.join(directory, "schema.sch")
+            with open(schema_path, "w", encoding="utf-8") as handle:
+                handle.write(schema_source)
+            for index, instance in enumerate(instances):
+                instance_path = os.path.join(directory, f"instance-{index}.xml")
+                with open(instance_path, "w", encoding="utf-8") as handle:
+                    handle.write(instance)
+                command = [
+                    validator,
+                    "--svrl",
+                    schema_path,
+                    instance_path,
+                ]
+                if phase is not None:
+                    command.append(f"--phase={phase}")
+                actual = run(command)
+                if actual.returncode == 2:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: xmlz schema error: "
+                        f"{actual.stderr.strip()}"
+                    )
+                    continue
+                schematron.validate(etree.fromstring(instance.encode()))
+                expected = svrl_shape(schematron.validation_report)
+                try:
+                    actual_report = etree.fromstring(actual.stdout.encode())
+                except etree.XMLSyntaxError as error:
+                    failures += 1
+                    checks += 1
+                    print(
+                        f"FAIL {name} instance {index}: invalid SVRL: {error}"
+                    )
+                    continue
+                found = svrl_shape(actual_report)
+                checks += 1
+                if expected != found:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: SVRL differs\n"
                         f"  instance: {instance}\n"
                         f"  lxml: {expected}\n"
                         f"  xmlz: {found}"

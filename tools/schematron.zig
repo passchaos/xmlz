@@ -1,8 +1,9 @@
 //! Validate an XML document against an ISO Schematron schema.
 //!
-//! Usage: schematron [--report] [--phase=ID] SCHEMA INSTANCE
+//! Usage: schematron [--report|--svrl] [--phase=ID] SCHEMA INSTANCE
 //! Exit code: 0 valid, 1 invalid, 2 schema error.
-//! `--report` prints tab-separated findings after the validity line.
+//! `--report` prints tab-separated findings after the validity line;
+//! `--svrl` writes an SVRL report instead.
 const std = @import("std");
 const xmlz = @import("xmlz");
 
@@ -24,11 +25,14 @@ pub fn main(init: std.process.Init) !void {
     var instance_path: ?[]const u8 = null;
     var options: xmlz.schematron.Options = .{};
     var report = false;
+    var svrl = false;
     while (args.next()) |arg| {
         if (std.mem.startsWith(u8, arg, "--phase=")) {
             options.phase = arg["--phase=".len..];
         } else if (std.mem.eql(u8, arg, "--report")) {
             report = true;
+        } else if (std.mem.eql(u8, arg, "--svrl")) {
+            svrl = true;
         } else if (schema_path == null) {
             schema_path = arg;
         } else if (instance_path == null) {
@@ -72,6 +76,19 @@ pub fn main(init: std.process.Init) !void {
     defer result.deinit();
 
     const stdout = std.Io.File.stdout();
+    if (svrl) {
+        var allocating: std.Io.Writer.Allocating = .init(init.gpa);
+        defer allocating.deinit();
+        try xmlz.schematron.writeSvrl(
+            &allocating.writer,
+            &result,
+            &instance_file.document,
+            .{},
+        );
+        try stdout.writeStreamingAll(init.io, allocating.written());
+        if (!result.isValid()) std.process.exit(1);
+        return;
+    }
     if (report) {
         var allocating: std.Io.Writer.Allocating = .init(init.gpa);
         defer allocating.deinit();

@@ -42,6 +42,8 @@ pub const Property = struct {
 pub const Assertion = struct {
     kind: AssertionKind,
     test_expr: CompiledExpr,
+    /// Test expression text after abstract-pattern substitution.
+    test_source: []const u8 = "",
     message: []const MessagePart = &.{},
     diagnostic_ids: []const []const u8 = &.{},
     property_ids: []const []const u8 = &.{},
@@ -55,6 +57,8 @@ pub const Variable = struct {
 
 pub const Rule = struct {
     context: CompiledExpr,
+    /// Context expression text after abstract-pattern substitution.
+    context_source: []const u8 = "",
     assertions: []const Assertion = &.{},
     variables: []const Variable = &.{},
 };
@@ -545,11 +549,10 @@ const Compiler = struct {
             &assertions,
             &extensions,
         );
+        const context_text = try self.substitute(context_source, params);
         return .{
-            .context = try self.compilePattern(
-                id,
-                try self.substitute(context_source, params),
-            ),
+            .context = try self.compilePattern(id, context_text),
+            .context_source = context_text,
             .variables = try variables.toOwnedSlice(self.arena),
             .assertions = try assertions.toOwnedSlice(self.arena),
         };
@@ -616,15 +619,14 @@ const Compiler = struct {
         const node = self.document.node(id);
         const test_source = self.document.attribute(id, "test") orelse
             return error.InvalidSchema;
+        const test_text = try self.substitute(test_source, params);
         return .{
             .kind = if (std.mem.eql(u8, node.local, "assert"))
                 .assert
             else
                 .report,
-            .test_expr = try self.compileExpression(
-                id,
-                try self.substitute(test_source, params),
-            ),
+            .test_expr = try self.compileExpression(id, test_text),
+            .test_source = test_text,
             .message = try self.parseMessage(id, params),
             .diagnostic_ids = try self.parseIdRefs(id, "diagnostics"),
             .property_ids = try self.parseIdRefs(id, "properties"),

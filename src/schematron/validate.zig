@@ -25,16 +25,27 @@ pub const Reference = struct {
 
 pub const Failure = struct {
     node: dom.NodeId,
+    /// Exact context node, including attribute and namespace nodes.
+    node_ref: xpath_value.NodeRef = .{ .node = 0 },
     pattern_id: []const u8,
     kind: schema_mod.AssertionKind,
+    test_source: []const u8 = "",
     message: []const u8,
     diagnostics: []const Reference = &.{},
     properties: []const Reference = &.{},
 };
 
+pub const FiredRule = struct {
+    pattern_id: []const u8,
+    context: []const u8,
+    node: xpath_value.NodeRef,
+};
+
 pub const Result = struct {
     arena: std.heap.ArenaAllocator,
     failures: []const Failure,
+    active_patterns: []const []const u8 = &.{},
+    fired_rules: []const FiredRule = &.{},
 
     /// Failed assertions invalidate the document; successful `report`
     /// findings are recorded but do not.
@@ -70,13 +81,26 @@ pub fn validate(
         Failure,
         validator.failures.items,
     );
-    return .{ .arena = arena, .failures = failures };
+    return .{
+        .arena = arena,
+        .failures = failures,
+        .active_patterns = try arena.allocator().dupe(
+            []const u8,
+            validator.active_patterns.items,
+        ),
+        .fired_rules = try arena.allocator().dupe(
+            FiredRule,
+            validator.fired_rules.items,
+        ),
+    };
 }
 
 const Validator = struct {
     allocator: std.mem.Allocator,
     document: *const dom.Document,
     failures: std.ArrayList(Failure),
+    active_patterns: std.ArrayList([]const u8) = .empty,
+    fired_rules: std.ArrayList(FiredRule) = .empty,
     schema_variables: std.ArrayList(xpath_value.Variable),
 
     fn run(
@@ -99,6 +123,7 @@ const Validator = struct {
             if (active_phase) |selected| {
                 if (!phaseSelects(selected, pattern.id)) continue;
             }
+            try self.active_patterns.append(self.allocator, pattern.id);
             try self.runPattern(compiled, pattern);
         }
     }
@@ -140,6 +165,11 @@ const Validator = struct {
     ) Error!void {
         var local: std.ArrayList(xpath_value.Variable) = .empty;
         try local.appendSlice(self.allocator, variables);
+        try self.fired_rules.append(self.allocator, .{
+            .pattern_id = pattern.id,
+            .context = rule.context_source,
+            .node = node,
+        });
         for (rule.variables) |variable| {
             try self.defineVariable(&local, variable, node);
         }
@@ -155,8 +185,10 @@ const Validator = struct {
             if (!failed) continue;
             try self.failures.append(self.allocator, .{
                 .node = refNodeId(node),
+                .node_ref = node,
                 .pattern_id = pattern.id,
                 .kind = assertion.kind,
+                .test_source = assertion.test_source,
                 .message = try self.renderParts(
                     assertion.message,
                     node,
