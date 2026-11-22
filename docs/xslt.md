@@ -62,6 +62,8 @@ defer result.deinit();
 - `xsl:number` with `value`, `level="single|multiple|any"`, `count`/`from`
   match patterns, and decimal, zero-padded, alphabetic, and Roman `format`
   tokens.
+- `disable-output-escaping` on `xsl:value-of` and `xsl:text`, carried as raw
+  text nodes and honored by the XML and HTML serializers.
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
   `indent`, and `version`. HTML output uses HTML void elements, minimizes
   common boolean attributes, and keeps `script`/`style` content raw. Result
@@ -78,9 +80,9 @@ template priority its specified default behavior.
 - `xsl:decimal-format` and `xsl:namespace-alias` are not implemented.
 - Result tree fragments in variables are stored as strings; node-set operations
   on them are not supported.
-- `disable-output-escaping`, `cdata-section-elements`, and DOCTYPE output are
-  not emitted, and `xsl:output encoding` is recorded but not transcoded (the
-  result is always UTF-8).
+- `cdata-section-elements` and DOCTYPE output are not emitted, and
+  `xsl:output encoding` is recorded but not transcoded (the result is always
+  UTF-8).
 - HTML output is compact, does not insert a Content-Type `meta` element, and
   does not emit DOCTYPE declarations.
 - `format-number`, `document`, `generate-id`, `system-property`,
@@ -100,5 +102,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-64/64 XSLT differential checks passed
+66/66 XSLT differential checks passed
 ```

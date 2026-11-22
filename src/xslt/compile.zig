@@ -283,6 +283,7 @@ pub const Instruction = union(enum) {
     copy_of: CopyOf,
     copy: Copy,
     text: []const u8,
+    raw_text: []const u8,
     element: ElementInstruction,
     attribute: AttributeInstruction,
     variable: Variable,
@@ -875,7 +876,17 @@ const Compiler = struct {
                     try out.appendSlice(self.arena, child_node.value);
                 }
             }
-            try body.append(self.arena, .{ .text = try out.toOwnedSlice(self.arena) });
+            const text = try out.toOwnedSlice(self.arena);
+            if (isYes(
+                self.document.attribute(
+                    id,
+                    "disable-output-escaping",
+                ) orelse "no",
+            )) {
+                try body.append(self.arena, .{ .raw_text = text });
+            } else {
+                try body.append(self.arena, .{ .text = text });
+            }
         } else if (std.mem.eql(u8, local, "apply-templates")) {
             try body.append(self.arena, .{ .apply_templates = try self.compileApplyTemplates(id) });
         } else if (std.mem.eql(u8, local, "call-template")) {

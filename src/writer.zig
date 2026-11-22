@@ -101,12 +101,18 @@ fn writeNode(
             pretty,
             version,
         ),
-        .text => try escapeTextVersion(
-            writer,
-            node.value,
-            options.escape_gt,
-            version,
-        ),
+        .text => {
+            if (node.raw_text) {
+                try writer.writeAll(node.value);
+            } else {
+                try escapeTextVersion(
+                    writer,
+                    node.value,
+                    options.escape_gt,
+                    version,
+                );
+            }
+        },
         .comment => {
             if (pretty) try writeIndent(writer, depth, options.indent.?);
             try writeComment(writer, node.value);

@@ -670,6 +670,7 @@ const Runtime = struct {
         switch (instruction) {
             .literal_text => |text| try self.appendText(text),
             .text => |text| try self.appendText(text),
+            .raw_text => |text| try self.appendTextRaw(text),
             .value_of => |value_of| {
                 const value = try self.evalOwned(
                     value_of.select,
@@ -677,7 +678,12 @@ const Runtime = struct {
                     position,
                     size,
                 );
-                try self.appendText(try self.toString(value));
+                const text = try self.toString(value);
+                if (value_of.disable_output_escaping) {
+                    try self.appendTextRaw(text);
+                } else {
+                    try self.appendText(text);
+                }
             },
             .literal_element => |element| try self.executeLiteralElement(
                 element,
@@ -1651,6 +1657,14 @@ const Runtime = struct {
             return mapBuilderError(err);
     }
 
+    fn appendTextRaw(self: *Runtime, text: []const u8) Error!void {
+        if (text.len == 0) return;
+        const id = self.builder.createTextRaw(text) catch |err|
+            return mapBuilderError(err);
+        self.builder.appendChild(self.parent, id) catch |err|
+            return mapBuilderError(err);
+    }
+
     fn appendComment(self: *Runtime, text: []const u8) Error!void {
         const id = self.builder.createComment(text) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -2368,7 +2382,7 @@ fn writeHtmlNode(
         },
         .element => try writeHtmlElement(out, document, id),
         .text => {
-            if (raw_text) {
+            if (raw_text or node_value.raw_text) {
                 try out.writeAll(node_value.value);
             } else {
                 try writeHtmlText(out, node_value.value);

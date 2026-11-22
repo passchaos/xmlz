@@ -65,6 +65,8 @@ pub const Node = struct {
     value: []const u8 = "",
     attr_start: u32 = 0,
     attr_count: u32 = 0,
+    /// Text produced with XSLT disable-output-escaping; serializers emit it raw.
+    raw_text: bool = false,
     /// DTD validation provenance for element-only content.
     has_whitespace_char_ref_text: bool = false,
     has_nel_ls_text: bool = false,

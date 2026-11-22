@@ -117,9 +117,23 @@ pub const Builder = struct {
     }
 
     pub fn createText(self: *Builder, value: []const u8) Error!dom.NodeId {
+        return self.createTextNode(value, false);
+    }
+
+    /// Create a text node that serializers emit without escaping.
+    pub fn createTextRaw(self: *Builder, value: []const u8) Error!dom.NodeId {
+        return self.createTextNode(value, true);
+    }
+
+    fn createTextNode(
+        self: *Builder,
+        value: []const u8,
+        raw: bool,
+    ) Error!dom.NodeId {
         return self.addNode(.{
             .kind = .text,
             .value = try self.dupe(value),
+            .raw_text = raw,
         });
     }
 

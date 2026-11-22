@@ -447,6 +447,28 @@ STYLESHEETS = [
         {},
     ),
     (
+        "disable-output-escaping",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <xsl:value-of select="root/html" disable-output-escaping="yes"/>
+          <xsl:text disable-output-escaping="yes">&lt;raw/&gt;</xsl:text>
+          <escaped><xsl:value-of select="root/html"/></escaped>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root><html>&lt;b&gt;x&lt;/b&gt;</html></root>",
+        {},
+    ),
+    (
+        "disable-output-escaping-html",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/"><out><xsl:value-of select="root/html" disable-output-escaping="yes"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root><html>&lt;b&gt;x&lt;/b&gt;</html></root>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>

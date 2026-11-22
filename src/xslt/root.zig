@@ -915,3 +915,46 @@ test "XSLT xsl:number omits unmatched counts" {
     defer testing.allocator.free(output);
     try testing.expectEqualStrings("<out><n/><n/></out>", output);
 }
+
+test "XSLT disable-output-escaping emits raw text" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="root/html" disable-output-escaping="yes"/>
+        \\    <xsl:text disable-output-escaping="yes">&lt;raw/&gt;</xsl:text>
+        \\    <escaped><xsl:value-of select="root/html"/></escaped>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root><html>&lt;b&gt;x&lt;/b&gt;</html></root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><b>x</b><raw/><escaped>&lt;b&gt;x&lt;/b&gt;</escaped></out>",
+        output,
+    );
+}
+
+test "XSLT disable-output-escaping works in HTML output" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="html"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="root/html" disable-output-escaping="yes"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root><html>&lt;b&gt;x&lt;/b&gt;</html></root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out><b>x</b></out>", output);
+}
