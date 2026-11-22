@@ -158,11 +158,16 @@ const Evaluator = struct {
             if (step.predicates.len == 0) {
                 switch (step.axis) {
                     .self_axis => {
+                        const prefix_uri = try resolveNameTestPrefix(
+                            context,
+                            step.node_test,
+                        );
                         if (try self.matchesTest(
                             context,
                             context.node,
                             step.node_test,
                             step.axis,
+                            prefix_uri,
                         )) {
                             const nodes = try self.allocator.alloc(
                                 value.NodeRef,
@@ -216,6 +221,7 @@ const Evaluator = struct {
             .node => |node_id| node_id,
             else => return null,
         };
+        const prefix_uri = try resolveNameTestPrefix(context, step.node_test);
         var out: std.ArrayList(value.NodeRef) = .empty;
         switch (step.axis) {
             .child => {
@@ -235,6 +241,7 @@ const Evaluator = struct {
                         candidate,
                         step.node_test,
                         step.axis,
+                        prefix_uri,
                     )) {
                         try out.append(self.allocator, candidate);
                     }
@@ -256,6 +263,7 @@ const Evaluator = struct {
                         candidate,
                         step.node_test,
                         step.axis,
+                        prefix_uri,
                     )) {
                         try out.append(self.allocator, candidate);
                     }
@@ -294,6 +302,7 @@ const Evaluator = struct {
         step: ast.Step,
     ) Error![]const value.NodeRef {
         var result: std.ArrayList(value.NodeRef) = .empty;
+        const prefix_uri = try resolveNameTestPrefix(context, step.node_test);
         for (input) |node| {
             const axis_nodes = try self.axisNodes(context, node, step.axis);
             var matched: std.ArrayList(value.NodeRef) = .empty;
@@ -303,6 +312,7 @@ const Evaluator = struct {
                     candidate,
                     step.node_test,
                     step.axis,
+                    prefix_uri,
                 )) {
                     try matched.append(self.allocator, candidate);
                 }
@@ -639,12 +649,29 @@ const Evaluator = struct {
         return self.isDescendantOf(context, descendant, candidate);
     }
 
+    fn resolveNameTestPrefix(
+        context: *const value.Context,
+        node_test: ast.NodeTest,
+    ) Error!?[]const u8 {
+        switch (node_test) {
+            .name => |name_test| {
+                if (name_test.prefix) |prefix| {
+                    return context.resolvePrefix(prefix) orelse
+                        error.UndefinedPrefix;
+                }
+            },
+            else => {},
+        }
+        return null;
+    }
+
     fn matchesTest(
         self: *Evaluator,
         context: *const value.Context,
         node: value.NodeRef,
         node_test: ast.NodeTest,
         axis: ast.Axis,
+        prefix_uri: ?[]const u8,
     ) Error!bool {
         const node_kind = self.kind(context, node);
         switch (node_test) {
@@ -666,11 +693,10 @@ const Evaluator = struct {
             .name => |name_test| {
                 if (axis == .namespace_axis) {
                     if (node_kind != .namespace) return false;
-                    if (name_test.prefix) |prefix| {
+                    if (name_test.prefix != null) {
                         // Namespace nodes have a null namespace URI, so a
                         // prefixed name test can never match one.
-                        _ = context.resolvePrefix(prefix) orelse
-                            return error.UndefinedPrefix;
+                        _ = prefix_uri orelse return error.UndefinedPrefix;
                         return false;
                     }
                     if (name_test.local) |expected| {
@@ -695,8 +721,8 @@ const Evaluator = struct {
                         return false;
                     }
                 }
-                if (name_test.prefix) |prefix| {
-                    const uri = context.resolvePrefix(prefix) orelse
+                if (name_test.prefix != null) {
+                    const uri = prefix_uri orelse
                         return error.UndefinedPrefix;
                     return std.mem.eql(
                         u8,

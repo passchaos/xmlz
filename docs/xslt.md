@@ -218,21 +218,28 @@ x86-64):
 The real-world DocBook HTML transform (`tests/docbook` from libxslt,
 `html/docbook.xsl` over `test/gdp-handbook.xml`, with the full 440 KiB
 DocBook 4.1.2 DTD loaded) produces output identical to the libxslt
-reference. A full single run takes about 110 ms, of which roughly half is
-parsing the source document and its DTD; a repeated in-process transform
-takes about 42 ms against 21 ms for libxslt through lxml.
+reference. A full single run takes about 90 ms, of which roughly half is
+parsing the source document and its DTD and its stylesheet; a repeated
+in-process transform takes about 28 ms against 21 ms for libxslt through
+lxml.
 
 The hot paths are designed for repeated transforms:
 
 - Template matching uses the inverted index described above. Structural
   patterns never scan a document; predicate patterns are evaluated once per
   document, and documents loaded by `document()` are indexed lazily.
+- `xsl:call-template`, global variables, and attribute sets use name
+  indexes instead of scanning the stylesheet.
 - `xsl:strip-space`/`xsl:preserve-space` declarations are folded into
   per-name lookup tables instead of scanning every rule per element.
 - `id()` uses a per-document hash index built from DTD-declared ID
   attributes and `xml:id`, and `key()` indexes each document on first use.
-- Entity declarations use a hashed table; DocBook's DTD declares thousands
-  of entities, and expansion validates each declaration only once.
+- Single-step XPath paths and forward-axis steps avoid redundant
+  allocations, sorting, and deduplication. Variables live on a fixed stack,
+  so calling a template no longer copies the caller's bindings.
+- Entity declarations use a hashed table allocated on first declaration;
+  DocBook's DTD declares thousands of entities, and expansion validates
+  each declaration only once.
 
 ## Limitations
 
