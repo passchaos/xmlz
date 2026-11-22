@@ -32,13 +32,33 @@ pub const Entity = struct {
     offset: usize = 0,
 };
 
+/// Open-addressing buckets over the fixed entry array. The table stays
+/// allocator-free, so it can live inline in the parser, while lookups stop
+/// being linear. DocBook's DTD declares thousands of entities and references
+/// them heavily, which makes the difference between a linear scan and a hash
+/// lookup visible in parse time.
+const hash_buckets = 8192;
+
 pub const Table = struct {
     entries: [max_entities]Entity = undefined,
+    /// Entry index + 1 of the first entity in each bucket; 0 means empty.
+    buckets: [hash_buckets]u16 = @splat(0),
+    /// Entry index + 1 of the next entity in the same bucket; 0 means end.
+    next: [max_entities]u16 = undefined,
     count: usize = 0,
 
+    fn bucketIndex(name: []const u8) usize {
+        return @as(usize, @truncate(std.hash.Wyhash.hash(0, name))) &
+            (hash_buckets - 1);
+    }
+
     pub fn find(self: *const Table, name: []const u8) ?*const Entity {
-        for (self.entries[0..self.count]) |*entry| {
+        var link = self.buckets[bucketIndex(name)];
+        while (link != 0) {
+            const index: usize = link - 1;
+            const entry = &self.entries[index];
             if (std.mem.eql(u8, entry.name, name)) return entry;
+            link = self.next[index];
         }
         return null;
     }
@@ -51,7 +71,11 @@ pub const Table = struct {
     pub fn add(self: *Table, entity: Entity) error{EntityLimitExceeded}!void {
         if (self.find(entity.name) != null) return;
         if (self.count == self.entries.len) return error.EntityLimitExceeded;
-        self.entries[self.count] = entity;
+        const index = self.count;
+        self.entries[index] = entity;
+        const bucket = bucketIndex(entity.name);
+        self.next[index] = self.buckets[bucket];
+        self.buckets[bucket] = @intCast(index + 1);
         self.count += 1;
     }
 };

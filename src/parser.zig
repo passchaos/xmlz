@@ -326,6 +326,9 @@ pub const Parser = struct {
     attrs: [max_attributes]Attribute = undefined,
     entity_table: entities.Table = .{},
     parameter_entities: entities.Table = .{},
+    /// True while re-scanning an external subset whose entity declarations
+    /// were already parsed and validated during parameter-entity expansion.
+    entities_preparsed: bool = false,
     ns: namespace.Resolver = .{},
     xml_version: chars.Version = .xml_1_0,
     started: bool = false,
@@ -1972,6 +1975,10 @@ pub const Parser = struct {
         self.allow_pe_in_declarations = true;
         self.input = buffer;
         self.pos = 0;
+        // Expansion parsed and validated every entity declaration already;
+        // skip their bodies when the subset is scanned again.
+        self.entities_preparsed = true;
+        defer self.entities_preparsed = false;
         try self.parseSubsetDeclarations(false, ids);
         self.input = saved_input;
         self.pos = saved_pos;
@@ -2218,6 +2225,7 @@ pub const Parser = struct {
             self.parameter_entities.find(name) != null
         else
             self.entity_table.find(name) != null;
+        if (duplicate and self.entities_preparsed) return;
         try scanner.requireWhitespace();
 
         if (scanner.peek() == '"' or scanner.peek() == '\'') {
@@ -3724,11 +3732,23 @@ fn evaluateConditionals(
         }
 
         var cursor = pos + 3;
-        while (cursor < input.len and chars.isWhitespace(input[cursor])) cursor += 1;
+        // Parameter-entity boundary markers may surround the INCLUDE/IGNORE
+        // keyword, for example `<![%sect1.attlist;[`.
+        while (cursor < input.len and
+            (chars.isWhitespace(input[cursor]) or
+                input[cursor] == 0x01 or input[cursor] == 0x02))
+        {
+            cursor += 1;
+        }
         const keyword_start = cursor;
         while (cursor < input.len and chars.isAsciiNameChar(input[cursor])) cursor += 1;
         const keyword = input[keyword_start..cursor];
-        while (cursor < input.len and chars.isWhitespace(input[cursor])) cursor += 1;
+        while (cursor < input.len and
+            (chars.isWhitespace(input[cursor]) or
+                input[cursor] == 0x01 or input[cursor] == 0x02))
+        {
+            cursor += 1;
+        }
         if (cursor >= input.len or input[cursor] != '[') {
             return error.InvalidDoctype;
         }
@@ -3746,6 +3766,12 @@ fn evaluateConditionals(
             if (input[scan] == '"' or input[scan] == '\'') {
                 section_quote = input[scan];
                 scan += 1;
+                continue;
+            }
+            if (std.mem.startsWith(u8, input[scan..], "<!--")) {
+                const end = std.mem.indexOfPos(u8, input, scan + 4, "-->") orelse
+                    return error.UnexpectedEndOfInput;
+                scan = end + 3;
                 continue;
             }
             if (std.mem.startsWith(u8, input[scan..], "<![")) {
