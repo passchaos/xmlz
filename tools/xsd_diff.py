@@ -1658,6 +1658,137 @@ INCLUDE_CASES = [
 
 # libxml2 loads XML_CATALOG_FILES once per process, so every catalog case
 # shares one catalog file exercising system, uri, and rewriteSystem entries.
+# Schemas that libxml2 rejects; xmlz must also report a schema error.
+INVALID_SCHEMA_CASES = [
+    (
+        "duplicate-element",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a" type="xs:string"/>'
+        f'<xs:element name="a" type="xs:string"/></xs:schema>',
+    ),
+    (
+        "undefined-type",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a" type="Missing"/></xs:schema>',
+    ),
+    (
+        "extension-of-simple",
+        f'<xs:schema xmlns:xs="{XS}"><xs:complexType name="T"><xs:complexContent>'
+        f'<xs:extension base="xs:string"/></xs:complexContent></xs:complexType></xs:schema>',
+    ),
+    (
+        "all-max-occurs",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a"><xs:complexType><xs:all>'
+        f'<xs:element name="b" maxOccurs="2"/></xs:all></xs:complexType></xs:element></xs:schema>',
+    ),
+    (
+        "all-unbounded-child",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a"><xs:complexType><xs:all>'
+        f'<xs:element name="b" maxOccurs="unbounded"/></xs:all></xs:complexType></xs:element></xs:schema>',
+    ),
+    (
+        "attribute-required-default",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a"><xs:complexType>'
+        f'<xs:attribute name="x" type="xs:string" use="required" default="v"/>'
+        f'</xs:complexType></xs:element></xs:schema>',
+    ),
+    (
+        "attribute-default-fixed",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a"><xs:complexType>'
+        f'<xs:attribute name="x" type="xs:string" default="d" fixed="f"/>'
+        f'</xs:complexType></xs:element></xs:schema>',
+    ),
+    (
+        "element-ref-and-type",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a"><xs:complexType><xs:sequence>'
+        f'<xs:element ref="b" type="xs:string"/></xs:sequence></xs:complexType></xs:element>'
+        f'<xs:element name="b" type="xs:string"/></xs:schema>',
+    ),
+    (
+        "element-type-and-inline",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a" type="xs:string">'
+        f'<xs:complexType/></xs:element></xs:schema>',
+    ),
+    (
+        "global-element-form",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a" type="xs:string" '
+        f'form="qualified"/></xs:schema>',
+    ),
+    (
+        "global-element-min-occurs",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a" type="xs:string" '
+        f'minOccurs="0"/></xs:schema>',
+    ),
+    (
+        "global-attribute-use",
+        f'<xs:schema xmlns:xs="{XS}"><xs:attribute name="a" type="xs:string" '
+        f'use="required"/></xs:schema>',
+    ),
+    (
+        "attribute-ref-and-type",
+        f'<xs:schema xmlns:xs="{XS}"><xs:attribute name="a" type="xs:string"/>'
+        f'<xs:complexType name="T"><xs:attribute ref="a" type="xs:string"/>'
+        f'</xs:complexType></xs:schema>',
+    ),
+    (
+        "list-itemtype-and-inline",
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="T"><xs:list itemType="xs:string">'
+        f'<xs:simpleType><xs:restriction base="xs:string"/></xs:simpleType>'
+        f'</xs:list></xs:simpleType></xs:schema>',
+    ),
+    (
+        "length-on-integer",
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="T"><xs:restriction base="xs:integer">'
+        f'<xs:length value="2"/></xs:restriction></xs:simpleType></xs:schema>',
+    ),
+    (
+        "bounds-on-string",
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="T"><xs:restriction base="xs:string">'
+        f'<xs:minInclusive value="a"/></xs:restriction></xs:simpleType></xs:schema>',
+    ),
+    (
+        "totaldigits-on-float",
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="T"><xs:restriction base="xs:float">'
+        f'<xs:totalDigits value="2"/></xs:restriction></xs:simpleType></xs:schema>',
+    ),
+    (
+        "totaldigits-zero",
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="T"><xs:restriction base="xs:decimal">'
+        f'<xs:totalDigits value="0"/></xs:restriction></xs:simpleType></xs:schema>',
+    ),
+    (
+        "fractiondigits-on-string",
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="T"><xs:restriction base="xs:string">'
+        f'<xs:fractionDigits value="2"/></xs:restriction></xs:simpleType></xs:schema>',
+    ),
+    (
+        "enumeration-invalid-lexical",
+        f'<xs:schema xmlns:xs="{XS}"><xs:simpleType name="T"><xs:restriction base="xs:integer">'
+        f'<xs:enumeration value="abc"/></xs:restriction></xs:simpleType></xs:schema>',
+    ),
+    (
+        "default-invalid-lexical",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a" type="xs:integer" '
+        f'default="abc"/></xs:schema>',
+    ),
+    (
+        "default-on-empty-complex",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a" default="x">'
+        f'<xs:complexType/></xs:element></xs:schema>',
+    ),
+    (
+        "import-same-namespace",
+        f'<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t">'
+        f'<xs:import namespace="urn:t" schemaLocation="other.xsd"/></xs:schema>',
+    ),
+    (
+        "key-selector-attribute",
+        f'<xs:schema xmlns:xs="{XS}"><xs:element name="a"><xs:complexType><xs:sequence>'
+        f'<xs:element name="b" type="xs:string" maxOccurs="unbounded"/></xs:sequence>'
+        f'</xs:complexType><xs:key name="k"><xs:selector xpath="@x"/>'
+        f'<xs:field xpath="."/></xs:key></xs:element></xs:schema>',
+    ),
+]
+
+
 CATALOG_CASES = [
     (
         "catalog-includes",
@@ -1842,6 +1973,35 @@ def main():
                         f"  lxml: {lxml_schema.error_log}\n"
                         f"  xmlz: {actual.stderr.decode('utf-8', 'replace').strip()}"
                     )
+    for name, schema_source in INVALID_SCHEMA_CASES:
+        with tempfile.TemporaryDirectory() as directory:
+            schema_path = os.path.join(directory, "schema.xsd")
+            instance_path = os.path.join(directory, "instance.xml")
+            other_path = os.path.join(directory, "other.xsd")
+            with open(schema_path, "w", encoding="utf-8") as handle:
+                handle.write(schema_source)
+            with open(instance_path, "w", encoding="utf-8") as handle:
+                handle.write("<a/>")
+            with open(other_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    f'<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"/>'
+                )
+            try:
+                etree.XMLSchema(etree.parse(schema_path))
+            except Exception:  # noqa: BLE001 - expected libxml2 rejection
+                pass
+            else:
+                print(f"SKIP {name}: libxml2 accepted the schema")
+                continue
+            actual = run([validator, schema_path, instance_path])
+            checks += 1
+            if actual.returncode != 2:
+                failures += 1
+                print(
+                    f"FAIL {name}: libxml2 rejects the schema but xmlz "
+                    f"returned {actual.returncode}: "
+                    f"{actual.stderr.decode('utf-8', 'replace').strip()}"
+                )
     print(f"{checks - failures}/{checks} XSD differential checks passed")
     return 1 if failures else 0
 

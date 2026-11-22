@@ -77,9 +77,11 @@ for (result.errors) |validation_error| {
   Differential regex cases therefore cover scripts where libxml2 agrees, and
   CJK/Hangul categories are covered by unit tests.
 - Validation does not inject default attribute values into the instance.
-- Schema component validity checking is intentionally partial; malformed
-  schemas are rejected, but not every XSD constraint on schema documents is
-  enforced.
+- Schema-component validity covers global/local declaration restrictions,
+  reference combinations, `xs:all` occurrences, facet applicability and facet
+  values, enumeration/default/fixed lexical validity, import namespace rules,
+  and identity-constraint selector restrictions. Exhaustive derivation and
+  unique-particle-attribution checks are not implemented.
 
 ## Differential verification
 
@@ -91,10 +93,11 @@ The step compiles schemas and validates valid/invalid instances with both xmlz
 and libxml2 through Python `lxml`, covering particles, occurrence ranges,
 attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, facets, Unicode categories and
-blocks, and catalog-resolved includes/imports. Expected output:
+blocks, catalog-resolved includes/imports, and invalid schemas that libxml2
+rejects. Expected output:
 
 ```text
-298/298 XSD differential checks passed
+322/322 XSD differential checks passed
 ```
 
 The `xsd` command accepts `--catalog=FILE`; `xs:include`, `xs:import`, and

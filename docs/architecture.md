@@ -173,7 +173,8 @@ by the conformance harness.
 - `zig build xslt-diff` compares XSLT result trees against libxslt via `lxml`,
   including catalog-resolved includes.
 - `zig build xsd-diff` compares schema validation results against libxml2 via
-  `lxml`, including catalog-resolved includes/imports.
+  `lxml`, including catalog-resolved includes/imports and invalid schemas
+  that both implementations must reject.
 - `zig build rng-diff` compares RELAX NG validation results against libxml2 via
   `lxml`, including catalog-resolved includes.
 - `zig build rng-compact-diff` validates compact-syntax schemas against

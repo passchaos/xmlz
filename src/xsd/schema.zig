@@ -4,8 +4,9 @@
 //! restriction/list/union and facets, complex types with sequence/choice/all
 //! particles, groups, attribute groups, wildcards, substitution groups,
 //! identity constraints, attribute uses, simple/complex content extension and
-//! restriction, and include/import resolution. `xs:redefine` and abstract-type
-//! enforcement are not implemented.
+//! restriction, include/import/redefine resolution, and schema-component
+//! constraints such as reference restrictions, facet applicability, and
+//! default/fixed lexical validity.
 
 const std = @import("std");
 const dom = @import("../dom.zig");
@@ -942,7 +943,9 @@ const Compiler = struct {
         var chameleon = false;
         if (is_import) {
             if (self.document.attribute(id, "namespace")) |declared| {
-                if (!std.mem.eql(u8, declared, included_namespace)) {
+                if (std.mem.eql(u8, declared, self.target_namespace) or
+                    !std.mem.eql(u8, declared, included_namespace))
+                {
                     document_ptr.deinit();
                     return error.InvalidSchema;
                 }
@@ -1026,7 +1029,16 @@ const Compiler = struct {
     }
 
     fn globalElement(self: *Compiler, id: dom.NodeId) Error!*const ElementDecl {
-        if (self.document.attribute(id, "ref") != null) {
+        if (self.document.attribute(id, "ref") != null or
+            self.document.attribute(id, "form") != null or
+            self.document.attribute(id, "minOccurs") != null or
+            self.document.attribute(id, "maxOccurs") != null)
+        {
+            return error.InvalidSchema;
+        }
+        if (self.document.attribute(id, "default") != null and
+            self.document.attribute(id, "fixed") != null)
+        {
             return error.InvalidSchema;
         }
         const name = self.document.attribute(id, "name") orelse
@@ -1058,7 +1070,15 @@ const Compiler = struct {
         self: *Compiler,
         id: dom.NodeId,
     ) Error!*const AttributeDecl {
-        if (self.document.attribute(id, "ref") != null) {
+        if (self.document.attribute(id, "ref") != null or
+            self.document.attribute(id, "use") != null or
+            self.document.attribute(id, "form") != null)
+        {
+            return error.InvalidSchema;
+        }
+        if (self.document.attribute(id, "default") != null and
+            self.document.attribute(id, "fixed") != null)
+        {
             return error.InvalidSchema;
         }
         const name = self.document.attribute(id, "name") orelse
@@ -1352,7 +1372,11 @@ const Compiler = struct {
                 if (selector != null) return error.InvalidSchema;
                 const xpath_value = self.document.attribute(child, "xpath") orelse
                     return error.InvalidSchema;
-                selector = try self.compileIdentityXPath(child, xpath_value);
+                const compiled = try self.compileIdentityXPath(child, xpath_value);
+                if (!isSelectorXPath(compiled.expr)) {
+                    return error.InvalidSchema;
+                }
+                selector = compiled;
             } else if (std.mem.eql(u8, child_node.local, "field")) {
                 const xpath_value = self.document.attribute(child, "xpath") orelse
                     return error.InvalidSchema;
@@ -1516,6 +1540,9 @@ const Compiler = struct {
                     if (list_node.kind == .element and
                         isXsd(list_node, "simpleType"))
                     {
+                        if (inline_type != null or item != null) {
+                            return error.InvalidSchema;
+                        }
                         inline_type = try self.inlineSimpleType(list_child);
                     }
                 }
@@ -1860,7 +1887,13 @@ const Compiler = struct {
         }
         var decl: *const AttributeDecl = undefined;
         if (self.document.attribute(id, "ref")) |value| {
-            if (self.document.attribute(id, "name") != null) {
+            if (self.document.attribute(id, "name") != null or
+                self.document.attribute(id, "type") != null or
+                self.document.attribute(id, "form") != null or
+                self.document.attribute(id, "default") != null or
+                self.document.attribute(id, "fixed") != null or
+                self.hasInlineTypeChild(id))
+            {
                 return error.InvalidSchema;
             }
             const qname = try self.resolveQName(id, value);
@@ -1869,14 +1902,22 @@ const Compiler = struct {
         } else {
             const name = self.document.attribute(id, "name") orelse
                 return error.InvalidSchema;
+            const default_value = self.document.attribute(id, "default");
+            const fixed_value = self.document.attribute(id, "fixed");
+            if (default_value != null and fixed_value != null) {
+                return error.InvalidSchema;
+            }
+            if (use != .optional and (default_value != null or fixed_value != null)) {
+                return error.InvalidSchema;
+            }
             const qualified = try self.localForm(id, true);
             const attribute = try self.arena.create(AttributeDecl);
             attribute.* = .{
                 .name = name,
                 .namespace_uri = if (qualified) self.target_namespace else "",
                 .node = id,
-                .default_value = self.document.attribute(id, "default"),
-                .fixed_value = self.document.attribute(id, "fixed"),
+                .default_value = default_value,
+                .fixed_value = fixed_value,
                 .doc = self.current_schema,
             };
             attribute.type_use = try self.attributeTypeUse(id);
@@ -2021,6 +2062,11 @@ const Compiler = struct {
             if (std.mem.eql(u8, node.local, "all")) {
                 for (items.items) |item| {
                     if (item.* != .element) return error.InvalidSchema;
+                    const element = item.element;
+                    if (element.min > 1) return error.InvalidSchema;
+                    const maximum = element.max orelse
+                        return error.InvalidSchema;
+                    if (maximum > 1) return error.InvalidSchema;
                 }
             }
             if (std.mem.eql(u8, node.local, "sequence")) {
@@ -2052,12 +2098,36 @@ const Compiler = struct {
 
     fn localElement(self: *Compiler, id: dom.NodeId) Error!*const ElementDecl {
         if (self.document.attribute(id, "ref")) |value| {
-            if (self.document.attribute(id, "name") != null) {
+            if (self.document.attribute(id, "name") != null or
+                self.document.attribute(id, "type") != null or
+                self.document.attribute(id, "form") != null or
+                self.document.attribute(id, "default") != null or
+                self.document.attribute(id, "fixed") != null or
+                self.document.attribute(id, "nillable") != null or
+                self.document.attribute(id, "block") != null or
+                self.document.attribute(id, "final") != null)
+            {
                 return error.InvalidSchema;
+            }
+            var child = self.document.node(id).first_child;
+            while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+                const child_node = self.document.node(child);
+                if (child_node.kind == .element and
+                    std.mem.eql(u8, child_node.ns, xsd_namespace) and
+                    (std.mem.eql(u8, child_node.local, "simpleType") or
+                        std.mem.eql(u8, child_node.local, "complexType")))
+                {
+                    return error.InvalidSchema;
+                }
             }
             const qname = try self.resolveQName(id, value);
             return self.findGlobalElement(qname) orelse
                 return error.InvalidSchema;
+        }
+        if (self.document.attribute(id, "default") != null and
+            self.document.attribute(id, "fixed") != null)
+        {
+            return error.InvalidSchema;
         }
         const name = self.document.attribute(id, "name") orelse
             return error.InvalidSchema;
@@ -2122,6 +2192,7 @@ const Compiler = struct {
         fallback: ?TypeUse,
     ) Error!TypeUse {
         if (self.document.attribute(id, "type")) |value| {
+            if (self.hasInlineTypeChild(id)) return error.InvalidSchema;
             return self.typeUseFromQName(
                 id,
                 try self.resolveQName(id, value),
@@ -2143,6 +2214,7 @@ const Compiler = struct {
 
     fn attributeTypeUse(self: *Compiler, id: dom.NodeId) Error!TypeUse {
         if (self.document.attribute(id, "type")) |value| {
+            if (self.hasInlineTypeChild(id)) return error.InvalidSchema;
             return self.typeUseFromQName(
                 id,
                 try self.resolveQName(id, value),
@@ -2158,6 +2230,21 @@ const Compiler = struct {
             }
         }
         return .any_simple;
+    }
+
+    fn hasInlineTypeChild(self: *Compiler, id: dom.NodeId) bool {
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const child_node = self.document.node(child);
+            if (child_node.kind == .element and
+                std.mem.eql(u8, child_node.ns, xsd_namespace) and
+                (std.mem.eql(u8, child_node.local, "simpleType") or
+                    std.mem.eql(u8, child_node.local, "complexType")))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn typeUseFromQName(self: *Compiler, id: dom.NodeId, qname: QName) Error!TypeUse {
@@ -2411,6 +2498,7 @@ const Compiler = struct {
                 if (typeFinal(.{ .simple = base }).restriction) {
                     return error.InvalidSchema;
                 }
+                try self.checkRestrictionFacets(base, restriction.facets);
                 const info = try self.arena.create(SimpleInfo);
                 info.* = base.*;
                 info.base = .{ .simple = base };
@@ -2519,6 +2607,7 @@ const Compiler = struct {
                     },
                     else => return error.InvalidSchema,
                 }
+                try self.checkRestrictionFacets(base_simple, content.facets);
                 const merged = try self.arena.create(SimpleInfo);
                 merged.* = base_simple.*;
                 merged.base = .{ .simple = base_simple };
@@ -2667,15 +2756,159 @@ const Compiler = struct {
     fn resolveAllDeclarations(self: *Compiler) Error!void {
         for (self.elements.items) |decl| {
             @constCast(decl).type_info = try self.resolveTypeUse(decl.type_use);
+            try self.checkElementValues(decl);
         }
         for (self.local_elements.items) |decl| {
             @constCast(decl).type_info = try self.resolveTypeUse(decl.type_use);
+            try self.checkElementValues(decl);
         }
         for (self.attributes.items) |decl| {
             @constCast(decl).type_info = try self.resolveTypeUse(decl.type_use);
+            try self.checkAttributeValues(decl);
         }
         for (self.local_attributes.items) |decl| {
             @constCast(decl).type_info = try self.resolveTypeUse(decl.type_use);
+            try self.checkAttributeValues(decl);
+        }
+    }
+
+    /// Reject facets that do not apply to the base type's variety, require
+    /// totalDigits to be positive, and check that facet values are valid
+    /// values of the base type.
+    fn checkRestrictionFacets(
+        self: *Compiler,
+        base: *const SimpleInfo,
+        facets: datatypes.Facets,
+    ) Error!void {
+        const has_length = facets.length != null or
+            facets.min_length != null or
+            facets.max_length != null;
+        const has_bounds = facets.min_inclusive != null or
+            facets.max_inclusive != null or
+            facets.min_exclusive != null or
+            facets.max_exclusive != null;
+        const has_digits = facets.total_digits != null or
+            facets.fraction_digits != null;
+        switch (base.variety) {
+            .list => if (has_bounds or has_digits) {
+                return error.InvalidSchema;
+            },
+            .union_ => if (has_length or has_bounds or has_digits) {
+                return error.InvalidSchema;
+            },
+            .atomic => {
+                if (has_length and !lengthFacetApplies(base.kind)) {
+                    return error.InvalidSchema;
+                }
+                if (has_bounds and !orderedFacetApplies(base.kind)) {
+                    return error.InvalidSchema;
+                }
+                if (has_digits and !digitsFacetApplies(base.kind)) {
+                    return error.InvalidSchema;
+                }
+            },
+        }
+        if (facets.total_digits) |value| {
+            if (value == 0) return error.InvalidSchema;
+        }
+        if (facets.min_inclusive) |value| {
+            if (!try self.valueValidFor(base, value)) {
+                return error.InvalidSchema;
+            }
+        }
+        if (facets.max_inclusive) |value| {
+            if (!try self.valueValidFor(base, value)) {
+                return error.InvalidSchema;
+            }
+        }
+        if (facets.min_exclusive) |value| {
+            if (!try self.valueValidFor(base, value)) {
+                return error.InvalidSchema;
+            }
+        }
+        if (facets.max_exclusive) |value| {
+            if (!try self.valueValidFor(base, value)) {
+                return error.InvalidSchema;
+            }
+        }
+        for (facets.enumeration) |value| {
+            if (!try self.valueValidFor(base, value)) {
+                return error.InvalidSchema;
+            }
+        }
+    }
+
+    fn valueValidFor(
+        self: *Compiler,
+        base: *const SimpleInfo,
+        value: []const u8,
+    ) Error!bool {
+        return switch (base.variety) {
+            .atomic => datatypes.validate(
+                self.arena,
+                base.kind,
+                base.facets,
+                value,
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidPattern => false,
+            },
+            .list => blk: {
+                const item = base.item orelse break :blk false;
+                var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n");
+                while (tokens.next()) |token| {
+                    if (!try self.valueValidFor(item, token)) break :blk false;
+                }
+                break :blk true;
+            },
+            .union_ => blk: {
+                for (base.members) |member| {
+                    if (try self.valueValidFor(member, value)) break :blk true;
+                }
+                break :blk false;
+            },
+        };
+    }
+
+    fn checkElementValues(
+        self: *Compiler,
+        decl: *const ElementDecl,
+    ) Error!void {
+        const value = decl.default_value orelse
+            decl.fixed_value orelse return;
+        const simple = switch (decl.type_info) {
+            .simple => |simple| simple,
+            // anySimpleType and anyType accept every lexical value.
+            .any_simple, .any_type => return,
+            .complex => |complex| blk: {
+                if (complex.simple) |simple| break :blk simple;
+                if (!complex.mixed) return error.InvalidSchema;
+                if (complex.particle) |particle| {
+                    if (!particleEmptiable(particle, 0)) {
+                        return error.InvalidSchema;
+                    }
+                }
+                return;
+            },
+        };
+        if (!try self.valueValidFor(simple, value)) {
+            return error.InvalidSchema;
+        }
+    }
+
+    fn checkAttributeValues(
+        self: *Compiler,
+        decl: *const AttributeDecl,
+    ) Error!void {
+        const simple = switch (decl.type_info) {
+            .simple => |simple| simple,
+            .any_simple => return,
+            else => return error.InvalidSchema,
+        };
+        const value = decl.default_value orelse
+            decl.fixed_value orelse return;
+        if (!try self.valueValidFor(simple, value)) {
+            return error.InvalidSchema;
         }
     }
 
@@ -2738,6 +2971,134 @@ fn formDefaultFor(
     if (std.mem.eql(u8, value, "qualified")) return true;
     if (std.mem.eql(u8, value, "unqualified")) return false;
     return error.InvalidSchema;
+}
+
+/// A particle is emptiable when it can match without consuming any element.
+fn particleEmptiable(particle: *const Particle, depth: usize) bool {
+    if (depth > 256) return false;
+    return switch (particle.*) {
+        .element => |value| value.min == 0,
+        .any => |value| value.min == 0,
+        .group => |value| if (value.decl.particle) |inner|
+            particleEmptiable(inner, depth + 1)
+        else
+            false,
+        .sequence => |value| blk: {
+            for (value.items) |item| {
+                if (!particleEmptiable(item, depth + 1)) break :blk false;
+            }
+            break :blk true;
+        },
+        .choice => |value| blk: {
+            for (value.items) |item| {
+                if (particleEmptiable(item, depth + 1)) break :blk true;
+            }
+            break :blk false;
+        },
+        .all => |value| blk: {
+            for (value.items) |item| {
+                if (!particleEmptiable(item, depth + 1)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
+
+fn lengthFacetApplies(kind: datatypes.Kind) bool {
+    return switch (kind) {
+        .string,
+        .normalized_string,
+        .token,
+        .language,
+        .name,
+        .ncname,
+        .nmtoken,
+        .nmtokens,
+        .id,
+        .idref,
+        .idrefs,
+        .entity,
+        .entities,
+        .any_uri,
+        .qname,
+        .notation,
+        .hex_binary,
+        .base64_binary,
+        => true,
+        else => false,
+    };
+}
+
+fn orderedFacetApplies(kind: datatypes.Kind) bool {
+    return switch (kind) {
+        .decimal,
+        .integer,
+        .non_positive_integer,
+        .negative_integer,
+        .long,
+        .int,
+        .short,
+        .byte,
+        .non_negative_integer,
+        .unsigned_long,
+        .unsigned_int,
+        .unsigned_short,
+        .unsigned_byte,
+        .positive_integer,
+        .float,
+        .double,
+        .duration,
+        .date_time,
+        .time,
+        .date,
+        .g_year_month,
+        .g_year,
+        .g_month_day,
+        .g_day,
+        .g_month,
+        => true,
+        else => false,
+    };
+}
+
+fn digitsFacetApplies(kind: datatypes.Kind) bool {
+    return switch (kind) {
+        .decimal,
+        .integer,
+        .non_positive_integer,
+        .negative_integer,
+        .long,
+        .int,
+        .short,
+        .byte,
+        .non_negative_integer,
+        .unsigned_long,
+        .unsigned_int,
+        .unsigned_short,
+        .unsigned_byte,
+        .positive_integer,
+        => true,
+        else => false,
+    };
+}
+
+/// Identity-constraint selectors are restricted XPaths: unions of relative
+/// location paths that never select attributes.
+fn isSelectorXPath(expression: *const xpath_ast.Expr) bool {
+    switch (expression.*) {
+        .binary => |binary| {
+            if (binary.op != .union_) return false;
+            return isSelectorXPath(binary.lhs) and isSelectorXPath(binary.rhs);
+        },
+        .path => |path| {
+            if (path.start != null) return false;
+            for (path.steps) |step| {
+                if (step.axis == .attribute) return false;
+            }
+            return true;
+        },
+        else => return false,
+    }
 }
 
 fn parseUnsigned(value: []const u8) Error!usize {

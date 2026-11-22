@@ -1208,3 +1208,95 @@ test "XSD keyref matches the nearest identity scope" {
             "</root>",
     );
 }
+
+test "XSD enforces schema-component constraints" {
+    const xsd = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>";
+    const close = "</xs:schema>";
+    // Global declarations cannot carry local-only attributes.
+    try expectSchemaError(
+        xsd ++ "<xs:element name='a' type='xs:string' form='qualified'/>" ++ close,
+    );
+    try expectSchemaError(
+        xsd ++ "<xs:element name='a' type='xs:string' minOccurs='0'/>" ++ close,
+    );
+    try expectSchemaError(
+        xsd ++ "<xs:attribute name='a' type='xs:string' use='required'/>" ++ close,
+    );
+    // References cannot be combined with local declarations.
+    try expectSchemaError(
+        xsd ++ "<xs:element name='a'><xs:complexType><xs:sequence>" ++
+            "<xs:element ref='b' type='xs:string'/></xs:sequence>" ++
+            "</xs:complexType></xs:element>" ++
+            "<xs:element name='b' type='xs:string'/>" ++ close,
+    );
+    try expectSchemaError(
+        xsd ++ "<xs:attribute name='a' type='xs:string'/>" ++
+            "<xs:complexType name='T'><xs:attribute ref='a' type='xs:string'/>" ++
+            "</xs:complexType>" ++ close,
+    );
+    // A type attribute and an inline type are mutually exclusive.
+    try expectSchemaError(
+        xsd ++ "<xs:element name='a' type='xs:string'><xs:complexType/>" ++
+            "</xs:element>" ++ close,
+    );
+    // xs:all children occur at most once.
+    try expectSchemaError(
+        xsd ++ "<xs:element name='a'><xs:complexType><xs:all>" ++
+            "<xs:element name='b' maxOccurs='2'/></xs:all>" ++
+            "</xs:complexType></xs:element>" ++ close,
+    );
+    // Attribute use constraints.
+    try expectSchemaError(
+        xsd ++ "<xs:element name='a'><xs:complexType>" ++
+            "<xs:attribute name='x' use='required' default='v'/>" ++
+            "</xs:complexType></xs:element>" ++ close,
+    );
+    try expectSchemaError(
+        xsd ++ "<xs:element name='a'><xs:complexType>" ++
+            "<xs:attribute name='x' default='d' fixed='f'/>" ++
+            "</xs:complexType></xs:element>" ++ close,
+    );
+    // Facets must apply to the base type and carry valid values.
+    try expectSchemaError(
+        xsd ++ "<xs:simpleType name='t'><xs:restriction base='xs:integer'>" ++
+            "<xs:length value='2'/></xs:restriction></xs:simpleType>" ++ close,
+    );
+    try expectSchemaError(
+        xsd ++ "<xs:simpleType name='t'><xs:restriction base='xs:string'>" ++
+            "<xs:minInclusive value='a'/></xs:restriction></xs:simpleType>" ++ close,
+    );
+    try expectSchemaError(
+        xsd ++ "<xs:simpleType name='t'><xs:restriction base='xs:float'>" ++
+            "<xs:totalDigits value='2'/></xs:restriction></xs:simpleType>" ++ close,
+    );
+    try expectSchemaError(
+        xsd ++ "<xs:simpleType name='t'><xs:restriction base='xs:integer'>" ++
+            "<xs:enumeration value='abc'/></xs:restriction></xs:simpleType>" ++ close,
+    );
+    try expectSchemaError(
+        xsd ++ "<xs:element name='a' type='xs:integer' default='abc'/>" ++ close,
+    );
+    // Identity constraint selectors cannot select attributes.
+    try expectSchemaError(
+        xsd ++ "<xs:element name='a'><xs:complexType><xs:sequence>" ++
+            "<xs:element name='b' type='xs:string' maxOccurs='unbounded'/>" ++
+            "</xs:sequence></xs:complexType><xs:key name='k'>" ++
+            "<xs:selector xpath='@x'/><xs:field xpath='.'/></xs:key>" ++
+            "</xs:element>" ++ close,
+    );
+
+    // Valid counterparts still compile and validate.
+    try expectValid(
+        xsd ++ "<xs:simpleType name='t'><xs:restriction base='xs:integer'>" ++
+            "<xs:minInclusive value='1'/><xs:enumeration value='2'/>" ++
+            "</xs:restriction></xs:simpleType>" ++
+            "<xs:element name='a' type='t'/>" ++ close,
+        "<a>2</a>",
+    );
+    try expectValid(
+        xsd ++ "<xs:element name='a' default='x'><xs:complexType mixed='true'>" ++
+            "<xs:sequence><xs:element name='b' minOccurs='0'/></xs:sequence>" ++
+            "</xs:complexType></xs:element>" ++ close,
+        "<a>x<b/></a>",
+    );
+}
