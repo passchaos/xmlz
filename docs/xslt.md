@@ -72,6 +72,9 @@ defer result.deinit();
   fragment text.
 - `xsl:namespace-alias` for literal result elements and attributes, including
   result-prefix rewriting and namespace declarations.
+- XSLT-specific functions `generate-id()`, `system-property()`,
+  `element-available()`, and `function-available()`. Generated ids are stable
+  within a transformation and deterministic (`id1`, `id2`, ...).
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
   `indent`, and `version`. HTML output uses HTML void elements, minimizes
   common boolean attributes, and keeps `script`/`style` content raw. Result
@@ -93,10 +96,11 @@ template priority its specified default behavior.
   UTF-8).
 - HTML output is compact, does not insert a Content-Type `meta` element, and
   does not emit DOCTYPE declarations.
-- `document`, `generate-id`, `system-property`, `element-available`, and
-  `function-available` are not available in expressions.
-- Template conflict resolution uses a single import precedence; imported
-  stylesheets are not supported.
+- `document()` and `unparsed-entity-uri()` are not available in expressions.
+- `function-available()` reports XSLT functions in the XSLT namespace as
+  available, as required by XSLT 1.0; libxslt reports them as unavailable
+  unless registered as extensions.
+- Template conflict resolution uses a single import precedence.
 
 ## Differential verification
 
@@ -109,5 +113,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-73/73 XSLT differential checks passed
+76/76 XSLT differential checks passed
 ```

@@ -573,6 +573,63 @@ STYLESHEETS = [
         {},
     ),
     (
+        "generate-id",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <same><xsl:value-of select="generate-id(/root) = generate-id(/root)"/></same>
+          <diff><xsl:value-of select="generate-id(/root) != generate-id(/root/a)"/></diff>
+          <empty><xsl:value-of select="generate-id(/missing) = ''"/></empty>
+          <attr><xsl:value-of select="generate-id(/root/a/@x) != generate-id(/root/a)"/></attr>
+          <unique><xsl:value-of select="count(//*[generate-id() = generate-id(preceding::*)]) = 0"/></unique>
+          <start><xsl:value-of select="starts-with(generate-id(/root), 'id')"/></start>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root><a x='1'/><a x='2'/></root>",
+        {},
+    ),
+    (
+        "system-property",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <version><xsl:value-of select="system-property('xsl:version')"/></version>
+          <unknown><xsl:value-of select="system-property('xsl:unknown')"/></unknown>
+          <plain><xsl:value-of select="system-property('version')"/></plain>
+          <vendor><xsl:value-of select="string-length(system-property('xsl:vendor')) &gt; 0"/></vendor>
+          <url><xsl:value-of select="starts-with(system-property('xsl:vendor-url'), 'http')"/></url>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "availability",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <e1><xsl:value-of select="element-available('xsl:apply-templates')"/></e1>
+          <e2><xsl:value-of select="element-available('xsl:sort')"/></e2>
+          <e3><xsl:value-of select="element-available('xsl:stylesheet')"/></e3>
+          <e4><xsl:value-of select="element-available('xsl:unknown')"/></e4>
+          <e5><xsl:value-of select="element-available('apply-templates')"/></e5>
+          <e6><xsl:value-of select="element-available('xsl:template')"/></e6>
+          <e7><xsl:value-of select="element-available('xsl:param')"/></e7>
+          <e8><xsl:value-of select="element-available('xsl:decimal-format')"/></e8>
+          <f1><xsl:value-of select="function-available('count')"/></f1>
+          <f2><xsl:value-of select="function-available('generate-id')"/></f2>
+          <f3><xsl:value-of select="function-available('current')"/></f3>
+          <f4><xsl:value-of select="function-available('key')"/></f4>
+          <f5><xsl:value-of select="function-available('format-number')"/></f5>
+          <f6><xsl:value-of select="function-available('system-property')"/></f6>
+          <f7><xsl:value-of select="function-available('unknown')"/></f7>
+          <f8><xsl:value-of select="function-available('node-set')"/></f8>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>

@@ -95,6 +95,7 @@ pub fn apply(
         .source = source,
         .builder = &builder,
         .key_map = KeyMap.init(arena_allocator),
+        .node_ids = NodeIdMap.init(arena_allocator),
         .selector_cache = std.AutoHashMap(
             *const xpath_ast.Expr,
             *SelectorEntry,
@@ -174,6 +175,58 @@ const KeyMap = std.HashMap(
     80,
 );
 
+const NodeIdKey = struct {
+    document: *const dom.Document,
+    node: xpath.NodeRef,
+};
+
+const NodeIdKeyContext = struct {
+    pub fn hash(_: NodeIdKeyContext, key: NodeIdKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        const pointer = @intFromPtr(key.document);
+        hasher.update(std.mem.asBytes(&pointer));
+        switch (key.node) {
+            .node => |id| {
+                hasher.update("n");
+                hasher.update(std.mem.asBytes(&id));
+            },
+            .attribute => |attr| {
+                hasher.update("a");
+                hasher.update(std.mem.asBytes(&attr.element));
+                hasher.update(std.mem.asBytes(&attr.index));
+            },
+            .namespace_node => |ns| {
+                hasher.update("s");
+                hasher.update(std.mem.asBytes(&ns.element));
+                hasher.update(ns.prefix);
+            },
+        }
+        return hasher.final();
+    }
+
+    pub fn eql(_: NodeIdKeyContext, a: NodeIdKey, b: NodeIdKey) bool {
+        if (a.document != b.document) return false;
+        return switch (a.node) {
+            .node => |id| switch (b.node) {
+                .node => |other| id == other,
+                else => false,
+            },
+            .attribute => |attr| switch (b.node) {
+                .attribute => |other| attr.element == other.element and
+                    attr.index == other.index,
+                else => false,
+            },
+            .namespace_node => |ns| switch (b.node) {
+                .namespace_node => |other| ns.element == other.element and
+                    std.mem.eql(u8, ns.prefix, other.prefix),
+                else => false,
+            },
+        };
+    }
+};
+
+const NodeIdMap = std.HashMap(NodeIdKey, usize, NodeIdKeyContext, 80);
+
 const SelectorEntry = struct {
     nodes: []const xpath.NodeRef,
     map: std.AutoHashMap(NodeKey, void),
@@ -200,6 +253,8 @@ const Runtime = struct {
     template_states: []TemplateState = &.{},
     messages: std.ArrayList([]const u8) = .empty,
     key_map: KeyMap,
+    node_ids: NodeIdMap,
+    next_node_id: usize = 0,
     selector_cache: std.AutoHashMap(*const xpath_ast.Expr, *SelectorEntry),
     keys_ready: bool = false,
     filtered_source: ?*dom.Document = null,
@@ -435,6 +490,11 @@ const Runtime = struct {
                     .context = self,
                     .lookup = lookupKey,
                 } else null,
+                .xslt_functions = true,
+                .node_id_generator = .{
+                    .context = self,
+                    .generate = generateNodeId,
+                },
             };
             var result = xpath_eval.evaluate(
                 self.allocator,
@@ -518,6 +578,11 @@ const Runtime = struct {
             .number_formatter = .{
                 .context = self,
                 .format = formatNumberCallback,
+            },
+            .xslt_functions = true,
+            .node_id_generator = .{
+                .context = self,
+                .generate = generateNodeId,
             },
         };
         var result = xpath_eval.evaluate(
@@ -1437,6 +1502,11 @@ const Runtime = struct {
                 .context = self,
                 .lookup = lookupKey,
             } else null,
+            .xslt_functions = true,
+            .node_id_generator = .{
+                .context = self,
+                .generate = generateNodeId,
+            },
         };
         var result = xpath_eval.evaluate(
             self.allocator,
@@ -2230,6 +2300,24 @@ fn lookupKey(
         return list.items;
     }
     return &.{};
+}
+
+fn generateNodeId(
+    context: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    document: *const dom.Document,
+    node: xpath.NodeRef,
+) error{OutOfMemory}![]const u8 {
+    const runtime: *Runtime = @ptrCast(@alignCast(context.?));
+    const entry = try runtime.node_ids.getOrPut(.{
+        .document = document,
+        .node = node,
+    });
+    if (!entry.found_existing) {
+        runtime.next_node_id += 1;
+        entry.value_ptr.* = runtime.next_node_id;
+    }
+    return std.fmt.allocPrint(allocator, "id{d}", .{entry.value_ptr.*});
 }
 
 fn modeMatches(template_mode: ?[]const u8, mode: ?[]const u8) bool {

@@ -106,6 +106,18 @@ pub const KeyResolver = struct {
     ) KeyError![]const NodeRef,
 };
 
+/// XSLT `generate-id()` hook. The returned string must be unique for the
+/// node within a transformation and stable across calls.
+pub const NodeIdGenerator = struct {
+    context: ?*anyopaque = null,
+    generate: *const fn (
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        document: *const dom.Document,
+        node: NodeRef,
+    ) error{OutOfMemory}![]const u8,
+};
+
 pub const Context = struct {
     document: *const dom.Document,
     node: NodeRef,
@@ -115,6 +127,12 @@ pub const Context = struct {
     key_resolver: ?KeyResolver = null,
     /// XSLT `format-number()` formatter.
     number_formatter: ?NumberFormatter = null,
+    /// XSLT `generate-id()` generator.
+    node_id_generator: ?NodeIdGenerator = null,
+    /// Enables XSLT-specific functions such as `generate-id()`,
+    /// `system-property()`, `element-available()`, and
+    /// `function-available()`.
+    xslt_functions: bool = false,
     position: usize = 1,
     size: usize = 1,
     /// Prefix bindings for name tests. XPath 1.0 does not use the document's
@@ -153,6 +171,8 @@ pub const Context = struct {
             .current = self.current,
             .key_resolver = self.key_resolver,
             .number_formatter = self.number_formatter,
+            .node_id_generator = self.node_id_generator,
+            .xslt_functions = self.xslt_functions,
             .position = position,
             .size = size,
             .namespaces = self.namespaces,

@@ -1095,7 +1095,98 @@ const Evaluator = struct {
             const text = try self.toString(items[0], context);
             return .{ .node_set = try self.idLookup(context, text) };
         }
+        if (std.mem.eql(u8, name, "generate-id")) {
+            if (!context.xslt_functions) return error.UnknownFunction;
+            if (items.len > 1) return error.InvalidArgument;
+            const node = if (items.len == 0)
+                context.node
+            else
+                self.firstInDocumentOrder(
+                    try self.requireNodeSet(items[0]),
+                ) orelse return .{ .string = "" };
+            const generator = context.node_id_generator orelse
+                return .{ .string = "" };
+            return .{ .string = try generator.generate(
+                generator.context,
+                self.allocator,
+                context.document,
+                node,
+            ) };
+        }
+        if (std.mem.eql(u8, name, "system-property")) {
+            if (!context.xslt_functions) return error.UnknownFunction;
+            if (items.len != 1) return error.InvalidArgument;
+            const raw = try self.toString(items[0], context);
+            const qname = (try self.resolveQName(context, raw)) orelse
+                return .{ .string = "" };
+            if (!std.mem.eql(u8, qname.uri, namespace.xsl_uri)) {
+                return .{ .string = "" };
+            }
+            if (std.mem.eql(u8, qname.local, "version")) {
+                return .{ .string = "1.0" };
+            }
+            if (std.mem.eql(u8, qname.local, "vendor")) {
+                return .{ .string = "xmlz" };
+            }
+            if (std.mem.eql(u8, qname.local, "vendor-url")) {
+                return .{ .string = "https://github.com/passchaos/xmlz" };
+            }
+            return .{ .string = "" };
+        }
+        if (std.mem.eql(u8, name, "element-available")) {
+            if (!context.xslt_functions) return error.UnknownFunction;
+            if (items.len != 1) return error.InvalidArgument;
+            const raw = try self.toString(items[0], context);
+            const qname = (try self.resolveQName(context, raw)) orelse
+                return .{ .boolean = false };
+            if (!std.mem.eql(u8, qname.uri, namespace.xsl_uri)) {
+                return .{ .boolean = false };
+            }
+            return .{ .boolean = nameInTable(&xslt_elements, qname.local) };
+        }
+        if (std.mem.eql(u8, name, "function-available")) {
+            if (!context.xslt_functions) return error.UnknownFunction;
+            if (items.len != 1) return error.InvalidArgument;
+            const raw = try self.toString(items[0], context);
+            const qname = (try self.resolveQName(context, raw)) orelse
+                return .{ .boolean = false };
+            if (qname.uri.len == 0) {
+                // libxslt compatibility: unprefixed XSLT function names are
+                // reported as available in addition to core XPath functions.
+                return .{ .boolean = nameInTable(
+                    &xpath_core_functions,
+                    qname.local,
+                ) or nameInTable(&xslt_functions, qname.local) };
+            }
+            if (std.mem.eql(u8, qname.uri, namespace.xsl_uri)) {
+                return .{ .boolean = nameInTable(
+                    &xslt_functions,
+                    qname.local,
+                ) };
+            }
+            return .{ .boolean = false };
+        }
         return error.UnknownFunction;
+    }
+
+    const ResolvedQName = struct {
+        uri: []const u8,
+        local: []const u8,
+    };
+
+    fn resolveQName(
+        self: *Evaluator,
+        context: *const value.Context,
+        raw: []const u8,
+    ) Error!?ResolvedQName {
+        _ = self;
+        const qname = namespace.splitQName(raw) catch return null;
+        if (qname.prefix.len == 0) {
+            return .{ .uri = "", .local = qname.local };
+        }
+        const uri = context.resolvePrefix(qname.prefix) orelse
+            return error.UndefinedPrefix;
+        return .{ .uri = uri, .local = qname.local };
     }
 
     fn functionNode(
@@ -1267,6 +1358,63 @@ const Evaluator = struct {
         return self.sortDedup(out.items);
     }
 };
+
+const xpath_core_functions = [_][]const u8{
+    "last",            "position",      "count",         "id",
+    "local-name",      "namespace-uri", "name",          "string",
+    "concat",          "starts-with",   "contains",      "substring-before",
+    "substring-after", "substring",     "string-length", "normalize-space",
+    "translate",       "boolean",       "not",           "true",
+    "false",           "lang",          "number",        "sum",
+    "floor",           "ceiling",       "round",
+};
+
+/// XSLT 1.0 functions implemented by this processor.
+const xslt_functions = [_][]const u8{
+    "current",
+    "element-available",
+    "function-available",
+    "generate-id",
+    "key",
+    "format-number",
+    "system-property",
+};
+
+/// XSLT instruction and subsidiary elements reported by `element-available`.
+/// The set matches libxslt.
+const xslt_elements = [_][]const u8{
+    "apply-templates",
+    "call-template",
+    "apply-imports",
+    "for-each",
+    "value-of",
+    "copy-of",
+    "number",
+    "choose",
+    "if",
+    "text",
+    "copy",
+    "variable",
+    "message",
+    "fallback",
+    "processing-instruction",
+    "comment",
+    "element",
+    "attribute",
+    "sort",
+    "with-param",
+    "param",
+    "when",
+    "otherwise",
+    "decimal-format",
+};
+
+fn nameInTable(table: []const []const u8, name: []const u8) bool {
+    for (table) |candidate| {
+        if (std.mem.eql(u8, candidate, name)) return true;
+    }
+    return false;
+}
 
 fn codepointCount(text: []const u8) usize {
     return std.unicode.utf8CountCodepoints(text) catch text.len;

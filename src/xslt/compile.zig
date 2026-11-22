@@ -13,7 +13,7 @@ const ast = @import("../xpath/ast.zig");
 const xpath_parser = @import("../xpath/parser.zig");
 const xpath_variable = @import("../xpath/value.zig");
 
-pub const xsl_namespace = "http://www.w3.org/1999/XSL/Transform";
+pub const xsl_namespace = namespace.xsl_uri;
 
 pub const Error = error{
     OutOfMemory,

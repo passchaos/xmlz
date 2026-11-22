@@ -56,9 +56,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   precedence and `apply-imports`, attribute sets, whitespace stripping,
   multi-level `xsl:number` with count/from patterns and number formats,
   `disable-output-escaping`, `format-number()` with decimal formats, result
-  tree fragments, namespace aliases, HTML output, and the core instruction
-  set, reusing the XPath engine for match patterns and expressions, with
-  73/73 differential checks against libxslt.
+  tree fragments, namespace aliases, XSLT functions (`generate-id`,
+  `system-property`, `element-available`, `function-available`), HTML output,
+  and the core instruction set, reusing the XPath engine for match patterns
+  and expressions, with 76/76 differential checks against libxslt.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,

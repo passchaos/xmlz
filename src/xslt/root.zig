@@ -1153,3 +1153,107 @@ test "XSLT rejects duplicate namespace aliases" {
         parse(testing.allocator, &document),
     );
 }
+
+test "XSLT generate-id is stable, unique, and empty for empty node-sets" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <same><xsl:value-of select="generate-id(/root) = generate-id(/root)"/></same>
+        \\    <diff><xsl:value-of select="generate-id(/root) != generate-id(/root/a)"/></diff>
+        \\    <empty><xsl:value-of select="generate-id(/missing) = ''"/></empty>
+        \\    <attr><xsl:value-of select="generate-id(/root/a/@x) != generate-id(/root/a)"/></attr>
+        \\    <unique><xsl:value-of select="count(//*[generate-id() = generate-id(preceding::*)]) = 0"/></unique>
+        \\    <name><xsl:value-of select="starts-with(generate-id(/root), 'id')"/></name>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root><a x='1'/><a x='2'/></root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><same>true</same><diff>true</diff><empty>true</empty>" ++
+            "<attr>true</attr><unique>true</unique><name>true</name></out>",
+        output,
+    );
+}
+
+test "XSLT system-property reports version and vendor" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:t="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <version><xsl:value-of select="system-property('xsl:version')"/></version>
+        \\    <prefixed><xsl:value-of select="system-property('t:version')"/></prefixed>
+        \\    <vendor><xsl:value-of select="system-property('xsl:vendor')"/></vendor>
+        \\    <url><xsl:value-of select="system-property('xsl:vendor-url')"/></url>
+        \\    <unknown><xsl:value-of select="system-property('xsl:unknown')"/></unknown>
+        \\    <plain><xsl:value-of select="system-property('version')"/></plain>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><version>1.0</version><prefixed>1.0</prefixed>" ++
+            "<vendor>xmlz</vendor>" ++
+            "<url>https://github.com/passchaos/xmlz</url>" ++
+            "<unknown/><plain/></out>",
+        output,
+    );
+}
+
+test "XSLT element-available and function-available" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:exsl="http://exslt.org/common"
+        \\  exclude-result-prefixes="exsl">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <instruction><xsl:value-of select="element-available('xsl:apply-templates')"/></instruction>
+        \\    <subsidiary><xsl:value-of select="element-available('xsl:sort')"/></subsidiary>
+        \\    <not-instruction><xsl:value-of select="element-available('xsl:stylesheet')"/></not-instruction>
+        \\    <unprefixed-element><xsl:value-of select="element-available('apply-templates')"/></unprefixed-element>
+        \\    <core><xsl:value-of select="function-available('count')"/></core>
+        \\    <xslt-plain><xsl:value-of select="function-available('generate-id')"/></xslt-plain>
+        \\    <xslt-prefixed><xsl:value-of select="function-available('xsl:generate-id')"/></xslt-prefixed>
+        \\    <unknown><xsl:value-of select="function-available('unknown')"/></unknown>
+        \\    <extension><xsl:value-of select="function-available('exsl:node-set')"/></extension>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><instruction>true</instruction><subsidiary>true</subsidiary>" ++
+            "<not-instruction>false</not-instruction>" ++
+            "<unprefixed-element>false</unprefixed-element>" ++
+            "<core>true</core><xslt-plain>true</xslt-plain>" ++
+            "<xslt-prefixed>true</xslt-prefixed><unknown>false</unknown>" ++
+            "<extension>false</extension></out>",
+        output,
+    );
+}
+
+test "XSLT system-property rejects an unbound prefix" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/">
+        \\    <xsl:value-of select="system-property('missing:version')"/>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    try testing.expectError(
+        error.UndefinedPrefix,
+        transformToString(stylesheet, "<root/>", .{}),
+    );
+}
