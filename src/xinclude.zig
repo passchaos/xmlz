@@ -66,10 +66,16 @@ pub fn process(
     errdefer processor.builder.deinit();
     defer processor.deinit();
     if (document.declaration) |declaration| {
-        processor.builder.setDeclaration(declaration);
+        processor.builder.setDeclaration(declaration) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidInclude,
+        };
     }
     if (document.doctype) |doctype| {
-        processor.builder.setDoctype(doctype);
+        processor.builder.setDoctype(doctype) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidInclude,
+        };
     }
     try processor.copyDocument(document, options.base);
     return processor.builder.finish() catch |err| switch (err) {

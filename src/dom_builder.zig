@@ -47,12 +47,32 @@ pub const Builder = struct {
     pub fn setDeclaration(
         self: *Builder,
         declaration: parser_mod.Declaration,
-    ) void {
-        self.declaration = declaration;
+    ) Error!void {
+        self.declaration = .{
+            .raw = try self.dupe(declaration.raw),
+            .version = try self.dupe(declaration.version),
+            .encoding = if (declaration.encoding) |value|
+                try self.dupe(value)
+            else
+                null,
+            .standalone = declaration.standalone,
+        };
     }
 
-    pub fn setDoctype(self: *Builder, doctype: parser_mod.Doctype) void {
-        self.doctype = doctype;
+    pub fn setDoctype(self: *Builder, doctype: parser_mod.Doctype) Error!void {
+        self.doctype = .{
+            .raw = try self.dupe(doctype.raw),
+            .name = try self.dupe(doctype.name),
+            .public_id = if (doctype.public_id) |value|
+                try self.dupe(value)
+            else
+                null,
+            .system_id = if (doctype.system_id) |value|
+                try self.dupe(value)
+            else
+                null,
+            .has_internal_subset = doctype.has_internal_subset,
+        };
     }
 
     pub fn nodeAt(self: *const Builder, id: dom.NodeId) *const dom.Node {
