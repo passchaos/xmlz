@@ -211,6 +211,13 @@ pub const AttributeDecl = struct {
     node: dom.NodeId = dom.null_node,
 };
 
+pub const NotationDecl = struct {
+    name: []const u8 = "",
+    namespace_uri: []const u8 = "",
+    public_id: ?[]const u8 = null,
+    system_id: ?[]const u8 = null,
+};
+
 pub const TypeUse = union(enum) {
     any_type,
     any_simple,
@@ -294,6 +301,7 @@ pub const Schema = struct {
     types: []const *const TypeDecl,
     groups: []const *const GroupDecl,
     attribute_groups: []const *const AttributeGroupDecl,
+    notations: []const *const NotationDecl = &.{},
     documents: []const *dom.Document = &.{},
 
     pub fn deinit(self: *Schema) void {
@@ -369,6 +377,21 @@ pub const Schema = struct {
         local: []const u8,
     ) ?*const AttributeGroupDecl {
         for (self.attribute_groups) |decl| {
+            if (std.mem.eql(u8, decl.namespace_uri, namespace_uri) and
+                std.mem.eql(u8, decl.name, local))
+            {
+                return decl;
+            }
+        }
+        return null;
+    }
+
+    pub fn findNotation(
+        self: *const Schema,
+        namespace_uri: []const u8,
+        local: []const u8,
+    ) ?*const NotationDecl {
+        for (self.notations) |decl| {
             if (std.mem.eql(u8, decl.namespace_uri, namespace_uri) and
                 std.mem.eql(u8, decl.name, local))
             {
@@ -606,6 +629,7 @@ pub fn parseWithOptions(
         .attribute_groups = try compiler.attribute_groups.toOwnedSlice(
             compiler.arena,
         ),
+        .notations = try compiler.notations.toOwnedSlice(compiler.arena),
         .documents = try compiler.included_documents.toOwnedSlice(
             compiler.arena,
         ),
@@ -635,6 +659,7 @@ const Compiler = struct {
     types: std.ArrayList(*const TypeDecl) = .empty,
     groups: std.ArrayList(*const GroupDecl) = .empty,
     attribute_groups: std.ArrayList(*const AttributeGroupDecl) = .empty,
+    notations: std.ArrayList(*const NotationDecl) = .empty,
     identity_constraints: std.ArrayList(*const IdentityConstraint) = .empty,
     local_elements: std.ArrayList(*const ElementDecl) = .empty,
     local_attributes: std.ArrayList(*const AttributeDecl) = .empty,
@@ -786,9 +811,19 @@ const Compiler = struct {
                 try self.processSchemaReference(child, false);
             } else if (std.mem.eql(u8, child_node.local, "import")) {
                 try self.processSchemaReference(child, true);
-            } else if (std.mem.eql(u8, child_node.local, "redefine") or
-                std.mem.eql(u8, child_node.local, "notation"))
-            {
+            } else if (std.mem.eql(u8, child_node.local, "notation")) {
+                const decl = try self.globalNotation(child);
+                for (self.notations.items) |existing| {
+                    if (std.mem.eql(
+                        u8,
+                        existing.namespace_uri,
+                        decl.namespace_uri,
+                    ) and std.mem.eql(u8, existing.name, decl.name)) {
+                        return error.InvalidSchema;
+                    }
+                }
+                try self.notations.append(self.arena, decl);
+            } else if (std.mem.eql(u8, child_node.local, "redefine")) {
                 return error.InvalidSchema;
             }
         }
@@ -1001,6 +1036,27 @@ const Compiler = struct {
             .final = try self.derivationSet(id, "final", false, !complex),
             .node = id,
             .doc = self.current_schema,
+        };
+        return decl;
+    }
+
+    fn globalNotation(
+        self: *Compiler,
+        id: dom.NodeId,
+    ) Error!*const NotationDecl {
+        const name = self.document.attribute(id, "name") orelse
+            return error.InvalidSchema;
+        const public_id = self.document.attribute(id, "public");
+        const system_id = self.document.attribute(id, "system");
+        if (public_id == null and system_id == null) {
+            return error.InvalidSchema;
+        }
+        const decl = try self.arena.create(NotationDecl);
+        decl.* = .{
+            .name = name,
+            .namespace_uri = self.target_namespace,
+            .public_id = public_id,
+            .system_id = system_id,
         };
         return decl;
     }

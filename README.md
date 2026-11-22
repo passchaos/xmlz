@@ -66,7 +66,7 @@ then exposes them through a pull parser and reusable lexical primitives.
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,
   identity constraints, includes/imports, built-in datatypes, facets, and
-  `xsi:type` / `xsi:nil`, with 225/225 differential checks against libxml2.
+  `xsi:type` / `xsi:nil`, with 231/231 differential checks against libxml2.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.

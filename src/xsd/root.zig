@@ -990,3 +990,51 @@ test "XSD wildcard namespace lists" {
     );
     try expectInvalid(attribute_schema, "<root attr='1'/>");
 }
+
+test "XSD validates notation declarations and NOTATION values" {
+    const schema_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+        "targetNamespace='urn:t' xmlns:t='urn:t' " ++
+        "elementFormDefault='qualified'>" ++
+        "<xs:notation name='gif' public='image/gif'/>" ++
+        "<xs:notation name='png' system='image/png'/>" ++
+        "<xs:element name='root'><xs:complexType>" ++
+        "<xs:attribute name='format' type='xs:NOTATION' use='required'/>" ++
+        "</xs:complexType></xs:element></xs:schema>";
+    try expectValid(
+        schema_source,
+        "<root xmlns='urn:t' xmlns:t='urn:t' format='t:gif'/>",
+    );
+    try expectValid(
+        schema_source,
+        "<root xmlns='urn:t' xmlns:t='urn:t' format='t:png'/>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root xmlns='urn:t' xmlns:t='urn:t' format='t:jpg'/>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root xmlns='urn:t' format='gif'/>",
+    );
+
+    const element_schema =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+        "targetNamespace='urn:t' xmlns:t='urn:t' " ++
+        "elementFormDefault='qualified'>" ++
+        "<xs:notation name='gif' public='image/gif'/>" ++
+        "<xs:element name='root' type='xs:NOTATION'/></xs:schema>";
+    try expectValid(
+        element_schema,
+        "<root xmlns='urn:t' xmlns:t='urn:t'>t:gif</root>",
+    );
+    try expectInvalid(
+        element_schema,
+        "<root xmlns='urn:t' xmlns:t='urn:t'>t:jpg</root>",
+    );
+
+    try expectSchemaError(
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+            "<xs:notation name='bad'/></xs:schema>",
+    );
+}

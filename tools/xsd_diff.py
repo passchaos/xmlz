@@ -1223,6 +1223,35 @@ CASES = [
             "<root attr='1'/>",
         ],
     ),
+    (
+        "notation-declarations",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t" xmlns:t="urn:t"
+          elementFormDefault="qualified">
+          <xs:notation name="gif" public="image/gif"/>
+          <xs:notation name="png" system="image/png"/>
+          <xs:element name="root"><xs:complexType>
+            <xs:attribute name="format" type="xs:NOTATION" use="required"/>
+          </xs:complexType></xs:element>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t' xmlns:t='urn:t' format='t:gif'/>",
+            "<root xmlns='urn:t' xmlns:t='urn:t' format='t:png'/>",
+            "<root xmlns='urn:t' xmlns:t='urn:t' format='t:jpg'/>",
+            "<root xmlns='urn:t' format='gif'/>",
+        ],
+    ),
+    (
+        "notation-element-content",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t" xmlns:t="urn:t"
+          elementFormDefault="qualified">
+          <xs:notation name="gif" public="image/gif"/>
+          <xs:element name="root" type="xs:NOTATION"/>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t' xmlns:t='urn:t'>t:gif</root>",
+            "<root xmlns='urn:t' xmlns:t='urn:t'>t:jpg</root>",
+        ],
+    ),
 ]
 
 

@@ -47,6 +47,8 @@ for (result.errors) |validation_error| {
   attribute groups, and circular group detection.
 - `xs:include` (including chameleon includes) and `xs:import` through a
   resolver, with per-document namespaces/forms and circular-include detection.
+- `xs:notation` declarations and `xs:NOTATION` value checking against declared
+  notation names.
 - Substitution groups, including transitive members, abstract head elements,
   member type derivation checks, and `block`/`final` exclusion enforcement.
 - Identity constraints: `xs:key`, `xs:unique`, and `xs:keyref`, including
@@ -62,7 +64,7 @@ for (result.errors) |validation_error| {
 
 ## Limitations
 
-- `xs:redefine` and `xs:notation` are not implemented.
+- `xs:redefine` is not implemented.
 - Unicode category coverage in `\p{...}` is approximate for non-ASCII scripts.
 - Duration ordering is a partial order; facets on durations use a simplified
   comparison.
@@ -85,5 +87,5 @@ attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
 
 ```text
-225/225 XSD differential checks passed
+231/231 XSD differential checks passed
 ```

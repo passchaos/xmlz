@@ -149,6 +149,10 @@ const Validator = struct {
         if (simple) |info| {
             if (!try self.validateSimpleValue(info, text)) {
                 try self.addError(id, "value does not satisfy the element type");
+            } else if (info.variety == .atomic and info.kind == .notation) {
+                if (!try self.validateNotationValue(id, text)) {
+                    try self.addError(id, "notation is not declared");
+                }
             }
             if (decl.fixed_value) |fixed| {
                 if (!try self.valuesEqual(.{ .simple = info }, text, fixed)) {
@@ -156,6 +160,42 @@ const Validator = struct {
                 }
             }
         }
+    }
+
+    fn validateNotationValue(
+        self: *Validator,
+        id: dom.NodeId,
+        value: []const u8,
+    ) Error!bool {
+        const qname = (try self.resolveNotationQName(id, value)) orelse
+            return false;
+        return self.schema.findNotation(qname.namespace_uri, qname.local) != null;
+    }
+
+    /// Resolve a NOTATION value. Unprefixed names refer to no namespace, as
+    /// libxml2 does for notation values.
+    fn resolveNotationQName(
+        self: *Validator,
+        id: dom.NodeId,
+        raw: []const u8,
+    ) Error!?schema.QName {
+        if (std.mem.indexOfScalar(u8, raw, ':')) |colon| {
+            const prefix = raw[0..colon];
+            const local = raw[colon + 1 ..];
+            if (prefix.len == 0 or local.len == 0) return null;
+            const bindings = try self.document.inScopeNamespaces(
+                self.allocator,
+                id,
+            );
+            for (bindings) |binding| {
+                if (std.mem.eql(u8, binding.prefix, prefix)) {
+                    return .{ .namespace_uri = binding.uri, .local = local };
+                }
+            }
+            return null;
+        }
+        if (raw.len == 0) return null;
+        return .{ .namespace_uri = "", .local = raw };
     }
 
     fn validateComplexElement(
@@ -321,6 +361,16 @@ const Validator = struct {
                         attr.name,
                         "attribute value does not satisfy its type",
                     );
+                } else if (simple.variety == .atomic and
+                    simple.kind == .notation)
+                {
+                    if (!try self.validateNotationValue(id, attr.value)) {
+                        try self.addAttributeError(
+                            id,
+                            attr.name,
+                            "notation is not declared",
+                        );
+                    }
                 }
             },
             .any_simple, .any_type => {},
