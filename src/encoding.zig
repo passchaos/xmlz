@@ -780,3 +780,166 @@ fn windows1252Byte(codepoint: u21) ?u8 {
     }
     return null;
 }
+
+/// Decoding targets selectable by name, used by XInclude `encoding`.
+pub const DecodeEncoding = enum {
+    utf8,
+    utf16,
+    utf16_le,
+    utf16_be,
+    utf32,
+    utf32_le,
+    utf32_be,
+    iso_8859_1,
+    us_ascii,
+    windows_1251,
+    windows_1252,
+};
+
+pub fn decodeEncodingName(name: []const u8) ?DecodeEncoding {
+    var buffer: [32]u8 = undefined;
+    if (name.len > buffer.len) return null;
+    const upper = std.ascii.upperString(buffer[0..name.len], name);
+    if (std.mem.eql(u8, upper, "UTF-8") or std.mem.eql(u8, upper, "UTF8")) {
+        return .utf8;
+    }
+    if (std.mem.eql(u8, upper, "UTF-16")) return .utf16;
+    if (std.mem.eql(u8, upper, "UTF-16LE")) return .utf16_le;
+    if (std.mem.eql(u8, upper, "UTF-16BE")) return .utf16_be;
+    if (std.mem.eql(u8, upper, "UTF-32")) return .utf32;
+    if (std.mem.eql(u8, upper, "UTF-32LE")) return .utf32_le;
+    if (std.mem.eql(u8, upper, "UTF-32BE")) return .utf32_be;
+    if (std.mem.eql(u8, upper, "ISO-8859-1") or
+        std.mem.eql(u8, upper, "ISO8859-1") or
+        std.mem.eql(u8, upper, "LATIN1") or
+        std.mem.eql(u8, upper, "LATIN-1"))
+    {
+        return .iso_8859_1;
+    }
+    if (std.mem.eql(u8, upper, "US-ASCII") or
+        std.mem.eql(u8, upper, "ASCII"))
+    {
+        return .us_ascii;
+    }
+    if (std.mem.eql(u8, upper, "WINDOWS-1251") or
+        std.mem.eql(u8, upper, "CP1251"))
+    {
+        return .windows_1251;
+    }
+    if (std.mem.eql(u8, upper, "WINDOWS-1252") or
+        std.mem.eql(u8, upper, "CP1252"))
+    {
+        return .windows_1252;
+    }
+    return null;
+}
+
+/// Decode `source` using an explicitly named encoding. A matching byte order
+/// mark is removed.
+pub fn decodeWithEncodingAlloc(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    encoding: DecodeEncoding,
+    max_output_bytes: usize,
+) ![]u8 {
+    switch (encoding) {
+        .utf8 => {
+            const payload = stripBom(source, &.{ 0xEF, 0xBB, 0xBF });
+            return decodeUtf8Alloc(allocator, payload, max_output_bytes);
+        },
+        .utf16 => {
+            if (stripBomStrict(source, &.{ 0xFF, 0xFE })) |payload| {
+                return decodeUtf16Alloc(
+                    allocator,
+                    payload,
+                    .little,
+                    max_output_bytes,
+                );
+            }
+            const payload = stripBomStrict(source, &.{ 0xFE, 0xFF }) orelse
+                return error.InvalidXmlEncoding;
+            return decodeUtf16Alloc(
+                allocator,
+                payload,
+                .big,
+                max_output_bytes,
+            );
+        },
+        .utf16_le => return decodeUtf16Alloc(
+            allocator,
+            stripBom(source, &.{ 0xFF, 0xFE }),
+            .little,
+            max_output_bytes,
+        ),
+        .utf16_be => return decodeUtf16Alloc(
+            allocator,
+            stripBom(source, &.{ 0xFE, 0xFF }),
+            .big,
+            max_output_bytes,
+        ),
+        .utf32 => {
+            if (stripBomStrict(source, &.{ 0xFF, 0xFE, 0x00, 0x00 })) |payload| {
+                return decodeUtf32Alloc(
+                    allocator,
+                    payload,
+                    .little,
+                    max_output_bytes,
+                );
+            }
+            const payload = stripBomStrict(source, &.{ 0x00, 0x00, 0xFE, 0xFF }) orelse
+                return error.InvalidXmlEncoding;
+            return decodeUtf32Alloc(
+                allocator,
+                payload,
+                .big,
+                max_output_bytes,
+            );
+        },
+        .utf32_le => return decodeUtf32Alloc(
+            allocator,
+            stripBom(source, &.{ 0xFF, 0xFE, 0x00, 0x00 }),
+            .little,
+            max_output_bytes,
+        ),
+        .utf32_be => return decodeUtf32Alloc(
+            allocator,
+            stripBom(source, &.{ 0x00, 0x00, 0xFE, 0xFF }),
+            .big,
+            max_output_bytes,
+        ),
+        .iso_8859_1 => return decodeLatin1Alloc(
+            allocator,
+            source,
+            max_output_bytes,
+        ),
+        .us_ascii => {
+            if (source.len > max_output_bytes) {
+                return error.SvgResourceInputTooLarge;
+            }
+            for (source) |byte| {
+                if (byte > 0x7F) return error.InvalidXmlEncoding;
+            }
+            return allocator.dupe(u8, source);
+        },
+        .windows_1251 => return decodeWindows1251Alloc(
+            allocator,
+            source,
+            max_output_bytes,
+        ),
+        .windows_1252 => return decodeWindows1252Alloc(
+            allocator,
+            source,
+            max_output_bytes,
+        ),
+    }
+}
+
+fn stripBom(source: []const u8, bom: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, source, bom)) return source[bom.len..];
+    return source;
+}
+
+fn stripBomStrict(source: []const u8, bom: []const u8) ?[]const u8 {
+    if (std.mem.startsWith(u8, source, bom)) return source[bom.len..];
+    return null;
+}

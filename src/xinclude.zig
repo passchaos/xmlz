@@ -210,6 +210,29 @@ const Processor = struct {
         }
     }
 
+    /// Decode a `parse="text"` resource. The `encoding` attribute selects the
+    /// byte encoding; UTF-8 is the default.
+    fn decodeText(
+        self: *Processor,
+        source: *const dom.Document,
+        id: dom.NodeId,
+        data: []const u8,
+    ) Error![]u8 {
+        const target = if (source.attribute(id, "encoding")) |name|
+            encoding.decodeEncodingName(name) orelse return error.ParseFailed
+        else
+            encoding.DecodeEncoding.utf8;
+        return encoding.decodeWithEncodingAlloc(
+            self.allocator,
+            data,
+            target,
+            64 * 1024 * 1024,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.ParseFailed,
+        };
+    }
+
     /// Resolve an element's `xml:base` against the base inherited from its
     /// output parent. Returns null when the element has no `xml:base`.
     fn elementBase(
@@ -257,7 +280,12 @@ const Processor = struct {
         }
 
         if (std.mem.eql(u8, mode, "text")) {
-            const new_id = self.builder.createText(resource.data) catch |err|
+            const decoded = self.decodeText(source, id, resource.data) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return self.useFallback(source, base, id, parent, err),
+            };
+            defer self.allocator.free(decoded);
+            const new_id = self.builder.createText(decoded) catch |err|
                 return mapBuilderError(err);
             self.builder.appendChild(parent, new_id) catch |err|
                 return mapBuilderError(err);
@@ -500,6 +528,65 @@ test "XInclude parse=text inserts character data" {
     const text = try document.textContentAlloc(testing.allocator, document.root());
     defer testing.allocator.free(text);
     try testing.expectEqualStrings("hello", text);
+}
+
+test "XInclude parse=text decodes the encoding attribute" {
+    const latin1_text =
+        \\<root xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="t.txt" parse="text" encoding="ISO-8859-1"/></root>
+    ;
+    const latin1_resources = [_]TestResource{
+        .{ .href = "t.txt", .uri = "t.txt", .data = "caf\xE9" },
+    };
+    var latin1_resolver: MapResolver = .{ .resources = &latin1_resources };
+    var latin1_source = try parseSource(latin1_text);
+    defer latin1_source.deinit();
+    var latin1_document = try process(testing.allocator, &latin1_source, .{
+        .resolver = .{ .context = &latin1_resolver, .load = loadResource },
+    });
+    defer latin1_document.deinit();
+    const latin1_value = try latin1_document.textContentAlloc(
+        testing.allocator,
+        latin1_document.root(),
+    );
+    defer testing.allocator.free(latin1_value);
+    try testing.expectEqualStrings("caf\xC3\xA9", latin1_value);
+
+    const utf16_text =
+        \\<root xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="u.txt" parse="text" encoding="UTF-16"/></root>
+    ;
+    const utf16_resources = [_]TestResource{
+        .{ .href = "u.txt", .uri = "u.txt", .data = "\xFF\xFEh\x00i\x00" },
+    };
+    var utf16_resolver: MapResolver = .{ .resources = &utf16_resources };
+    var utf16_source = try parseSource(utf16_text);
+    defer utf16_source.deinit();
+    var utf16_document = try process(testing.allocator, &utf16_source, .{
+        .resolver = .{ .context = &utf16_resolver, .load = loadResource },
+    });
+    defer utf16_document.deinit();
+    const utf16_value = try utf16_document.textContentAlloc(
+        testing.allocator,
+        utf16_document.root(),
+    );
+    defer testing.allocator.free(utf16_value);
+    try testing.expectEqualStrings("hi", utf16_value);
+}
+
+test "XInclude parse=text falls back for bad encodings" {
+    const source_text =
+        \\<root xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="t.txt" parse="text" encoding="x-unknown"><xi:fallback><fb/></xi:fallback></xi:include></root>
+    ;
+    const resources = [_]TestResource{
+        .{ .href = "t.txt", .uri = "t.txt", .data = "data" },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
+    var source = try parseSource(source_text);
+    defer source.deinit();
+    var document = try process(testing.allocator, &source, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+    });
+    defer document.deinit();
+    try testing.expect(document.findChild(document.root(), "fb") != null);
 }
 
 test "XInclude handles nested includes and circularity" {

@@ -27,11 +27,12 @@ resolved URI and bytes, or null when the resource is unavailable.
 - Circular-inclusion detection and configurable depth/inclusion limits.
 - Namespace declarations from the included document's root are inherited by its
   first-level children.
+- `parse="text"` honors the XInclude `encoding` attribute for UTF-8,
+  UTF-16/LE/BE, UTF-32/LE/BE, ISO-8859-1, US-ASCII, Windows-1251, and
+  Windows-1252; UTF-8 is the default. Unsupported encodings trigger fallback.
 
 ## Limitations
 
 - XPointer is rejected (`error.UnsupportedXPointer`).
-- `parse="text"` treats the resource as UTF-8 text; the XInclude `encoding`
-  attribute is not consulted.
 - The included XML is parsed with the standard parser (well-formedness and
   namespace checking), without external entity resolution.
