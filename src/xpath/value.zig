@@ -254,6 +254,10 @@ pub const Context = struct {
     /// default namespace for unprefixed name tests.
     namespaces: []const namespace.Binding = &.{},
     variables: []const Variable = &.{},
+    /// Index of the first entry in `variables` visible to the current
+    /// scope. Caller locals below it are hidden while a called template or
+    /// function runs.
+    variable_floor: usize = 0,
 
     pub fn resolvePrefix(self: *const Context, prefix: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, prefix, "xml")) return namespace.xml_uri;
@@ -266,7 +270,7 @@ pub const Context = struct {
     pub fn variable(self: *const Context, name: []const u8) ?Value {
         // Later bindings shadow earlier ones, matching XSLT variable scope.
         var index = self.variables.len;
-        while (index > 0) {
+        while (index > self.variable_floor) {
             index -= 1;
             const entry = self.variables[index];
             if (std.mem.eql(u8, entry.name, name)) return entry.value;
@@ -301,6 +305,7 @@ pub const Context = struct {
             .size = size,
             .namespaces = self.namespaces,
             .variables = self.variables,
+            .variable_floor = self.variable_floor,
         };
     }
 };

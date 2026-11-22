@@ -1745,7 +1745,7 @@ pub const Parser = struct {
                 continue;
             }
             if (self.startsWith("<!")) {
-                try self.scanMarkupDeclaration();
+                try self.scanMarkupDeclaration(declaration_end);
                 continue;
             }
             return self.fail(error.InvalidDoctype, self.pos);
@@ -2202,9 +2202,8 @@ pub const Parser = struct {
         return expanded.toOwnedSlice(allocator);
     }
 
-    fn scanEntityDeclaration(self: *Parser) Error!void {
+    fn scanEntityDeclaration(self: *Parser, end: usize) Error!void {
         const start = self.pos;
-        const end = try self.declarationEnd();
         try self.parseEntityDeclarationSlice(self.input[start .. end + 1], start);
         self.pos = end + 1;
     }
@@ -2340,11 +2339,17 @@ pub const Parser = struct {
         }
     }
 
-    fn scanMarkupDeclaration(self: *Parser) Error!void {
-        if (self.startsWith("<!ELEMENT")) return self.scanElementDeclaration();
-        if (self.startsWith("<!ATTLIST")) return self.scanAttlistDeclaration();
-        if (self.startsWith("<!NOTATION")) return self.scanNotationDeclaration();
-        if (self.startsWith("<!ENTITY")) return self.scanEntityDeclaration();
+    fn scanMarkupDeclaration(self: *Parser, end: usize) Error!void {
+        if (self.startsWith("<!ELEMENT")) {
+            return self.scanElementDeclaration(end);
+        }
+        if (self.startsWith("<!ATTLIST")) {
+            return self.scanAttlistDeclaration(end);
+        }
+        if (self.startsWith("<!NOTATION")) {
+            return self.scanNotationDeclaration(end);
+        }
+        if (self.startsWith("<!ENTITY")) return self.scanEntityDeclaration(end);
         return self.fail(error.InvalidDoctype, self.pos);
     }
 
@@ -2353,8 +2358,7 @@ pub const Parser = struct {
             self.fail(error.UnexpectedEndOfInput, self.input.len);
     }
 
-    fn scanElementDeclaration(self: *Parser) Error!void {
-        const end = try self.declarationEnd();
+    fn scanElementDeclaration(self: *Parser, end: usize) Error!void {
         var scanner = DtdScanner.init(self, self.pos, end);
         if (!scanner.eat("<!ELEMENT")) return scanner.fail(error.InvalidDoctype);
         try scanner.requireWhitespace();
@@ -2372,8 +2376,7 @@ pub const Parser = struct {
         });
     }
 
-    fn scanAttlistDeclaration(self: *Parser) Error!void {
-        const end = try self.declarationEnd();
+    fn scanAttlistDeclaration(self: *Parser, end: usize) Error!void {
         var scanner = DtdScanner.init(self, self.pos, end);
         if (!scanner.eat("<!ATTLIST")) return scanner.fail(error.InvalidDoctype);
         try scanner.requireWhitespace();
@@ -2413,8 +2416,7 @@ pub const Parser = struct {
         self.pos = end + 1;
     }
 
-    fn scanNotationDeclaration(self: *Parser) Error!void {
-        const end = try self.declarationEnd();
+    fn scanNotationDeclaration(self: *Parser, end: usize) Error!void {
         var scanner = DtdScanner.init(self, self.pos, end);
         if (!scanner.eat("<!NOTATION")) return scanner.fail(error.InvalidDoctype);
         try scanner.requireWhitespace();

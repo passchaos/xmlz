@@ -278,6 +278,7 @@ pub fn apply(
             bool,
         ).init(arena_allocator),
     };
+    runtime.variables = try arena_allocator.alloc(xpath.Variable, max_variables);
     try runtime.buildSpaceRuleIndex();
     try runtime.prepareSource();
     runtime.source_has_namespaces = documentHasNamespaces(runtime.source);
@@ -306,6 +307,10 @@ pub fn apply(
         .messages = messages,
     };
 }
+
+/// Maximum simultaneously live XSLT variable bindings. Recursion depth is
+/// bounded by the stylesheet; exceeding this reports an invalid stylesheet.
+const max_variables = 16384;
 
 const NodeKey = struct {
     tag: u8,
@@ -682,10 +687,14 @@ const Runtime = struct {
     source: *const dom.Document,
     builder: *dom_builder.Builder,
     parent: dom.NodeId = 0,
-    variables: std.ArrayList(xpath.Variable) = .empty,
-    /// Number of leading entries in `variables` that are global bindings.
-    /// Templates only see these plus their own parameters and locals.
-    global_count: usize = 0,
+    /// Fixed-capacity variable stack. Storage never moves, so evaluation
+    /// contexts keep valid slices while nested templates append bindings.
+    variables: []xpath.Variable = &.{},
+    variable_len: usize = 0,
+    /// Index of the first variable visible to the current template. Called
+    /// templates and functions hide the caller's locals by raising the floor
+    /// instead of copying them out.
+    variable_floor: usize = 0,
     /// Value produced by the most recent EXSLT `func:result`.
     function_result: ?xpath.Value = null,
     /// Lazy global variable evaluation state.
@@ -1155,7 +1164,8 @@ const Runtime = struct {
                 }
             },
             .element => {
-                const new_id = builder.createElementNs(
+                // Source names were validated when the document was parsed.
+                const new_id = builder.createElementNsUnchecked(
                     prefixOf(node),
                     node.local,
                     node.ns,
@@ -1393,7 +1403,8 @@ const Runtime = struct {
             .document = self.source,
             .node = node,
             .namespaces = key_def.namespaces,
-            .variables = self.variables.items,
+            .variables = self.variables[0..self.variable_len],
+            .variable_floor = self.variable_floor,
             .document_range = self.documentRange(node),
             .key_resolver = if (self.keys_ready) .{
                 .context = self,
@@ -1531,7 +1542,8 @@ const Runtime = struct {
             .document = self.source,
             .node = node,
             .namespaces = self.template_states[index].template.namespaces,
-            .variables = self.variables.items,
+            .variables = self.variables[0..self.variable_len],
+            .variable_floor = self.variable_floor,
             .document_range = self.documentRange(node),
             .key_resolver = if (self.keys_ready) .{
                 .context = self,
@@ -1657,6 +1669,14 @@ const Runtime = struct {
         };
     }
 
+    fn pushVariable(self: *Runtime, variable: xpath.Variable) Error!void {
+        if (self.variable_len == self.variables.len) {
+            return error.InvalidStylesheet;
+        }
+        self.variables[self.variable_len] = variable;
+        self.variable_len += 1;
+    }
+
     fn evalOwned(
         self: *Runtime,
         expression: compile.CompiledExpr,
@@ -1671,7 +1691,8 @@ const Runtime = struct {
             .position = position,
             .size = size,
             .namespaces = expression.namespaces,
-            .variables = self.variables.items,
+            .variables = self.variables[0..self.variable_len],
+            .variable_floor = self.variable_floor,
             .document_range = self.documentRange(node),
             .key_resolver = if (self.keys_ready) .{
                 .context = self,
@@ -1996,17 +2017,10 @@ const Runtime = struct {
         self.current_template = template;
         defer self.current_template = saved_template;
         // A called or applied template sees global variables and its own
-        // parameters, never the caller's local bindings. Hide the caller's
-        // locals while the template runs, then restore them.
-        const saved_variables = self.variables.items.len;
-        var hidden: []xpath.Variable = &.{};
-        if (saved_variables > self.global_count) {
-            hidden = try self.allocator.dupe(
-                xpath.Variable,
-                self.variables.items[self.global_count..saved_variables],
-            );
-            self.variables.shrinkRetainingCapacity(self.global_count);
-        }
+        // parameters, never the caller's local bindings.
+        const saved_variables = self.variable_len;
+        const saved_floor = self.variable_floor;
+        self.variable_floor = saved_variables;
         const result = self.runTemplateBody(
             template,
             node,
@@ -2014,11 +2028,8 @@ const Runtime = struct {
             size,
             params,
         );
-        self.variables.shrinkRetainingCapacity(self.global_count);
-        self.variables.appendSlice(self.allocator, hidden) catch |restore_err| {
-            result catch |body_err| return body_err;
-            return restore_err;
-        };
+        self.variable_floor = saved_floor;
+        self.variable_len = saved_variables;
         return result;
     }
 
@@ -2044,7 +2055,7 @@ const Runtime = struct {
                 position,
                 size,
             );
-            try self.variables.append(self.allocator, .{
+            try self.pushVariable(.{
                 .name = param.name,
                 .value = value,
             });
@@ -2087,8 +2098,8 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!void {
-        const mark = self.variables.items.len;
-        defer self.variables.shrinkRetainingCapacity(mark);
+        const mark = self.variable_len;
+        defer self.variable_len = mark;
         for (body) |*instruction| {
             try self.executeInstruction(instruction, node, position, size);
         }
@@ -2196,7 +2207,7 @@ const Runtime = struct {
                     position,
                     size,
                 );
-                try self.variables.append(self.allocator, .{
+                try self.pushVariable(.{
                     .name = variable.name,
                     .value = value,
                 });
@@ -2655,7 +2666,8 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!void {
-        const id = self.builder.createElementNs(
+        // Literal names were validated when the stylesheet was parsed.
+        const id = self.builder.createElementNsUnchecked(
             element.prefix,
             element.local,
             element.ns,
@@ -3329,7 +3341,8 @@ const Runtime = struct {
             .document = self.source,
             .node = .{ .node = 0 },
             .namespaces = selector.namespaces,
-            .variables = self.variables.items,
+            .variables = self.variables[0..self.variable_len],
+            .variable_floor = self.variable_floor,
             .document_range = self.documentRange(.{ .node = 0 }),
             .key_resolver = if (self.keys_ready) .{
                 .context = self,
@@ -5603,15 +5616,9 @@ fn callExtensionFunction(
 
     // Function bodies see globals and their own parameters, never the
     // caller's local bindings.
-    const saved_variables = self.variables.items.len;
-    var hidden: []xpath.Variable = &.{};
-    if (saved_variables > self.global_count) {
-        hidden = try self.allocator.dupe(
-            xpath.Variable,
-            self.variables.items[self.global_count..saved_variables],
-        );
-        self.variables.shrinkRetainingCapacity(self.global_count);
-    }
+    const saved_variables = self.variable_len;
+    const saved_floor = self.variable_floor;
+    self.variable_floor = saved_variables;
     const saved_result = self.function_result;
     self.function_result = null;
     const value = runExtensionFunction(
@@ -5621,13 +5628,13 @@ fn callExtensionFunction(
         xpath_context,
     ) catch |err| {
         self.function_result = saved_result;
-        self.variables.shrinkRetainingCapacity(self.global_count);
-        self.variables.appendSlice(self.allocator, hidden) catch {};
+        self.variable_floor = saved_floor;
+        self.variable_len = saved_variables;
         return err;
     };
     self.function_result = saved_result;
-    self.variables.shrinkRetainingCapacity(self.global_count);
-    try self.variables.appendSlice(self.allocator, hidden);
+    self.variable_floor = saved_floor;
+    self.variable_len = saved_variables;
     return value;
 }
 
@@ -5651,7 +5658,7 @@ fn runExtensionFunction(
                 position,
                 size,
             );
-        try self.variables.append(self.allocator, .{
+        try self.pushVariable(.{
             .name = param.name,
             .value = value,
         });
