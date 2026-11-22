@@ -35,9 +35,9 @@ var schema = try xmlz.rng.parseWithOptions(allocator, &schema_document, .{
 
 ## Supported
 
-- `grammar`, `start`, `define` (including `combine="choice"` and
-  `combine="interleave"`), `div`, `include`, `externalRef`, `ref`, and
-  `parentRef`.
+- `grammar` (including nested grammars used as patterns), `start`, `define`
+  (including `combine="choice"` and `combine="interleave"`), `div`, `include`,
+  `externalRef`, `ref`, and `parentRef` with scoped define lookup.
 - `element` and `attribute` patterns with `name` shorthands, `name`,
   `anyName`, `nsName`, `choice`, and `except` name classes.
 - `group`, `interleave`, `choice`, `optional`, `zeroOrMore`, `oneOrMore`,
@@ -75,5 +75,5 @@ classes, namespaces, data/value/list patterns, facets, includes, define
 overrides, and external references. Expected output:
 
 ```text
-46/46 RELAX NG differential checks passed
+64/64 RELAX NG differential checks passed
 ```

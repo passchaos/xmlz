@@ -223,3 +223,23 @@ test "RELAX NG validates namespaces and anyName except" {
     try expectValid(schema_source, "<root><a/><ns:b xmlns:ns='urn:x'/></root>");
     try expectInvalid(schema_source, "<root><skip/></root>");
 }
+
+test "RELAX NG nested grammars and parentRef" {
+    const schema_source =
+        \\<grammar xmlns="http://relaxng.org/ns/structure/1.0">
+        \\  <start><ref name="chain"/></start>
+        \\  <define name="chain">
+        \\    <grammar>
+        \\      <start>
+        \\        <element name="a">
+        \\          <optional><parentRef name="chain"/></optional>
+        \\        </element>
+        \\      </start>
+        \\    </grammar>
+        \\  </define>
+        \\</grammar>
+    ;
+    try expectValid(schema_source, "<a/>");
+    try expectValid(schema_source, "<a><a><a/></a></a>");
+    try expectInvalid(schema_source, "<a><b/></a>");
+}

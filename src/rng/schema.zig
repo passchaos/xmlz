@@ -152,13 +152,17 @@ pub fn parseWithOptions(
 ) Error!Schema {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
+    const root_scope = try arena.allocator().create(Scope);
+    root_scope.* = .{
+        .map = std.StringHashMap(*Define).init(arena.allocator()),
+    };
     var parser: Parser = .{
         .arena = arena.allocator(),
         .backing_allocator = allocator,
         .document = document,
         .options = options,
         .base = options.base,
-        .define_map = std.StringHashMap(*Define).init(arena.allocator()),
+        .scope = root_scope,
     };
     errdefer parser.deinitDocuments();
     try parser.parseRoot();
@@ -171,6 +175,11 @@ pub fn parseWithOptions(
     };
 }
 
+const Scope = struct {
+    map: std.StringHashMap(*Define),
+    parent: ?*Scope = null,
+};
+
 const Parser = struct {
     arena: std.mem.Allocator,
     backing_allocator: std.mem.Allocator,
@@ -180,7 +189,8 @@ const Parser = struct {
     documents: std.ArrayList(*dom.Document) = .empty,
     regexes: std.ArrayList(*regex.Regex) = .empty,
     defines: std.ArrayList(*Define) = .empty,
-    define_map: std.StringHashMap(*Define),
+    scope: *Scope,
+    grammar_depth: usize = 0,
     start_patterns: std.ArrayList(*const Pattern) = .empty,
     start: ?*const Pattern = null,
     parents: std.ArrayList(*const Define) = .empty,
@@ -259,7 +269,7 @@ const Parser = struct {
             false
         else
             return error.InvalidPattern;
-        const existing = self.define_map.get(name);
+        const existing = self.findDefine(name);
         if (override and existing != null) {
             // An include override replaces the included definition. The
             // replacement gets its own Define so self-references inside the
@@ -272,7 +282,7 @@ const Parser = struct {
             };
             _ = self.parents.pop();
             replacement.pattern = body;
-            try self.define_map.put(name, replacement);
+            try self.scope.map.put(name, replacement);
             return;
         }
         const define = existing orelse try self.createDefine(name);
@@ -296,7 +306,7 @@ const Parser = struct {
         const define = try self.arena.create(Define);
         define.* = .{ .name = try self.arena.dupe(u8, name) };
         try self.defines.append(self.arena, define);
-        try self.define_map.put(define.name, define);
+        try self.scope.map.put(define.name, define);
         return define;
     }
 
@@ -497,19 +507,64 @@ const Parser = struct {
         if (std.mem.eql(u8, local, "ref")) {
             const name = self.document.attribute(id, "name") orelse
                 return error.InvalidPattern;
-            const define = self.define_map.get(name) orelse
+            const define = self.findDefine(name) orelse
                 try self.createDefine(name);
             return self.make(.{ .ref = define });
         }
         if (std.mem.eql(u8, local, "parentRef")) {
-            if (self.parents.items.len == 0) return error.InvalidPattern;
-            const parent = self.parents.items[self.parents.items.len - 1];
-            return self.make(.{ .parent_ref = parent });
+            if (self.grammar_depth == 0) return error.InvalidPattern;
+            const name = self.document.attribute(id, "name") orelse
+                return error.InvalidPattern;
+            const define = self.findDefineInParent(name) orelse
+                return error.InvalidPattern;
+            return self.make(.{ .parent_ref = define });
         }
         if (std.mem.eql(u8, local, "externalRef")) {
             return self.parseExternalRef(id);
         }
+        if (std.mem.eql(u8, local, "grammar")) {
+            return self.parseNestedGrammar(id);
+        }
         return error.InvalidPattern;
+    }
+
+    fn findDefineInParent(self: *Parser, name: []const u8) ?*Define {
+        var scope = self.scope.parent;
+        while (scope) |current| {
+            if (current.map.get(name)) |define| return define;
+            scope = current.parent;
+        }
+        return null;
+    }
+
+    fn findDefine(self: *Parser, name: []const u8) ?*Define {
+        var scope: ?*Scope = self.scope;
+        while (scope) |current| {
+            if (current.map.get(name)) |define| return define;
+            scope = current.parent;
+        }
+        return null;
+    }
+
+    /// Parse a grammar used as a pattern. Defines in the nested grammar shadow
+    /// outer defines, and `parentRef` refers to the enclosing define.
+    fn parseNestedGrammar(self: *Parser, id: dom.NodeId) Error!*const Pattern {
+        const outer_scope = self.scope;
+        const scope = try self.arena.create(Scope);
+        scope.* = .{
+            .map = std.StringHashMap(*Define).init(self.arena),
+            .parent = outer_scope,
+        };
+        self.scope = scope;
+        defer self.scope = outer_scope;
+        const outer_starts = self.start_patterns;
+        self.start_patterns = .empty;
+        defer self.start_patterns = outer_starts;
+        self.grammar_depth += 1;
+        defer self.grammar_depth -= 1;
+        try self.parseGrammarChildren(id);
+        if (self.start_patterns.items.len == 0) return error.InvalidPattern;
+        return self.combineStart();
     }
 
     fn parseExternalRef(self: *Parser, id: dom.NodeId) Error!*const Pattern {

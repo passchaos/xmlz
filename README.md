@@ -72,7 +72,8 @@ then exposes them through a pull parser and reusable lexical primitives.
   checks instances against element/attribute name classes, group, choice,
   interleave, optional, repetition, mixed content, text, empty, data/value
   (XSD datatype libraries and facets), lists, recursive defines, includes,
-  and external references, with 46/46 differential checks against libxml2.
+  nested grammars, and external references, with 64/64 differential checks
+  against libxml2.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.

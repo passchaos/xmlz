@@ -178,6 +178,74 @@ CASES = [
             "<root>x</root>",
         ],
     ),
+    (
+        "choice-attribute-element",
+        f"""<element xmlns="{RNG}" name="root">
+          <choice>
+            <attribute name="a"><text/></attribute>
+            <element name="x"><empty/></element>
+          </choice>
+        </element>""",
+        [
+            "<root a='1'/>",
+            "<root><x/></root>",
+            "<root a='1'><x/></root>",
+            "<root/>",
+        ],
+    ),
+    (
+        "interleave-attribute-elements",
+        f"""<element xmlns="{RNG}" name="root">
+          <interleave>
+            <attribute name="a"><text/></attribute>
+            <group>
+              <element name="x"><empty/></element>
+              <element name="y"><empty/></element>
+            </group>
+          </interleave>
+        </element>""",
+        [
+            "<root a='1'><x/><y/></root>",
+            "<root><x/><y/></root>",
+            "<root a='1'><y/><x/></root>",
+        ],
+    ),
+    (
+        "value-integer-lexical",
+        f"""<element xmlns="{RNG}"
+          datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"
+          name="root">
+          <value type="integer">1</value>
+        </element>""",
+        [
+            "<root>1</root>",
+            "<root>01</root>",
+            "<root> 1 </root>",
+            "<root>2</root>",
+        ],
+    ),
+    (
+        "parent-ref",
+        f"""<grammar xmlns="{RNG}">
+          <start><ref name="chain"/></start>
+          <define name="chain">
+            <grammar>
+              <start>
+                <element name="a">
+                  <optional><parentRef name="chain"/></optional>
+                </element>
+              </start>
+            </grammar>
+          </define>
+        </grammar>""",
+        [
+            "<a/>",
+            "<a><a/></a>",
+            "<a><a><a/></a></a>",
+            "<b/>",
+            "<a><b/></a>",
+        ],
+    ),
 ]
 
 BUNDLES = [
@@ -240,6 +308,25 @@ BUNDLES = [
         [
             "<root><item>x</item></root>",
             "<root><other>x</other></root>",
+        ],
+    ),
+    (
+        "include-start-override",
+        {
+            "main.rng": f"""<grammar xmlns="{RNG}">
+              <include href="base.rng">
+                <start>
+                  <element name="local"><empty/></element>
+                </start>
+              </include>
+            </grammar>""",
+            "base.rng": f"""<grammar xmlns="{RNG}">
+              <start><element name="base"><empty/></element></start>
+            </grammar>""",
+        },
+        [
+            "<local/>",
+            "<base/>",
         ],
     ),
 ]
