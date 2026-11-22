@@ -42,4 +42,26 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run xmlz unit tests");
     test_step.dependOn(&run_tests.step);
+
+    const conformance = b.addExecutable(.{
+        .name = "conformance",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    conformance.root_module.addImport("xmlz", mod);
+    const run_conformance = b.addRunArtifact(conformance);
+    run_conformance.addArg("testdata/xmlconf");
+    if (b.args) |args| run_conformance.addArgs(args);
+    const conformance_step = b.step(
+        "conformance",
+        "Run the W3C XML conformance suite (testdata/xmlconf)",
+    );
+    conformance_step.dependOn(&run_conformance.step);
+
+    const check_step = b.step("check", "Run unit tests and the conformance suite");
+    check_step.dependOn(test_step);
+    check_step.dependOn(conformance_step);
 }

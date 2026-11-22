@@ -179,11 +179,24 @@ fn declarationEncoding(source: []const u8) !?[]const u8 {
         const value = declaration[value_start..index];
         index += 1;
         if (std.mem.eql(u8, name, "encoding")) {
-            if (value.len == 0) return error.InvalidXmlEncoding;
+            if (!validEncodingName(value)) return error.InvalidXmlEncoding;
             return value;
         }
     }
     return null;
+}
+
+fn validEncodingName(value: []const u8) bool {
+    if (value.len == 0) return false;
+    if (!std.ascii.isAlphabetic(value[0])) return false;
+    for (value[1..]) |byte| {
+        if (!std.ascii.isAlphanumeric(byte) and
+            byte != '.' and byte != '_' and byte != '-')
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 fn isDeclarationNameByte(byte: u8) bool {

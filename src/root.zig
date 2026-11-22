@@ -4,6 +4,9 @@ pub const encoding = @import("encoding.zig");
 pub const internal_entities = @import("internal_entities.zig");
 pub const markup = @import("markup.zig");
 pub const character_data = @import("character_data.zig");
+pub const chars = @import("chars.zig");
+pub const entities = @import("entities.zig");
+pub const parser = @import("parser.zig");
 
 const findTagEnd = markup.findTagEnd;
 const findDeclarationEnd = markup.findDeclarationEnd;
@@ -15,6 +18,9 @@ test {
     _ = internal_entities;
     _ = markup;
     _ = character_data;
+    _ = chars;
+    _ = entities;
+    _ = parser;
 }
 
 pub const XmlTag = struct {
