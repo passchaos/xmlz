@@ -187,6 +187,36 @@ const Evaluator = struct {
                 }
             }
         }
+        // `//name` collects children matching a name test from every
+        // descendant. A single preorder traversal is much cheaper than
+        // materializing every descendant and then testing their children.
+        if (path.absolute and path.start == null and
+            path.steps.len == 2 and
+            path.steps[0].axis == .descendant_or_self and
+            path.steps[0].predicates.len == 0 and
+            path.steps[0].node_test == .node and
+            path.steps[1].axis == .child and
+            path.steps[1].predicates.len == 0)
+        {
+            const step = path.steps[1];
+            const prefix_uri = try resolveNameTestPrefix(
+                context,
+                step.node_test,
+            );
+            var out: std.ArrayList(value.NodeRef) = .empty;
+            try self.appendDescendantMatches(
+                context,
+                documentRootOf(context, context.node),
+                step,
+                prefix_uri,
+                &out,
+            );
+            if (out.items.len == 0) return .{ .node_set = &.{} };
+            const owned: []const value.NodeRef = try out.toOwnedSlice(
+                self.allocator,
+            );
+            return .{ .node_set = owned };
+        }
         var initial: [1]value.NodeRef = undefined;
         var current: []const value.NodeRef = undefined;
         if (path.start) |start_expression| {
@@ -514,6 +544,46 @@ const Evaluator = struct {
                 .uri = binding.uri,
                 .order = @intCast(index),
             } });
+        }
+    }
+
+    fn appendDescendantMatches(
+        self: *Evaluator,
+        context: *const value.Context,
+        node: value.NodeRef,
+        step: ast.Step,
+        prefix_uri: ?[]const u8,
+        out: *std.ArrayList(value.NodeRef),
+    ) Error!void {
+        const id = switch (node) {
+            .node => |node_id| node_id,
+            else => return,
+        };
+        const node_value = context.document.node(id);
+        if (node_value.kind != .document and node_value.kind != .element) {
+            return;
+        }
+        var child = node_value.first_child;
+        while (child != dom.null_node) : (child =
+            context.document.node(child).next_sibling)
+        {
+            const candidate: value.NodeRef = .{ .node = child };
+            if (try self.matchesTest(
+                context,
+                candidate,
+                step.node_test,
+                .child,
+                prefix_uri,
+            )) {
+                try out.append(self.allocator, candidate);
+            }
+            try self.appendDescendantMatches(
+                context,
+                candidate,
+                step,
+                prefix_uri,
+                out,
+            );
         }
     }
 

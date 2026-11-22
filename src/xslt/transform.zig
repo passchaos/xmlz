@@ -277,6 +277,10 @@ pub fn apply(
             *const xpath_ast.Expr,
             bool,
         ).init(arena_allocator),
+        .selector_matchers = std.AutoHashMap(
+            *const xpath_ast.Expr,
+            ?PatternMatcher,
+        ).init(arena_allocator),
     };
     runtime.variables = try arena_allocator.alloc(xpath.Variable, max_variables);
     try runtime.buildSpaceRuleIndex();
@@ -765,7 +769,113 @@ const NodeIdMap = std.HashMap(NodeIdKey, usize, NodeIdKeyContext, 80);
 const SelectorEntry = struct {
     nodes: []const xpath.NodeRef,
     map: std.AutoHashMap(NodeKey, void),
+    /// Membership for plain node references, which is what `xsl:number`
+    /// count/from patterns produce. Bit tests avoid hashing every candidate.
+    bits: std.DynamicBitSetUnmanaged = .{},
 };
+
+const NamePositions = struct {
+    map: std.StringHashMapUnmanaged(std.ArrayListUnmanaged(u32)) = .empty,
+};
+
+/// Whether a selector entry contains only plain node references.
+fn entryAllNodes(entry: *const SelectorEntry) bool {
+    return entry.map.count() == 0;
+}
+
+fn lowerBoundNodeId(nodes: []const xpath.NodeRef, id: u32) usize {
+    var lo: usize = 0;
+    var hi: usize = nodes.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (nodes[mid].node < id) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+fn upperBoundNodeId(nodes: []const xpath.NodeRef, id: u32) usize {
+    var lo: usize = 0;
+    var hi: usize = nodes.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (nodes[mid].node <= id) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+fn lowerBoundU32(ids: []const u32, id: u32) usize {
+    var lo: usize = 0;
+    var hi: usize = ids.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (ids[mid] < id) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+fn upperBoundU32(ids: []const u32, id: u32) usize {
+    var lo: usize = 0;
+    var hi: usize = ids.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (ids[mid] <= id) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+/// Build the key used by `NamePositions` for one node, or null when the
+/// expanded name does not fit the stack buffer.
+fn nodeNameKey(node: *const dom.Node, buffer: []u8) ?[]const u8 {
+    var length: usize = 0;
+    switch (node.kind) {
+        .document => {
+            buffer[0] = 'd';
+            length = 1;
+        },
+        .element => {
+            buffer[0] = 'e';
+            const total = 1 + node.ns.len + 1 + node.local.len;
+            if (total > buffer.len) return null;
+            @memcpy(buffer[1..][0..node.ns.len], node.ns);
+            length = 1 + node.ns.len;
+            buffer[length] = 0;
+            length += 1;
+            @memcpy(buffer[length..][0..node.local.len], node.local);
+            length += node.local.len;
+        },
+        .text => {
+            buffer[0] = 't';
+            length = 1;
+        },
+        .comment => {
+            buffer[0] = 'c';
+            length = 1;
+        },
+        .processing_instruction => {
+            buffer[0] = 'p';
+            if (1 + node.name.len > buffer.len) return null;
+            @memcpy(buffer[1..][0..node.name.len], node.name);
+            length = 1 + node.name.len;
+        },
+    }
+    return buffer[0..length];
+}
 
 const SortEntry = struct {
     node: xpath.NodeRef,
@@ -809,6 +919,16 @@ const Runtime = struct {
     global_index: std.StringHashMapUnmanaged(usize) = .empty,
     /// Attribute sets by expanded name, in declaration order.
     attribute_set_index: NameListMap = .empty,
+    /// Per-document node ids grouped by kind and name for `xsl:number`.
+    name_positions: std.AutoHashMapUnmanaged(usize, NamePositions) = .empty,
+    /// Pattern matchers for `xsl:number` count/from selectors that do not
+    /// need a document-wide node set.
+    selector_matchers: std.AutoHashMap(
+        *const xpath_ast.Expr,
+        ?PatternMatcher,
+    ),
+    last_matcher_expr: ?*const xpath_ast.Expr = null,
+    last_matcher: ?PatternMatcher = null,
     /// Documents whose template matches have been indexed, keyed by the
     /// merged document-root node id.
     built_match_roots: std.AutoHashMapUnmanaged(usize, void) = .empty,
@@ -826,6 +946,11 @@ const Runtime = struct {
     node_ids: NodeIdMap,
     next_node_id: usize = 0,
     selector_cache: std.AutoHashMap(*const xpath_ast.Expr, *SelectorEntry),
+    /// Most recently used selector entry; `xsl:number` queries the same
+    /// selector for many consecutive nodes.
+    last_selector: ?*const xpath_ast.Expr = null,
+    last_selector_entry: ?*SelectorEntry = null,
+    last_selector_cacheable: bool = false,
     /// Whether each cached selector expression references a variable.
     /// Selectors without variable references are safe to cache across
     /// template invocations.
@@ -1252,6 +1377,9 @@ const Runtime = struct {
         self.refresh_depth += 1;
         defer self.refresh_depth -= 1;
         self.selector_cache.clearRetainingCapacity();
+        self.last_selector = null;
+        self.last_selector_entry = null;
+        self.last_selector_cacheable = false;
     }
 
     fn copyFilteredNode(
@@ -1617,11 +1745,15 @@ const Runtime = struct {
                 }
             }
             if (template.selector == null) continue;
-            const matcher: PatternMatcher = if (simplePattern(template)) |pattern|
+            const matcher: PatternMatcher = if (simplePatternExpr(
+                template.selector.?,
+                template.namespaces,
+            )) |pattern|
                 .{ .simple = pattern }
-            else if (try structuralPattern(
+            else if (try structuralPatternExpr(
                 self.allocator,
-                template,
+                template.selector.?,
+                template.namespaces,
             )) |pattern|
                 .{ .structural = pattern }
             else
@@ -3374,6 +3506,9 @@ const Runtime = struct {
         format_text: []const u8,
         grouping: ?NumberGrouping,
     ) Error!void {
+        if (try self.numberAnyFast(instruction, node, format_text, grouping)) {
+            return;
+        }
         // Walk backwards in document order like libxslt: attributes collapse
         // to their element, and attribute nodes of other elements are never
         // visited.
@@ -3395,6 +3530,121 @@ const Runtime = struct {
                 grouping,
             ));
         }
+    }
+
+    /// Count `level="any"` positions with binary searches over precomputed
+    /// node sets (count patterns) or the per-document name index (default
+    /// count). Returns false when the generic backwards walk is required.
+    fn numberAnyFast(
+        self: *Runtime,
+        instruction: compile.NumberInstruction,
+        node: xpath.NodeRef,
+        format_text: []const u8,
+        grouping: ?NumberGrouping,
+    ) Error!bool {
+        const node_id: u32 = switch (node) {
+            .node => |id| id,
+            else => return false,
+        };
+        const range = self.documentRange(node);
+        const range_start: u32 = @intCast(range.start);
+        const range_end: u32 = @intCast(
+            @min(range.end, self.source.nodes.len),
+        );
+        if (node_id < range_start or node_id >= range_end) return false;
+
+        // The walk stops after the last `from` match at or before the node.
+        var lower: u32 = range_start;
+        if (instruction.from) |from| {
+            const entry = try self.selectorEntry(from);
+            if (!entryAllNodes(entry)) return false;
+            const base = lowerBoundNodeId(entry.nodes, range_start);
+            const upto = upperBoundNodeId(entry.nodes, node_id);
+            if (upto > base) {
+                lower = entry.nodes[upto - 1].node;
+            }
+        }
+
+        var total: usize = 0;
+        if (instruction.count) |count_expr| {
+            const entry = try self.selectorEntry(count_expr);
+            if (!entryAllNodes(entry)) return false;
+            const base = lowerBoundNodeId(entry.nodes, lower);
+            const upto = upperBoundNodeId(entry.nodes, node_id);
+            if (upto < base) return false;
+            total = upto - base;
+        } else {
+            const positions = try self.ensureNamePositions(range_start);
+            var key_buffer: [256]u8 = undefined;
+            const key = nodeNameKey(
+                self.source.node(node_id),
+                &key_buffer,
+            ) orelse return false;
+            if (positions.map.get(key)) |list| {
+                const base = lowerBoundU32(list.items, lower);
+                const upto = upperBoundU32(list.items, node_id);
+                if (upto >= base) total = upto - base;
+            }
+        }
+        if (total != 0) {
+            try self.appendText(try self.formatPositions(
+                &.{total},
+                format_text,
+                grouping,
+            ));
+        }
+        return true;
+    }
+
+    /// Per-document index of plain node ids grouped by node kind and expanded
+    /// name, used by `xsl:number level="any"` without a count pattern.
+    fn ensureNamePositions(
+        self: *Runtime,
+        root: usize,
+    ) Error!*NamePositions {
+        const entry = try self.name_positions.getOrPut(
+            self.allocator,
+            root,
+        );
+        if (entry.found_existing) return entry.value_ptr;
+        entry.value_ptr.* = .{};
+        const range = self.documentRange(.{ .node = @intCast(root) });
+        const end = @min(range.end, self.source.nodes.len);
+        var key_buffer: std.ArrayList(u8) = .empty;
+        defer key_buffer.deinit(self.allocator);
+        var index = range.start;
+        while (index < end) : (index += 1) {
+            const node = self.source.node(@intCast(index));
+            key_buffer.clearRetainingCapacity();
+            switch (node.kind) {
+                .document => try key_buffer.append(self.allocator, 'd'),
+                .element => {
+                    try key_buffer.append(self.allocator, 'e');
+                    try key_buffer.appendSlice(self.allocator, node.ns);
+                    try key_buffer.append(self.allocator, 0);
+                    try key_buffer.appendSlice(self.allocator, node.local);
+                },
+                .text => try key_buffer.append(self.allocator, 't'),
+                .comment => try key_buffer.append(self.allocator, 'c'),
+                .processing_instruction => {
+                    try key_buffer.append(self.allocator, 'p');
+                    try key_buffer.appendSlice(self.allocator, node.name);
+                },
+            }
+            const slot = try entry.value_ptr.map.getOrPut(
+                self.allocator,
+                key_buffer.items,
+            );
+            if (!slot.found_existing) {
+                slot.key_ptr.* = try self.allocator.dupe(
+                    u8,
+                    key_buffer.items,
+                );
+                slot.value_ptr.* = .empty;
+            }
+            try slot.value_ptr.append(self.allocator, @intCast(index));
+        }
+        return entry.value_ptr;
     }
 
     fn previousInDocumentOrder(
@@ -3437,6 +3687,11 @@ const Runtime = struct {
         self: *Runtime,
         selector: compile.CompiledExpr,
     ) Error!*SelectorEntry {
+        if (self.last_selector_cacheable and
+            self.last_selector == selector.node)
+        {
+            return self.last_selector_entry.?;
+        }
         const uses_variables = self.selector_var_usage.get(selector.node) orelse blk: {
             const value = exprUsesVariables(selector.node);
             try self.selector_var_usage.put(selector.node, value);
@@ -3507,11 +3762,61 @@ const Runtime = struct {
             .nodes = nodes,
             .map = std.AutoHashMap(NodeKey, void).init(self.allocator),
         };
+        const node_bound = @max(
+            self.merged_nodes.items.len,
+            self.source.nodes.len,
+        );
+        entry.bits = try std.DynamicBitSetUnmanaged.initEmpty(
+            self.allocator,
+            node_bound,
+        );
         for (nodes) |candidate| {
-            try entry.map.put(nodeKey(candidate), {});
+            switch (candidate) {
+                .node => |id| entry.bits.set(id),
+                else => try entry.map.put(nodeKey(candidate), {}),
+            }
         }
-        if (cacheable) try self.selector_cache.put(selector.node, entry);
+        if (cacheable) {
+            try self.selector_cache.put(selector.node, entry);
+            self.last_selector = selector.node;
+            self.last_selector_entry = entry;
+            self.last_selector_cacheable = true;
+        }
         return entry;
+    }
+
+    /// Build (or reuse) a direct matcher for a count/from pattern. Patterns
+    /// without predicates can be tested per candidate node, so they do not
+    /// need a document-wide node set.
+    fn selectorMatcher(
+        self: *Runtime,
+        selector: compile.CompiledExpr,
+    ) Error!?PatternMatcher {
+        if (self.last_matcher_expr == selector.node) {
+            return self.last_matcher;
+        }
+        if (self.selector_matchers.get(selector.node)) |matcher| {
+            self.last_matcher_expr = selector.node;
+            self.last_matcher = matcher;
+            return matcher;
+        }
+        const matcher: ?PatternMatcher = blk: {
+            if (simplePatternExpr(selector.node, selector.namespaces)) |pattern| {
+                break :blk .{ .simple = pattern };
+            }
+            if (try structuralPatternExpr(
+                self.allocator,
+                selector.node,
+                selector.namespaces,
+            )) |pattern| {
+                break :blk .{ .structural = pattern };
+            }
+            break :blk null;
+        };
+        try self.selector_matchers.put(selector.node, matcher);
+        self.last_matcher_expr = selector.node;
+        self.last_matcher = matcher;
+        return matcher;
     }
 
     fn selectorMatches(
@@ -3519,8 +3824,22 @@ const Runtime = struct {
         selector: compile.CompiledExpr,
         node: xpath.NodeRef,
     ) Error!bool {
+        if (try self.selectorMatcher(selector)) |matcher| {
+            return switch (matcher) {
+                .simple => |pattern| self.simpleMatches(pattern, node),
+                .structural => |pattern| self.structuralMatches(pattern, node),
+            };
+        }
         const entry = try self.selectorEntry(selector);
-        return entry.map.contains(nodeKey(node));
+        switch (node) {
+            .node => |id| {
+                if (id >= entry.bits.bit_length) return false;
+                return entry.bits.isSet(id);
+            },
+            .attribute, .namespace_node => {
+                return entry.map.contains(nodeKey(node));
+            },
+        }
     }
 
     fn matchesCount(
@@ -4772,8 +5091,10 @@ fn generateNodeId(
     return std.fmt.allocPrint(allocator, "id{d}", .{entry.value_ptr.*});
 }
 
-fn simplePattern(template: *const compile.Template) ?SimplePattern {
-    const expression = template.selector orelse return null;
+fn simplePatternExpr(
+    expression: *const xpath_ast.Expr,
+    namespaces: []const namespace.Binding,
+) ?SimplePattern {
     const path = switch (expression.*) {
         .path => |value| value,
         else => return null,
@@ -4797,7 +5118,7 @@ fn simplePattern(template: *const compile.Template) ?SimplePattern {
         .name => |name_test| {
             var uri: []const u8 = "";
             if (name_test.prefix) |prefix| {
-                uri = resolvePrefix(template.namespaces, prefix) orelse
+                uri = resolvePrefix(namespaces, prefix) orelse
                     return null;
             }
             if (axis == .attribute) {
@@ -4842,15 +5163,15 @@ fn simplePattern(template: *const compile.Template) ?SimplePattern {
 /// consists only of child/attribute steps and `//` markers without
 /// predicates. Such patterns are matched per candidate node and never
 /// evaluated against whole documents.
-fn structuralPattern(
+fn structuralPatternExpr(
     allocator: std.mem.Allocator,
-    template: *const compile.Template,
+    expression: *const xpath_ast.Expr,
+    namespaces: []const namespace.Binding,
 ) Error!?StructuralPattern {
-    const expression = template.selector orelse return null;
     var alternatives: std.ArrayListUnmanaged([]const StructuralStep) = .empty;
     if (!try appendStructuralAlternative(
         allocator,
-        template.namespaces,
+        namespaces,
         expression,
         &alternatives,
     )) return null;
