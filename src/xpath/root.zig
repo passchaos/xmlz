@@ -519,6 +519,28 @@ test "XPath namespace axis" {
     try testing.expectEqual(@as(usize, 0), try countOf(&document, "//d:item[1]/@id/namespace::*"));
 }
 
+test "XPath id matches normalized xml:id values" {
+    const source = "<root><item xml:id=' alpha '/><item xml:id='beta'/></root>";
+    var document = try dom.Document.parse(testing.allocator, source, .{});
+    defer document.deinit();
+    const namespaces = [_]namespace.Binding{};
+    var context: Context = .{
+        .document = &document,
+        .node = .{ .node = 0 },
+        .namespaces = &namespaces,
+    };
+
+    var parsed = try Expression.parse(testing.allocator, "id('alpha')");
+    defer parsed.deinit();
+    var result = try parsed.evaluate(testing.allocator, &context);
+    defer result.deinit();
+    try testing.expectEqual(@as(usize, 1), result.value.node_set.len);
+    try testing.expectEqualStrings(
+        "item",
+        document.node(result.value.node_set[0].node).local,
+    );
+}
+
 test "XPath parser rejects malformed expressions" {
     const invalid = [_][]const u8{
         "",

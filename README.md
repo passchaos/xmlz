@@ -42,7 +42,11 @@ then exposes them through a pull parser and reusable lexical primitives.
   implemented over the DOM, with namespace-aware name tests and 82/82
   differential checks against libxml2.
 - **XInclude 1.0.** `xinclude.process` expands includes with XML/text modes,
-  fallback, nested resources, circular detection, and namespace inheritance.
+  fallback, nested resources, circular detection, namespace inheritance, and
+  element-aware `xml:base` resolution.
+- **XML Base and xml:id.** `xmlbase.resolve` implements the full RFC 3986
+  reference-resolution algorithm, `elementBase` applies `xml:base` along the
+  ancestor chain, and `xml:id` matching uses the XML ID whitespace rules.
 - **Canonical XML.** `c14n.canonicalize` emits Canonical XML 1.0/1.1 and
   Exclusive XML Canonicalization 1.0 forms with specification namespace and
   attribute ordering, redundant-declaration suppression, and exact escaping,
@@ -74,8 +78,9 @@ then exposes them through a pull parser and reusable lexical primitives.
 | DOM builder | Complete |
 | Writer/serializer | Complete |
 | XPath 1.0 | Complete (all axes, core library, differential checks) |
-| XInclude 1.0 | Complete (XML/text, fallback, nesting) |
+| XInclude 1.0 | Complete (XML/text, fallback, nesting, xml:base) |
 | Canonical XML | Complete (C14N 1.0/1.1, exclusive; whole documents) |
+| XML Base / xml:id | Complete (RFC 3986 resolution, base chains, ID normalization) |
 | XSD / XSLT | Out of scope for the core engine |
 
 ## Quick start
@@ -184,6 +189,7 @@ src/validation.zig      optional DTD validity checking
 src/writer.zig          XML serializer
 src/c14n.zig            Canonical XML 1.0/1.1 and exclusive C14N
 src/xinclude.zig        XInclude 1.0 processing
+src/xmlbase.zig         XML Base resolution and xml:id normalization
 src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
 src/namespace.zig       Namespaces in XML 1.0 resolver
 src/root.zig            public API surface

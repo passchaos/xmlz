@@ -76,6 +76,14 @@ outside the document element. Whole-document C14N 1.0 and 1.1 forms are
 identical; document-subset fixups (`xml:base`, inherited `xml:lang`/`xml:space`)
 are not implemented.
 
+## XML Base and xml:id
+
+`xmlbase` implements RFC 3986 reference resolution, applies `xml:base` along an
+element's ancestor chain, and normalizes `xml:id` values. XInclude uses it to
+pass element-aware base URIs to the resolver, including the base established by
+an included document's root, and XPath `id()` matches `xml:id` with the
+required whitespace normalization.
+
 ## Trusted mode
 
 `Parser.Options.trusted = true` skips character, name, duplicate-attribute, and

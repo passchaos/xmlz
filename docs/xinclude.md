@@ -22,6 +22,8 @@ resolved URI and bytes, or null when the resource is unavailable.
 - `xi:fallback` when the resource is missing, malformed, circular, or exceeds
   the depth limit.
 - Nested inclusions with a shared resolver and base URI tracking.
+- `xml:base` on the include element, its ancestors, and the included document's
+  root is applied to href resolution; fallback content inherits the base.
 - Circular-inclusion detection and configurable depth/inclusion limits.
 - Namespace declarations from the included document's root are inherited by its
   first-level children.
@@ -29,7 +31,6 @@ resolved URI and bytes, or null when the resource is unavailable.
 ## Limitations
 
 - XPointer is rejected (`error.UnsupportedXPointer`).
-- `xml:base` and `xml:lang` fixup are not applied.
 - `parse="text"` treats the resource as UTF-8 text; the XInclude `encoding`
   attribute is not consulted.
 - The included XML is parsed with the standard parser (well-formedness and

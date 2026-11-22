@@ -5,6 +5,7 @@ const ast = @import("ast.zig");
 const value = @import("value.zig");
 const dom = @import("../dom.zig");
 const namespace = @import("../namespace.zig");
+const xmlbase = @import("../xmlbase.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -1179,7 +1180,7 @@ const Evaluator = struct {
                     }
                 }
                 if (context.document.attributeNs(id, namespace.xml_uri, "id")) |xml_id| {
-                    if (std.mem.eql(u8, xml_id, token)) {
+                    if (xmlbase.xmlIdEquals(xml_id, token)) {
                         try out.append(self.allocator, .{ .node = id });
                     }
                 }

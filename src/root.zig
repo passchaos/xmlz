@@ -10,6 +10,7 @@ pub const parser = @import("parser.zig");
 pub const sax = @import("sax.zig");
 pub const xinclude = @import("xinclude.zig");
 pub const namespace = @import("namespace.zig");
+pub const xmlbase = @import("xmlbase.zig");
 pub const dom = @import("dom.zig");
 pub const dom_builder = @import("dom_builder.zig");
 pub const writer = @import("writer.zig");
@@ -33,6 +34,7 @@ test {
     _ = sax;
     _ = xinclude;
     _ = namespace;
+    _ = xmlbase;
     _ = dom;
     _ = dom_builder;
     _ = writer;

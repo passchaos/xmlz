@@ -10,6 +10,7 @@ const dom = @import("dom.zig");
 const dom_builder = @import("dom_builder.zig");
 const encoding = @import("encoding.zig");
 const namespace = @import("namespace.zig");
+const xmlbase = @import("xmlbase.zig");
 
 pub const namespace_uri = "http://www.w3.org/2001/XInclude";
 
@@ -113,10 +114,15 @@ const Processor = struct {
         const node = source.node(id);
         switch (node.kind) {
             .element => {
+                const element_base = try self.elementBase(source, base, id);
+                defer {
+                    if (element_base) |allocated| self.allocator.free(allocated);
+                }
+                const current_base = element_base orelse base;
                 if (std.mem.eql(u8, node.ns, namespace_uri) and
                     std.mem.eql(u8, node.local, "include"))
                 {
-                    try self.processInclude(source, base, id, parent);
+                    try self.processInclude(source, current_base, id, parent);
                     return;
                 }
                 if (std.mem.eql(u8, node.ns, namespace_uri) and
@@ -172,7 +178,7 @@ const Processor = struct {
 
                 var child = node.first_child;
                 while (child != dom.null_node) : (child = source.node(child).next_sibling) {
-                    try self.copyNode(source, base, child, new_id, null);
+                    try self.copyNode(source, current_base, child, new_id, null);
                 }
             },
             .text => {
@@ -202,6 +208,23 @@ const Processor = struct {
                 }
             },
         }
+    }
+
+    /// Resolve an element's `xml:base` against the base inherited from its
+    /// output parent. Returns null when the element has no `xml:base`.
+    fn elementBase(
+        self: *Processor,
+        source: *const dom.Document,
+        base: []const u8,
+        id: dom.NodeId,
+    ) Error!?[]u8 {
+        const value = source.attributeNs(
+            id,
+            namespace.xml_uri,
+            "base",
+        ) orelse return null;
+        return xmlbase.resolve(self.allocator, base, value) catch
+            return error.OutOfMemory;
     }
 
     fn processInclude(
@@ -272,6 +295,16 @@ const Processor = struct {
             return self.useFallback(source, base, id, parent, error.ParseFailed);
         }
 
+        const root_base = try self.elementBase(
+            &included,
+            resource.uri,
+            included_root,
+        );
+        defer {
+            if (root_base) |allocated| self.allocator.free(allocated);
+        }
+        const included_base = root_base orelse resource.uri;
+
         self.stack.append(self.allocator, resource.uri) catch
             return error.OutOfMemory;
         defer _ = self.stack.pop();
@@ -280,7 +313,7 @@ const Processor = struct {
         while (child != dom.null_node) : (child = included.node(child).next_sibling) {
             try self.copyNode(
                 &included,
-                resource.uri,
+                included_base,
                 child,
                 parent,
                 included_root,
@@ -358,6 +391,33 @@ const TestResource = struct {
 const MapResolver = struct {
     resources: []const TestResource,
 };
+
+/// Resolver that asserts the base URI passed for `inc.xml` and `leaf.xml`.
+const BaseRecorder = struct {
+    include_base: []const u8,
+    include_uri: []const u8,
+    include_data: []const u8,
+    leaf_base: []const u8 = "",
+    leaf_seen: bool = false,
+};
+
+fn loadWithBase(
+    context: ?*anyopaque,
+    href: []const u8,
+    base: []const u8,
+) ?Resource {
+    const recorder: *BaseRecorder = @ptrCast(@alignCast(context.?));
+    if (std.mem.eql(u8, href, "inc.xml")) {
+        if (!std.mem.eql(u8, base, recorder.include_base)) return null;
+        return .{ .uri = recorder.include_uri, .data = recorder.include_data };
+    }
+    if (std.mem.eql(u8, href, "leaf.xml")) {
+        if (!std.mem.eql(u8, base, recorder.leaf_base)) return null;
+        recorder.leaf_seen = true;
+        return .{ .uri = "http://e/leaf.xml", .data = "<doc><leaf/></doc>" };
+    }
+    return null;
+}
 
 fn loadResource(
     context: ?*anyopaque,
@@ -502,6 +562,75 @@ test "XInclude inherits namespace declarations from the included root" {
         "urn:inc",
         document.attribute(child, "xmlns") orelse "",
     );
+}
+
+test "XInclude applies xml:base to include resolution" {
+    const recorder_base =
+        \\<root xmlns:xi="http://www.w3.org/2001/XInclude">
+        \\  <wrap xml:base="http://e/a/"><xi:include href="inc.xml"/></wrap>
+        \\</root>
+    ;
+    var recorder: BaseRecorder = .{
+        .include_base = "http://e/a/",
+        .include_uri = "http://e/a/inc.xml",
+        .include_data = "<inc><leaf/></inc>",
+    };
+    var source = try parseSource(recorder_base);
+    defer source.deinit();
+    var document = try process(testing.allocator, &source, .{
+        .resolver = .{ .context = &recorder, .load = loadWithBase },
+    });
+    defer document.deinit();
+    const wrap = document.findChild(document.root(), "wrap") orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(document.findChild(wrap, "leaf") != null);
+
+    const include_base =
+        \\<root xmlns:xi="http://www.w3.org/2001/XInclude" xml:base="http://e/root/">
+        \\  <xi:include xml:base="sub/" href="inc.xml"/>
+        \\</root>
+    ;
+    var include_recorder: BaseRecorder = .{
+        .include_base = "http://e/root/sub/",
+        .include_uri = "http://e/root/sub/inc.xml",
+        .include_data = "<inc><leaf/></inc>",
+    };
+    var include_source = try parseSource(include_base);
+    defer include_source.deinit();
+    var include_document = try process(testing.allocator, &include_source, .{
+        .resolver = .{
+            .context = &include_recorder,
+            .load = loadWithBase,
+        },
+    });
+    defer include_document.deinit();
+    try testing.expect(
+        include_document.findChild(include_document.root(), "leaf") != null,
+    );
+}
+
+test "XInclude applies included root xml:base to nested includes" {
+    const recorder_source =
+        \\<root xmlns:xi="http://www.w3.org/2001/XInclude">
+        \\  <xi:include href="inc.xml"/>
+        \\</root>
+    ;
+    var recorder: BaseRecorder = .{
+        .include_base = "",
+        .include_uri = "http://e/inc.xml",
+        .include_data = "<inc xml:base=\"http://e/a/\">" ++
+            "<xi:include xmlns:xi=\"http://www.w3.org/2001/XInclude\" " ++
+            "href=\"leaf.xml\"/></inc>",
+        .leaf_base = "http://e/a/",
+    };
+    var source = try parseSource(recorder_source);
+    defer source.deinit();
+    var document = try process(testing.allocator, &source, .{
+        .resolver = .{ .context = &recorder, .load = loadWithBase },
+    });
+    defer document.deinit();
+    try testing.expect(recorder.leaf_seen);
+    try testing.expect(document.findChild(document.root(), "leaf") != null);
 }
 
 test "XInclude reports malformed include attributes" {
