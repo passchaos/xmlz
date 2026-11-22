@@ -1172,3 +1172,39 @@ test "XSD redefine requires an existing component" {
         }),
     );
 }
+
+test "XSD keyref matches the nearest identity scope" {
+    const schema_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+        "<xs:element name='root'><xs:complexType><xs:sequence>" ++
+        "<xs:element name='group' maxOccurs='unbounded'>" ++
+        "<xs:complexType><xs:sequence>" ++
+        "<xs:element name='key' type='xs:string' maxOccurs='unbounded'/>" ++
+        "<xs:element name='ref' type='xs:string' maxOccurs='unbounded'/>" ++
+        "</xs:sequence></xs:complexType>" ++
+        "<xs:key name='k'><xs:selector xpath='key'/><xs:field xpath='.'/></xs:key>" ++
+        "<xs:keyref name='r' refer='k'>" ++
+        "<xs:selector xpath='ref'/><xs:field xpath='.'/></xs:keyref>" ++
+        "</xs:element></xs:sequence></xs:complexType></xs:element></xs:schema>";
+    try expectValid(
+        schema_source,
+        "<root>" ++
+            "<group><key>A</key><ref>A</ref></group>" ++
+            "<group><key>B</key><ref>B</ref></group>" ++
+            "</root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root>" ++
+            "<group><key>A</key><ref>A</ref></group>" ++
+            "<group><key>B</key><ref>A</ref></group>" ++
+            "</root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root>" ++
+            "<group><key>A</key><ref>B</ref></group>" ++
+            "<group><key>B</key><ref>A</ref></group>" ++
+            "</root>",
+    );
+}

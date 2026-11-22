@@ -573,17 +573,20 @@ const Validator = struct {
         for (scopes.items) |scope| {
             if (scope.constraint.kind != .keyref) continue;
             const referenced = scope.constraint.referenced orelse continue;
+            const target = self.nearestIdentityScope(
+                &scopes,
+                referenced,
+                scope.element,
+            );
             for (scope.tuples.items) |tuple| {
                 var found = false;
-                for (scopes.items) |candidate| {
-                    if (candidate.constraint != referenced) continue;
+                if (target) |candidate| {
                     for (candidate.tuples.items) |other| {
                         if (identityTuplesEqual(tuple, other)) {
                             found = true;
                             break;
                         }
                     }
-                    if (found) break;
                 }
                 if (!found) {
                     try self.addError(
@@ -592,6 +595,53 @@ const Validator = struct {
                     );
                 }
             }
+        }
+    }
+
+    /// Nearest ancestor-or-self scope of `constraint` for a keyref declared
+    /// on `element`.
+    fn nearestIdentityScope(
+        self: *Validator,
+        scopes: *std.ArrayList(IdentityScope),
+        constraint: *const schema.IdentityConstraint,
+        element: dom.NodeId,
+    ) ?*IdentityScope {
+        var best: ?*IdentityScope = null;
+        var best_depth: usize = 0;
+        for (scopes.items) |*scope| {
+            if (scope.constraint != constraint) continue;
+            if (!self.isAncestorOrSelf(scope.element, element)) continue;
+            const depth = self.nodeDepth(scope.element);
+            if (best == null or depth > best_depth) {
+                best = scope;
+                best_depth = depth;
+            }
+        }
+        return best;
+    }
+
+    fn isAncestorOrSelf(
+        self: *Validator,
+        ancestor: dom.NodeId,
+        node: dom.NodeId,
+    ) bool {
+        var current = node;
+        while (true) {
+            if (current == ancestor) return true;
+            const parent = self.document.node(current).parent;
+            if (parent == dom.null_node) return false;
+            current = parent;
+        }
+    }
+
+    fn nodeDepth(self: *Validator, node: dom.NodeId) usize {
+        var depth: usize = 0;
+        var current = node;
+        while (true) {
+            const parent = self.document.node(current).parent;
+            if (parent == dom.null_node) return depth;
+            depth += 1;
+            current = parent;
         }
     }
 

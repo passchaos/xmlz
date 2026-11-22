@@ -1289,6 +1289,28 @@ CASES = [
             "<root xmlns='urn:t'>P2M</root>",
         ],
     ),
+    (
+        "keyref-nearest-scope",
+        f"""<xs:schema xmlns:xs="{XS}">
+          <xs:element name="root"><xs:complexType><xs:sequence>
+            <xs:element name="group" maxOccurs="unbounded">
+              <xs:complexType><xs:sequence>
+                <xs:element name="key" type="xs:string" maxOccurs="unbounded"/>
+                <xs:element name="ref" type="xs:string" maxOccurs="unbounded"/>
+              </xs:sequence></xs:complexType>
+              <xs:key name="k"><xs:selector xpath="key"/><xs:field xpath="."/></xs:key>
+              <xs:keyref name="r" refer="k">
+                <xs:selector xpath="ref"/><xs:field xpath="."/>
+              </xs:keyref>
+            </xs:element>
+          </xs:sequence></xs:complexType></xs:element>
+        </xs:schema>""",
+        [
+            "<root><group><key>A</key><ref>A</ref></group><group><key>B</key><ref>B</ref></group></root>",
+            "<root><group><key>A</key><ref>A</ref></group><group><key>B</key><ref>A</ref></group></root>",
+            "<root><group><key>A</key><ref>B</ref></group><group><key>B</key><ref>A</ref></group></root>",
+        ],
+    ),
 ]
 
 

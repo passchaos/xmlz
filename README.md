@@ -68,7 +68,7 @@ then exposes them through a pull parser and reusable lexical primitives.
   complex content, wildcards, groups, attribute groups, substitution groups,
   identity constraints, includes/imports/redefines, notation declarations,
   built-in datatypes, facets, abstract types, `block`/`final`, and
-  `xsi:type` / `xsi:nil`, with 245/245 differential checks against libxml2.
+  `xsi:type` / `xsi:nil`, with 248/248 differential checks against libxml2.
 - **RELAX NG.** `rng.parse` compiles XML-syntax grammars and `rng.validate`
   checks instances against element/attribute name classes, group, choice,
   interleave, optional, repetition, mixed content, text, empty, data/value

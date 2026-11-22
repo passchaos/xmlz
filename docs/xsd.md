@@ -70,8 +70,6 @@ for (result.errors) |validation_error| {
 
 - Unicode category coverage in `\p{...}` is approximate for non-ASCII scripts.
 - Validation does not inject default attribute values into the instance.
-- Keyref values are matched against all evaluated scopes of the referenced
-  constraint rather than strictly the nearest declaring element's scope.
 - Schema component validity checking is intentionally partial; malformed
   schemas are rejected, but not every XSD constraint on schema documents is
   enforced.
@@ -88,5 +86,5 @@ attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
 
 ```text
-245/245 XSD differential checks passed
+248/248 XSD differential checks passed
 ```
