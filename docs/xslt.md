@@ -218,16 +218,16 @@ x86-64):
 The vendored xmlspec workload (XML 1.0 Second Edition to HTML) is a second
 real-world test. It exercises `xsl:number` heavily (`level="any"`,
 `level="multiple"`, count/from patterns), `//` paths, and a large result
-tree: about 10.6 ms per transform, matching libxslt through lxml (~10.8 ms
-median).
+tree: about 10.8 ms per transform against 11.0 ms for libxslt through lxml
+(median of 30 runs).
 
 The real-world DocBook HTML transform (`tests/docbook` from libxslt,
 `html/docbook.xsl` over `test/gdp-handbook.xml`, with the full 440 KiB
 DocBook 4.1.2 DTD loaded) produces output identical to the libxslt
-reference. A full single run takes about 45 ms, including parsing the
+reference. A full single run takes about 47 ms, including parsing the
 source document with its 440 KiB DTD and compiling the 40-file stylesheet;
-a repeated in-process transform takes about 21 ms, matching libxslt
-through lxml (~21 ms median on the same machine).
+a repeated in-process transform takes about 20 ms against 23.5 ms for
+libxslt through lxml (median of 30 runs on the same machine).
 
 The hot paths are designed for repeated transforms:
 
