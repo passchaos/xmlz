@@ -317,6 +317,68 @@ STYLESHEETS = [
         {},
     ),
     (
+        "strip-space-all",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:strip-space elements="*"/>
+        <xsl:template match="/"><out><xsl:value-of select="count(//text())"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root> <item> <a>x</a> </item> </root>",
+        {},
+    ),
+    (
+        "strip-space-specific",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:strip-space elements="item"/>
+        <xsl:template match="/"><out><xsl:value-of select="count(//text())"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root> <item> <a>x</a> </item> </root>",
+        {},
+    ),
+    (
+        "strip-space-preserve",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:strip-space elements="*"/>
+        <xsl:preserve-space elements="pre"/>
+        <xsl:template match="/"><out><xsl:value-of select="count(//text())"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root> <pre> <a/> </pre> <other> <b/> </other> </root>",
+        {},
+    ),
+    (
+        "strip-space-namespaced",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+          xmlns:p="urn:p">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:strip-space elements="p:item"/>
+        <xsl:template match="/"><out><xsl:value-of select="count(//text())"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root xmlns:p='urn:p'> <p:item> <a/> </p:item> </root>",
+        {},
+    ),
+    (
+        "strip-space-xml-space",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:strip-space elements="*"/>
+        <xsl:template match="/"><out><xsl:value-of select="count(//text())"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root> <pre xml:space='preserve'> <a/> </pre> </root>",
+        {},
+    ),
+    (
+        "strip-space-copy-of",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:strip-space elements="*"/>
+        <xsl:template match="/"><out><xsl:copy-of select="root"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root> <a> x </a> </root>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>

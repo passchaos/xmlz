@@ -663,3 +663,127 @@ test "XSLT rejects circular and invalid attribute sets" {
         parse(testing.allocator, &invalid_document),
     );
 }
+
+test "XSLT strip-space removes whitespace-only text nodes" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:strip-space elements="*"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="count(//text())"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root> <item> <a>x</a> </item> </root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>1</out>", output);
+}
+
+test "XSLT strip-space honors element tests and preserve-space" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:strip-space elements="*"/>
+        \\  <xsl:preserve-space elements="pre"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="count(//text())"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root> <pre> <a/> </pre> <other> <b/> </other> </root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>2</out>", output);
+
+    const specific =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:strip-space elements="item"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="count(//text())"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const specific_output = try transformToString(
+        specific,
+        "<root> <item> <a>x</a> </item> </root>",
+        .{},
+    );
+    defer testing.allocator.free(specific_output);
+    try testing.expectEqualStrings("<out>3</out>", specific_output);
+}
+
+test "XSLT strip-space honors namespaces" {
+    const namespaced =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:p="urn:p">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:strip-space elements="p:item"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="count(//text())"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const namespaced_output = try transformToString(
+        namespaced,
+        "<root xmlns:p='urn:p'> <p:item> <a/> </p:item> </root>",
+        .{},
+    );
+    defer testing.allocator.free(namespaced_output);
+    try testing.expectEqualStrings(
+        "<out xmlns:p=\"urn:p\">2</out>",
+        namespaced_output,
+    );
+
+    const preserved =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:strip-space elements="*"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="count(//text())"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const preserved_output = try transformToString(
+        preserved,
+        "<root> <pre xml:space='preserve'> <a/> </pre> </root>",
+        .{},
+    );
+    defer testing.allocator.free(preserved_output);
+    try testing.expectEqualStrings("<out>0</out>", preserved_output);
+}
+
+test "XSLT strip-space affects copy-of output" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:strip-space elements="*"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:copy-of select="root"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root> <a> x </a> </root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><root><a> x </a></root></out>",
+        output,
+    );
+}

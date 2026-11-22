@@ -93,8 +93,8 @@ into XPath selectors that are evaluated once per transform. Template conflict
 resolution follows XSLT priority and document order. The runtime executes
 templates, modes, parameters, variables, sorting, copy instructions, keys,
 includes/imports with import precedence and `apply-imports`, attribute sets,
-literal result elements, AVTs, and the core instruction set into a
-`dom_builder` document,
+whitespace stripping via a filtered source tree, literal result elements,
+AVTs, and the core instruction set into a `dom_builder` document,
 reusing the XPath engine for expressions, `current()`, and `key()`. Result
 serialization supports XML, HTML (void elements, boolean attributes, raw
 script/style text), and text output; result-tree-fragment node sets are not

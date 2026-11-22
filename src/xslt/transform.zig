@@ -95,10 +95,12 @@ pub fn apply(
         .builder = &builder,
         .key_map = KeyMap.init(arena_allocator),
     };
+    try runtime.prepareSource();
     try runtime.buildKeys();
     try runtime.buildTemplateMatches();
     try runtime.evaluateGlobals(options.parameters);
     try runtime.applyTemplates(&.{.{ .node = 0 }}, null, &.{});
+    runtime.deinitFilteredSource();
 
     const document = builder.finish() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -188,6 +190,7 @@ const Runtime = struct {
     messages: std.ArrayList([]const u8) = .empty,
     key_map: KeyMap,
     keys_ready: bool = false,
+    filtered_source: ?*dom.Document = null,
     current_template: ?*const compile.Template = null,
     current_mode: ?[]const u8 = null,
 
@@ -198,6 +201,133 @@ const Runtime = struct {
         }
         output.encoding = try self.allocator.dupe(u8, output.encoding);
         return output;
+    }
+
+    fn prepareSource(self: *Runtime) Error!void {
+        if (self.stylesheet.space_rules.len == 0) return;
+        var builder = dom_builder.Builder.init(self.allocator) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidStylesheet,
+        };
+        var finished = false;
+        defer {
+            if (!finished) builder.deinit();
+        }
+        try self.copyFilteredNode(
+            &builder,
+            self.source.documentNode(),
+            builder.document(),
+        );
+        const document = builder.finish() catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidStylesheet,
+        };
+        finished = true;
+        const pointer = try self.allocator.create(dom.Document);
+        pointer.* = document;
+        self.filtered_source = pointer;
+        self.source = pointer;
+    }
+
+    fn deinitFilteredSource(self: *Runtime) void {
+        if (self.filtered_source) |document| {
+            document.deinit();
+            self.filtered_source = null;
+        }
+    }
+
+    fn copyFilteredNode(
+        self: *Runtime,
+        builder: *dom_builder.Builder,
+        id: dom.NodeId,
+        parent: dom.NodeId,
+    ) Error!void {
+        const node = self.source.node(id);
+        switch (node.kind) {
+            .document => {
+                var child = node.first_child;
+                while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+                    try self.copyFilteredNode(builder, child, parent);
+                }
+            },
+            .element => {
+                const new_id = builder.createElementNs(
+                    prefixOf(node),
+                    node.local,
+                    node.ns,
+                ) catch |err| return mapBuilderError(err);
+                builder.appendChild(parent, new_id) catch |err|
+                    return mapBuilderError(err);
+                for (self.source.attributesOf(id)) |attr| {
+                    if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                        builder.setAttribute(
+                            new_id,
+                            attr.name,
+                            attr.value,
+                        ) catch |err| return mapBuilderError(err);
+                    } else if (attr.ns.len == 0) {
+                        builder.setAttribute(
+                            new_id,
+                            attr.name,
+                            attr.value,
+                        ) catch |err| return mapBuilderError(err);
+                    } else {
+                        builder.setAttributeNs(
+                            new_id,
+                            attr.prefixName(),
+                            attr.localName(),
+                            attr.ns,
+                            attr.value,
+                        ) catch |err| return mapBuilderError(err);
+                    }
+                }
+                const strip = self.shouldStrip(node.ns, node.local);
+                var child = node.first_child;
+                while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+                    const child_node = self.source.node(child);
+                    if (child_node.kind == .text and strip and
+                        isWhitespaceText(child_node.value))
+                    {
+                        continue;
+                    }
+                    try self.copyFilteredNode(builder, child, new_id);
+                }
+            },
+            .text => {
+                const new_id = builder.createText(node.value) catch |err|
+                    return mapBuilderError(err);
+                builder.appendChild(parent, new_id) catch |err|
+                    return mapBuilderError(err);
+            },
+            .comment => {
+                const new_id = builder.createComment(node.value) catch |err|
+                    return mapBuilderError(err);
+                builder.appendChild(parent, new_id) catch |err|
+                    return mapBuilderError(err);
+            },
+            .processing_instruction => {
+                const new_id = builder.createProcessingInstruction(
+                    node.name,
+                    node.value,
+                ) catch |err| return mapBuilderError(err);
+                builder.appendChild(parent, new_id) catch |err|
+                    return mapBuilderError(err);
+            },
+        }
+    }
+
+    fn shouldStrip(
+        self: *Runtime,
+        namespace_uri: []const u8,
+        local: []const u8,
+    ) bool {
+        var strip = false;
+        for (self.stylesheet.space_rules) |rule| {
+            if (!rule.matches(namespace_uri, local)) continue;
+            if (!rule.strip) return false;
+            strip = true;
+        }
+        return strip;
     }
 
     fn buildKeys(self: *Runtime) Error!void {
@@ -1661,6 +1791,15 @@ fn compareNumbers(a: f64, b: f64) std.math.Order {
     if (a_nan) return .lt;
     if (b_nan) return .gt;
     return std.math.order(a, b);
+}
+
+fn isWhitespaceText(value: []const u8) bool {
+    for (value) |byte| {
+        if (byte != ' ' and byte != '\t' and byte != '\r' and byte != '\n') {
+            return false;
+        }
+    }
+    return true;
 }
 
 fn prefixOf(node: *const dom.Node) []const u8 {

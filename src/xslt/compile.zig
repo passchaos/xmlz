@@ -48,6 +48,28 @@ pub const AttributeSet = struct {
     visiting: bool = false,
 };
 
+pub const SpaceRule = struct {
+    strip: bool,
+    any: bool = false,
+    namespace_uri: ?[]const u8 = null,
+    local: ?[]const u8 = null,
+
+    pub fn matches(
+        self: SpaceRule,
+        namespace_uri: []const u8,
+        local: []const u8,
+    ) bool {
+        if (self.any) return true;
+        if (self.namespace_uri) |expected| {
+            if (!std.mem.eql(u8, expected, namespace_uri)) return false;
+        }
+        if (self.local) |expected| {
+            if (!std.mem.eql(u8, expected, local)) return false;
+        }
+        return true;
+    }
+};
+
 pub const SortKey = struct {
     select: ?CompiledExpr = null,
     data_type: enum { text, number } = .text,
@@ -100,6 +122,7 @@ pub const Stylesheet = struct {
     globals: []const Variable = &.{},
     keys: []const KeyDef = &.{},
     attribute_sets: []const AttributeSet = &.{},
+    space_rules: []const SpaceRule = &.{},
     output: Output = .{},
     documents: []const *dom.Document = &.{},
 
@@ -308,6 +331,7 @@ pub fn compileWithOptions(
         .attribute_sets = try compiler.attribute_sets.toOwnedSlice(
             compiler.arena,
         ),
+        .space_rules = try compiler.space_rules.toOwnedSlice(compiler.arena),
         .output = compiler.output,
         .documents = try compiler.included_documents.toOwnedSlice(
             compiler.arena,
@@ -324,6 +348,7 @@ const Compiler = struct {
     globals: std.ArrayList(Variable) = .empty,
     keys: std.ArrayList(KeyDef) = .empty,
     attribute_sets: std.ArrayList(AttributeSet) = .empty,
+    space_rules: std.ArrayList(SpaceRule) = .empty,
     output: Output = .{},
     order: usize = 0,
     next_precedence: usize = 0,
@@ -430,10 +455,10 @@ const Compiler = struct {
                 try self.compileKey(child);
             } else if (std.mem.eql(u8, local, "attribute-set")) {
                 try self.compileAttributeSet(child);
-            } else if (std.mem.eql(u8, local, "strip-space") or
-                std.mem.eql(u8, local, "preserve-space"))
-            {
-                // Whitespace stripping is not applied to the source tree yet.
+            } else if (std.mem.eql(u8, local, "strip-space")) {
+                try self.compileSpaceRule(child, true);
+            } else if (std.mem.eql(u8, local, "preserve-space")) {
+                try self.compileSpaceRule(child, false);
             } else if (std.mem.eql(u8, local, "decimal-format") or
                 std.mem.eql(u8, local, "namespace-alias"))
             {
@@ -622,6 +647,59 @@ const Compiler = struct {
             .namespaces = try self.namespacesOf(id),
             .use = try self.parseExpression(id, use_text),
         });
+    }
+
+    fn compileSpaceRule(
+        self: *Compiler,
+        id: dom.NodeId,
+        strip: bool,
+    ) Error!void {
+        const elements = self.document.attribute(id, "elements") orelse
+            return error.InvalidStylesheet;
+        var tokens = std.mem.tokenizeAny(u8, elements, " \t\r\n");
+        while (tokens.next()) |token| {
+            try self.space_rules.append(
+                self.arena,
+                try self.parseSpaceRule(id, token, strip),
+            );
+        }
+    }
+
+    fn parseSpaceRule(
+        self: *Compiler,
+        id: dom.NodeId,
+        token: []const u8,
+        strip: bool,
+    ) Error!SpaceRule {
+        if (std.mem.eql(u8, token, "*")) {
+            return .{ .strip = strip, .any = true };
+        }
+        if (std.mem.indexOfScalar(u8, token, ':')) |colon| {
+            const prefix = token[0..colon];
+            const local = token[colon + 1 ..];
+            if (prefix.len == 0 or local.len == 0) {
+                return error.InvalidStylesheet;
+            }
+            const bindings = try self.namespacesOf(id);
+            var namespace_uri: ?[]const u8 = null;
+            for (bindings) |binding| {
+                if (std.mem.eql(u8, binding.prefix, prefix)) {
+                    namespace_uri = binding.uri;
+                    break;
+                }
+            }
+            if (namespace_uri == null) return error.InvalidStylesheet;
+            return .{
+                .strip = strip,
+                .namespace_uri = namespace_uri,
+                .local = if (std.mem.eql(u8, local, "*")) null else local,
+            };
+        }
+        return .{
+            .strip = strip,
+            .namespace_uri = "",
+            .local = token,
+        };
     }
 
     fn compileAttributeSet(self: *Compiler, id: dom.NodeId) Error!void {
