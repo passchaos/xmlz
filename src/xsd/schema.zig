@@ -2,9 +2,10 @@
 //!
 //! Supported: global/local elements and attributes, simple types with
 //! restriction/list/union and facets, complex types with sequence/choice/all
-//! particles, wildcards, attribute uses, and simple/complex content extension
-//! and restriction. Groups, attribute groups, includes/imports, identity
-//! constraints, substitution groups, and `xsi:type` are not implemented.
+//! particles, groups, attribute groups, wildcards, substitution groups,
+//! attribute uses, and simple/complex content extension and restriction.
+//! Includes/imports, identity constraints, and abstract-type enforcement are
+//! not implemented.
 
 const std = @import("std");
 const dom = @import("../dom.zig");
@@ -81,6 +82,11 @@ pub const Particle = union(enum) {
         min: usize = 1,
         max: ?usize = 1,
     },
+    group: struct {
+        decl: *const GroupDecl,
+        min: usize = 1,
+        max: ?usize = 1,
+    },
 };
 
 pub const Use = enum { optional, required, prohibited };
@@ -96,9 +102,33 @@ pub const ElementDecl = struct {
     type_use: TypeUse = .any_type,
     type_info: TypeInfo = .any_type,
     nillable: bool = false,
+    abstract: bool = false,
     default_value: ?[]const u8 = null,
     fixed_value: ?[]const u8 = null,
     global: bool = false,
+    substitution_qname: ?QName = null,
+    substitution_group: ?*const ElementDecl = null,
+    node: dom.NodeId = dom.null_node,
+};
+
+pub const GroupDecl = struct {
+    name: []const u8 = "",
+    namespace_uri: []const u8 = "",
+    particle: ?*const Particle = null,
+    parsed: bool = false,
+    resolving: bool = false,
+    cycle_checked: bool = false,
+    visiting: bool = false,
+    node: dom.NodeId = dom.null_node,
+};
+
+pub const AttributeGroupDecl = struct {
+    name: []const u8 = "",
+    namespace_uri: []const u8 = "",
+    attributes: []const AttributeUse = &.{},
+    any_attribute: ?Wildcard = null,
+    parsed: bool = false,
+    resolving: bool = false,
     node: dom.NodeId = dom.null_node,
 };
 
@@ -178,6 +208,8 @@ pub const Schema = struct {
     elements: []const *const ElementDecl,
     attributes: []const *const AttributeDecl,
     types: []const *const TypeDecl,
+    groups: []const *const GroupDecl,
+    attribute_groups: []const *const AttributeGroupDecl,
 
     pub fn deinit(self: *Schema) void {
         self.arena.deinit();
@@ -229,6 +261,55 @@ pub const Schema = struct {
         }
         return null;
     }
+
+    pub fn findGroup(
+        self: *const Schema,
+        namespace_uri: []const u8,
+        local: []const u8,
+    ) ?*const GroupDecl {
+        for (self.groups) |decl| {
+            if (std.mem.eql(u8, decl.namespace_uri, namespace_uri) and
+                std.mem.eql(u8, decl.name, local))
+            {
+                return decl;
+            }
+        }
+        return null;
+    }
+
+    pub fn findAttributeGroup(
+        self: *const Schema,
+        namespace_uri: []const u8,
+        local: []const u8,
+    ) ?*const AttributeGroupDecl {
+        for (self.attribute_groups) |decl| {
+            if (std.mem.eql(u8, decl.namespace_uri, namespace_uri) and
+                std.mem.eql(u8, decl.name, local))
+            {
+                return decl;
+            }
+        }
+        return null;
+    }
+
+    /// True when `member` can substitute for `head` through the substitution
+    /// group chain.
+    pub fn isSubstitutionMember(
+        self: *const Schema,
+        member: *const ElementDecl,
+        head: *const ElementDecl,
+    ) bool {
+        _ = self;
+        var current = member.substitution_group;
+        var steps: usize = 0;
+        while (current) |candidate| {
+            if (candidate == head) return true;
+            steps += 1;
+            if (steps > 1024) return false;
+            current = candidate.substitution_group;
+        }
+        return false;
+    }
 };
 
 /// Compile an XML Schema document.
@@ -251,6 +332,10 @@ pub fn parse(
         .elements = try compiler.elements.toOwnedSlice(compiler.arena),
         .attributes = try compiler.attributes.toOwnedSlice(compiler.arena),
         .types = try compiler.types.toOwnedSlice(compiler.arena),
+        .groups = try compiler.groups.toOwnedSlice(compiler.arena),
+        .attribute_groups = try compiler.attribute_groups.toOwnedSlice(
+            compiler.arena,
+        ),
     };
 }
 
@@ -263,6 +348,8 @@ const Compiler = struct {
     elements: std.ArrayList(*const ElementDecl) = .empty,
     attributes: std.ArrayList(*const AttributeDecl) = .empty,
     types: std.ArrayList(*const TypeDecl) = .empty,
+    groups: std.ArrayList(*const GroupDecl) = .empty,
+    attribute_groups: std.ArrayList(*const AttributeGroupDecl) = .empty,
     local_elements: std.ArrayList(*const ElementDecl) = .empty,
     local_attributes: std.ArrayList(*const AttributeDecl) = .empty,
     root: dom.NodeId = dom.null_node,
@@ -288,6 +375,7 @@ const Compiler = struct {
 
         try self.collectGlobals();
         try self.parseGlobalBodies();
+        try self.resolveSubstitutions();
         try self.resolveAllTypes();
         try self.resolveAllDeclarations();
     }
@@ -334,11 +422,23 @@ const Compiler = struct {
                     .local = decl.name,
                 }) != null) return error.InvalidSchema;
                 try self.types.append(self.arena, decl);
+            } else if (std.mem.eql(u8, child_node.local, "group")) {
+                const decl = try self.globalGroup(child);
+                if (self.findGlobalGroup(.{
+                    .namespace_uri = decl.namespace_uri,
+                    .local = decl.name,
+                }) != null) return error.InvalidSchema;
+                try self.groups.append(self.arena, decl);
+            } else if (std.mem.eql(u8, child_node.local, "attributeGroup")) {
+                const decl = try self.globalAttributeGroup(child);
+                if (self.findGlobalAttributeGroup(.{
+                    .namespace_uri = decl.namespace_uri,
+                    .local = decl.name,
+                }) != null) return error.InvalidSchema;
+                try self.attribute_groups.append(self.arena, decl);
             } else if (std.mem.eql(u8, child_node.local, "include") or
                 std.mem.eql(u8, child_node.local, "import") or
                 std.mem.eql(u8, child_node.local, "redefine") or
-                std.mem.eql(u8, child_node.local, "group") or
-                std.mem.eql(u8, child_node.local, "attributeGroup") or
                 std.mem.eql(u8, child_node.local, "notation"))
             {
                 return error.InvalidSchema;
@@ -353,14 +453,20 @@ const Compiler = struct {
         const name = self.document.attribute(id, "name") orelse
             return error.InvalidSchema;
         const decl = try self.arena.create(ElementDecl);
+        var substitution_qname: ?QName = null;
+        if (self.document.attribute(id, "substitutionGroup")) |value| {
+            substitution_qname = try self.resolveQName(id, value);
+        }
         decl.* = .{
             .name = name,
             .namespace_uri = self.target_namespace,
             .global = true,
             .node = id,
             .nillable = try self.booleanAttribute(id, "nillable"),
+            .abstract = try self.booleanAttribute(id, "abstract"),
             .default_value = self.document.attribute(id, "default"),
             .fixed_value = self.document.attribute(id, "fixed"),
+            .substitution_qname = substitution_qname,
         };
         return decl;
     }
@@ -399,11 +505,47 @@ const Compiler = struct {
         return decl;
     }
 
+    fn globalGroup(self: *Compiler, id: dom.NodeId) Error!*const GroupDecl {
+        const name = self.document.attribute(id, "name") orelse
+            return error.InvalidSchema;
+        const decl = try self.arena.create(GroupDecl);
+        decl.* = .{
+            .name = name,
+            .namespace_uri = self.target_namespace,
+            .node = id,
+        };
+        return decl;
+    }
+
+    fn globalAttributeGroup(
+        self: *Compiler,
+        id: dom.NodeId,
+    ) Error!*const AttributeGroupDecl {
+        const name = self.document.attribute(id, "name") orelse
+            return error.InvalidSchema;
+        const decl = try self.arena.create(AttributeGroupDecl);
+        decl.* = .{
+            .name = name,
+            .namespace_uri = self.target_namespace,
+            .node = id,
+        };
+        return decl;
+    }
+
     fn parseGlobalBodies(self: *Compiler) Error!void {
+        for (self.attribute_groups.items) |decl| {
+            try self.parseAttributeGroupBody(decl);
+        }
         const global_count = self.types.items.len;
         var type_index: usize = 0;
         while (type_index < global_count) : (type_index += 1) {
             try self.parseTypeBody(self.types.items[type_index]);
+        }
+        for (self.groups.items) |decl| {
+            try self.parseGroupBody(decl);
+        }
+        for (self.groups.items) |decl| {
+            try self.checkGroupCycle(decl);
         }
         for (self.elements.items) |decl| {
             @constCast(decl).type_use = try self.elementTypeUse(
@@ -413,6 +555,122 @@ const Compiler = struct {
         }
         for (self.attributes.items) |decl| {
             @constCast(decl).type_use = try self.attributeTypeUse(decl.node);
+        }
+    }
+
+    fn parseGroupBody(self: *Compiler, decl: *const GroupDecl) Error!void {
+        if (decl.parsed) return;
+        if (decl.resolving) return error.InvalidSchema;
+        @constCast(decl).resolving = true;
+        var particle: ?*const Particle = null;
+        var child = self.document.node(decl.node).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const child_node = self.document.node(child);
+            if (child_node.kind != .element or !isXsd(child_node, null)) {
+                continue;
+            }
+            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
+            if (std.mem.eql(u8, child_node.local, "sequence") or
+                std.mem.eql(u8, child_node.local, "choice") or
+                std.mem.eql(u8, child_node.local, "all"))
+            {
+                if (particle != null) return error.InvalidSchema;
+                particle = try self.parseParticle(child);
+                continue;
+            }
+            return error.InvalidSchema;
+        }
+        @constCast(decl).particle = particle orelse
+            return error.InvalidSchema;
+        @constCast(decl).parsed = true;
+        @constCast(decl).resolving = false;
+    }
+
+    fn checkGroupCycle(self: *Compiler, decl: *const GroupDecl) Error!void {
+        if (decl.cycle_checked) return;
+        if (decl.visiting) return error.InvalidSchema;
+        @constCast(decl).visiting = true;
+        if (decl.particle) |particle| {
+            try self.checkParticleGroups(particle);
+        }
+        @constCast(decl).visiting = false;
+        @constCast(decl).cycle_checked = true;
+    }
+
+    fn checkParticleGroups(
+        self: *Compiler,
+        particle: *const Particle,
+    ) Error!void {
+        switch (particle.*) {
+            .group => |group| try self.checkGroupCycle(group.decl),
+            .sequence => |sequence| {
+                for (sequence.items) |item| try self.checkParticleGroups(item);
+            },
+            .choice => |choice| {
+                for (choice.items) |item| try self.checkParticleGroups(item);
+            },
+            .all => |all| {
+                for (all.items) |item| try self.checkParticleGroups(item);
+            },
+            .element, .any => {},
+        }
+    }
+
+    fn parseAttributeGroupBody(
+        self: *Compiler,
+        decl: *const AttributeGroupDecl,
+    ) Error!void {
+        if (decl.parsed) return;
+        if (decl.resolving) return error.InvalidSchema;
+        @constCast(decl).resolving = true;
+        var attributes: []const AttributeUse = &.{};
+        var any_attribute: ?Wildcard = null;
+        var child = self.document.node(decl.node).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const child_node = self.document.node(child);
+            if (child_node.kind != .element or !isXsd(child_node, null)) {
+                continue;
+            }
+            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
+            if (std.mem.eql(u8, child_node.local, "attribute") or
+                std.mem.eql(u8, child_node.local, "attributeGroup") or
+                std.mem.eql(u8, child_node.local, "anyAttribute"))
+            {
+                try self.parseAttributeContent(
+                    child,
+                    &attributes,
+                    &any_attribute,
+                );
+                continue;
+            }
+            return error.InvalidSchema;
+        }
+        @constCast(decl).attributes = attributes;
+        @constCast(decl).any_attribute = any_attribute;
+        @constCast(decl).parsed = true;
+        @constCast(decl).resolving = false;
+    }
+
+    fn resolveSubstitutions(self: *Compiler) Error!void {
+        for (self.elements.items) |decl| {
+            if (decl.substitution_qname) |qname| {
+                const head = self.findGlobalElement(qname) orelse
+                    return error.InvalidSchema;
+                if (head == decl) return error.InvalidSchema;
+                @constCast(decl).substitution_group = head;
+            }
+        }
+        for (self.elements.items) |decl| {
+            var current = decl.substitution_group;
+            var steps: usize = 0;
+            while (current) |head| {
+                if (head == decl) return error.InvalidSchema;
+                steps += 1;
+                if (steps > self.elements.items.len + 1) {
+                    return error.InvalidSchema;
+                }
+                current = head.substitution_group;
+            }
         }
     }
 
@@ -628,7 +886,11 @@ const Compiler = struct {
                 std.mem.eql(u8, child_node.local, "attributeGroup") or
                 std.mem.eql(u8, child_node.local, "anyAttribute"))
             {
-                try self.parseAttributeContent(child, &decl);
+                try self.parseAttributeContent(
+                    child,
+                    &decl.attributes,
+                    &decl.any_attribute,
+                );
             } else if (std.mem.eql(u8, child_node.local, "simpleContent")) {
                 if (decl.content != .empty) return error.InvalidSchema;
                 decl.content = try self.parseSimpleContent(child, &decl);
@@ -673,7 +935,11 @@ const Compiler = struct {
                     std.mem.eql(u8, facet_node.local, "attributeGroup") or
                     std.mem.eql(u8, facet_node.local, "anyAttribute"))
                 {
-                    try self.parseAttributeContent(facet_child, decl);
+                    try self.parseAttributeContent(
+                        facet_child,
+                        &decl.attributes,
+                        &decl.any_attribute,
+                    );
                     continue;
                 }
                 if (std.mem.eql(u8, facet_node.local, "simpleType")) {
@@ -725,7 +991,11 @@ const Compiler = struct {
                     std.mem.eql(u8, content_node.local, "attributeGroup") or
                     std.mem.eql(u8, content_node.local, "anyAttribute"))
                 {
-                    try self.parseAttributeContent(content_child, decl);
+                    try self.parseAttributeContent(
+                        content_child,
+                        &decl.attributes,
+                        &decl.any_attribute,
+                    );
                     continue;
                 }
                 if (std.mem.eql(u8, content_node.local, "sequence") or
@@ -748,15 +1018,45 @@ const Compiler = struct {
     fn parseAttributeContent(
         self: *Compiler,
         id: dom.NodeId,
-        decl: *ComplexDecl,
+        attributes: *[]const AttributeUse,
+        any_attribute: *?Wildcard,
     ) Error!void {
         const node = self.document.node(id);
         if (std.mem.eql(u8, node.local, "attribute")) {
-            try self.parseAttributeUse(id, &decl.attributes);
+            try self.parseAttributeUse(id, attributes);
         } else if (std.mem.eql(u8, node.local, "anyAttribute")) {
-            decl.any_attribute = try self.parseAnyAttribute(id);
+            if (any_attribute.* != null) return error.InvalidSchema;
+            any_attribute.* = try self.parseAnyAttribute(id);
         } else if (std.mem.eql(u8, node.local, "attributeGroup")) {
-            return error.InvalidSchema;
+            const ref = self.document.attribute(id, "ref") orelse
+                return error.InvalidSchema;
+            const qname = try self.resolveQName(id, ref);
+            const group = self.findGlobalAttributeGroup(qname) orelse
+                return error.InvalidSchema;
+            try self.parseAttributeGroupBody(group);
+            for (group.attributes) |candidate| {
+                for (attributes.*) |existing| {
+                    if (std.mem.eql(
+                        u8,
+                        existing.decl.namespace_uri,
+                        candidate.decl.namespace_uri,
+                    ) and std.mem.eql(
+                        u8,
+                        existing.decl.name,
+                        candidate.decl.name,
+                    )) {
+                        return error.InvalidSchema;
+                    }
+                }
+            }
+            var list: std.ArrayList(AttributeUse) = .empty;
+            try list.appendSlice(self.arena, attributes.*);
+            try list.appendSlice(self.arena, group.attributes);
+            attributes.* = try list.toOwnedSlice(self.arena);
+            if (group.any_attribute) |wildcard| {
+                if (any_attribute.* != null) return error.InvalidSchema;
+                any_attribute.* = wildcard;
+            }
         }
     }
 
@@ -800,6 +1100,15 @@ const Compiler = struct {
             attribute.type_use = try self.attributeTypeUse(id);
             try self.local_attributes.append(self.arena, attribute);
             decl = attribute;
+        }
+        for (uses.*) |existing| {
+            if (std.mem.eql(
+                u8,
+                existing.decl.namespace_uri,
+                decl.namespace_uri,
+            ) and std.mem.eql(u8, existing.decl.name, decl.name)) {
+                return error.InvalidSchema;
+            }
         }
         var list: std.ArrayList(AttributeUse) = .empty;
         try list.appendSlice(self.arena, uses.*);
@@ -864,7 +1173,18 @@ const Compiler = struct {
             return particle;
         }
         if (std.mem.eql(u8, node.local, "group")) {
-            return error.InvalidSchema;
+            const ref = self.document.attribute(id, "ref") orelse
+                return error.InvalidSchema;
+            const qname = try self.resolveQName(id, ref);
+            const group = self.findGlobalGroup(qname) orelse
+                return error.InvalidSchema;
+            const particle = try self.arena.create(Particle);
+            particle.* = .{ .group = .{
+                .decl = group,
+                .min = occurs.min,
+                .max = occurs.max,
+            } };
+            return particle;
         }
         if (std.mem.eql(u8, node.local, "sequence") or
             std.mem.eql(u8, node.local, "choice") or
@@ -881,7 +1201,8 @@ const Compiler = struct {
                     std.mem.eql(u8, child_node.local, "sequence") or
                     std.mem.eql(u8, child_node.local, "choice") or
                     std.mem.eql(u8, child_node.local, "all") or
-                    std.mem.eql(u8, child_node.local, "any"))
+                    std.mem.eql(u8, child_node.local, "any") or
+                    std.mem.eql(u8, child_node.local, "group"))
                 {
                     try items.append(self.arena, try self.parseParticle(child));
                 } else {
@@ -1089,6 +1410,31 @@ const Compiler = struct {
         qname: QName,
     ) ?*const AttributeDecl {
         for (self.attributes.items) |decl| {
+            if (std.mem.eql(u8, decl.namespace_uri, qname.namespace_uri) and
+                std.mem.eql(u8, decl.name, qname.local))
+            {
+                return decl;
+            }
+        }
+        return null;
+    }
+
+    fn findGlobalGroup(self: *Compiler, qname: QName) ?*const GroupDecl {
+        for (self.groups.items) |decl| {
+            if (std.mem.eql(u8, decl.namespace_uri, qname.namespace_uri) and
+                std.mem.eql(u8, decl.name, qname.local))
+            {
+                return decl;
+            }
+        }
+        return null;
+    }
+
+    fn findGlobalAttributeGroup(
+        self: *Compiler,
+        qname: QName,
+    ) ?*const AttributeGroupDecl {
+        for (self.attribute_groups.items) |decl| {
             if (std.mem.eql(u8, decl.namespace_uri, qname.namespace_uri) and
                 std.mem.eql(u8, decl.name, qname.local))
             {

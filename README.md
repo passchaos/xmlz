@@ -57,8 +57,9 @@ then exposes them through a pull parser and reusable lexical primitives.
   differential checks against libxslt.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
-  complex content, wildcards, built-in datatypes, facets, and `xsi:type` /
-  `xsi:nil`, with 152/152 differential checks against libxml2.
+  complex content, wildcards, groups, attribute groups, substitution groups,
+  built-in datatypes, facets, and `xsi:type` / `xsi:nil`, with 172/172
+  differential checks against libxml2.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.
@@ -90,7 +91,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | Canonical XML | Complete (C14N 1.0/1.1, exclusive; whole documents) |
 | XML Base / xml:id | Complete (RFC 3986 resolution, base chains, ID normalization) |
 | XSLT 1.0 | Core engine (templates, modes, params, sorting, copy, AVTs) |
-| XML Schema 1.0 | Core validation (structures, datatypes, facets, wildcards) |
+| XML Schema 1.0 | Core validation (structures, datatypes, facets, groups, substitution) |
 
 ## Quick start
 

@@ -303,3 +303,131 @@ test "XSD rejects malformed and unsupported schemas" {
             "<xs:element ref='missing'/></xs:schema>",
     );
 }
+
+test "XSD validates group references" {
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        \\  <xs:group name="pair">
+        \\    <xs:sequence>
+        \\      <xs:element name="a" type="xs:string"/>
+        \\      <xs:element name="b" type="xs:string"/>
+        \\    </xs:sequence>
+        \\  </xs:group>
+        \\  <xs:element name="root">
+        \\    <xs:complexType>
+        \\      <xs:sequence>
+        \\        <xs:group ref="pair" minOccurs="1" maxOccurs="2"/>
+        \\      </xs:sequence>
+        \\    </xs:complexType>
+        \\  </xs:element>
+        \\</xs:schema>
+    ;
+    try expectValid(
+        schema_source,
+        "<root><a>1</a><b>2</b><a>3</a><b>4</b></root>",
+    );
+    try expectValid(schema_source, "<root><a>1</a><b>2</b></root>");
+    try expectInvalid(schema_source, "<root><a>1</a></root>");
+    try expectInvalid(
+        schema_source,
+        "<root><a>1</a><b>2</b><a>3</a><b>4</b><a>5</a><b>6</b></root>",
+    );
+}
+
+test "XSD validates attribute group references" {
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        \\  <xs:attributeGroup name="base">
+        \\    <xs:attribute name="id" type="xs:integer" use="required"/>
+        \\  </xs:attributeGroup>
+        \\  <xs:attributeGroup name="common">
+        \\    <xs:attributeGroup ref="base"/>
+        \\    <xs:attribute name="name" type="xs:string"/>
+        \\    <xs:anyAttribute namespace="##any" processContents="skip"/>
+        \\  </xs:attributeGroup>
+        \\  <xs:element name="root">
+        \\    <xs:complexType>
+        \\      <xs:attributeGroup ref="common"/>
+        \\    </xs:complexType>
+        \\  </xs:element>
+        \\</xs:schema>
+    ;
+    try expectValid(schema_source, "<root id='1' name='x' other='y'/>");
+    try expectValid(schema_source, "<root id='1'/>");
+    try expectInvalid(schema_source, "<root name='x'/>");
+    try expectInvalid(schema_source, "<root id='x'/>");
+}
+
+test "XSD validates substitution groups and abstract elements" {
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+        \\  targetNamespace="urn:t" xmlns:t="urn:t"
+        \\  elementFormDefault="qualified">
+        \\  <xs:element name="head" abstract="true" type="xs:string"/>
+        \\  <xs:element name="member" substitutionGroup="t:head" type="xs:string"/>
+        \\  <xs:element name="root">
+        \\    <xs:complexType>
+        \\      <xs:sequence>
+        \\        <xs:element ref="t:head" maxOccurs="unbounded"/>
+        \\      </xs:sequence>
+        \\    </xs:complexType>
+        \\  </xs:element>
+        \\</xs:schema>
+    ;
+    try expectValid(
+        schema_source,
+        "<root xmlns='urn:t'><member>x</member></root>",
+    );
+    try expectValid(
+        schema_source,
+        "<root xmlns='urn:t'><member>x</member><member>y</member></root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root xmlns='urn:t'><head>x</head></root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root xmlns='urn:t'><other>x</other></root>",
+    );
+}
+
+test "XSD validates non-abstract substitution heads" {
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+        \\  targetNamespace="urn:t" xmlns:t="urn:t"
+        \\  elementFormDefault="qualified">
+        \\  <xs:element name="head" type="xs:string"/>
+        \\  <xs:element name="member" substitutionGroup="t:head" type="xs:string"/>
+        \\  <xs:element name="root">
+        \\    <xs:complexType>
+        \\      <xs:sequence>
+        \\        <xs:element ref="t:head"/>
+        \\      </xs:sequence>
+        \\    </xs:complexType>
+        \\  </xs:element>
+        \\</xs:schema>
+    ;
+    try expectValid(schema_source, "<root xmlns='urn:t'><head>x</head></root>");
+    try expectValid(
+        schema_source,
+        "<root xmlns='urn:t'><member>x</member></root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root xmlns='urn:t'><other>x</other></root>",
+    );
+}
+
+test "XSD rejects circular group references" {
+    try expectSchemaError(
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+            "<xs:group name='items'><xs:sequence>" ++
+            "<xs:element name='item' type='xs:string'/>" ++
+            "<xs:group ref='items' minOccurs='0'/>" ++
+            "</xs:sequence></xs:group>" ++
+            "<xs:element name='root'><xs:complexType>" ++
+            "<xs:group ref='items'/></xs:complexType></xs:element>" ++
+            "</xs:schema>",
+    );
+}

@@ -103,10 +103,11 @@ not implemented.
 Simple types resolve to built-in datatype kinds with inherited facets; complex
 types resolve to flattened particles and attribute uses, including
 simple/complex content extension and restriction. Instance validation walks the
-tree with a backtracking particle matcher, validates attributes and simple
-values, applies wildcards and `xsi:type` / `xsi:nil`, and collects errors with
-node paths. Includes/imports, groups, identity constraints, and substitution
-groups are not implemented.
+tree with a backtracking particle matcher, expands model and attribute
+groups, applies substitution groups and abstract-element rules, validates
+attributes and simple values, applies wildcards and `xsi:type` / `xsi:nil`,
+and collects errors with node paths. Includes/imports, identity constraints,
+and abstract-type enforcement are not implemented.
 
 ## Trusted mode
 

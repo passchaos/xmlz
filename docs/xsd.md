@@ -39,6 +39,10 @@ for (result.errors) |validation_error| {
 - Complex content: `xs:sequence`, `xs:choice`, `xs:all`, occurrence ranges,
   `mixed`, `xs:any` / `xs:anyAttribute` wildcards with `##any`, `##other`,
   `##targetNamespace`, and `##local`, and `processContents` skip/lax/strict.
+- Global `xs:group` and `xs:attributeGroup` definitions, references, nested
+  attribute groups, and circular group detection.
+- Substitution groups, including transitive members and abstract head
+  elements.
 - `xs:simpleContent` and `xs:complexContent` extension and restriction,
   including attribute inheritance from base types.
 - `targetNamespace`, `elementFormDefault`, `attributeFormDefault`, and local
@@ -49,11 +53,11 @@ for (result.errors) |validation_error| {
 
 ## Limitations
 
-- `xs:include`, `xs:import`, `xs:redefine`, `xs:group`, `xs:attributeGroup`,
-  `xs:notation`, and identity constraints (`xs:key`, `xs:keyref`,
-  `xs:unique`) are not implemented.
-- Substitution groups, abstract elements/types, and `block`/`final`
-  enforcement are not implemented.
+- `xs:include`, `xs:import`, `xs:redefine`, `xs:notation`, and identity
+  constraints (`xs:key`, `xs:keyref`, `xs:unique`) are not implemented.
+- Abstract types and `block`/`final` enforcement are not implemented.
+- Substitution group members are not checked for valid type derivation from
+  the head.
 - `xsi:type` is used without checking that the named type is validly derived
   from the declared type.
 - Wildcard namespace lists (as opposed to the `##` tokens) are not supported.
@@ -77,5 +81,5 @@ attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
 
 ```text
-152/152 XSD differential checks passed
+172/172 XSD differential checks passed
 ```

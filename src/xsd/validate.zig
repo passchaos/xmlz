@@ -84,6 +84,9 @@ const Validator = struct {
         id: dom.NodeId,
         decl: *const schema.ElementDecl,
     ) Error!void {
+        if (decl.abstract) {
+            try self.addError(id, "abstract element must be substituted");
+        }
         const effective = try self.effectiveType(id, decl.type_info);
         const nil = try self.nilValue(id);
         if (nil) {
@@ -638,6 +641,7 @@ const Matcher = struct {
     validator: *Validator,
     children: []const dom.NodeId,
     assignments: std.ArrayList(Assignment) = .empty,
+    depth: usize = 0,
 
     fn match(self: *Matcher, particle: *const schema.Particle) ?usize {
         const occurs = particleOccurs(particle);
@@ -691,14 +695,27 @@ const Matcher = struct {
                 if (index >= self.children.len) return null;
                 const child_id = self.children[index];
                 const child = self.validator.document.node(child_id);
-                if (!std.mem.eql(u8, child.local, element.decl.name) or
-                    !std.mem.eql(u8, child.ns, element.decl.namespace_uri))
-                {
-                    return null;
+                var actual = element.decl;
+                const direct_match =
+                    std.mem.eql(u8, child.local, element.decl.name) and
+                    std.mem.eql(u8, child.ns, element.decl.namespace_uri);
+                if (!direct_match) {
+                    if (!element.decl.global) return null;
+                    const candidate = self.validator.schema.findElement(
+                        child.ns,
+                        child.local,
+                    ) orelse return null;
+                    if (!self.validator.schema.isSubstitutionMember(
+                        candidate,
+                        element.decl,
+                    )) {
+                        return null;
+                    }
+                    actual = candidate;
                 }
                 self.assignments.append(self.validator.allocator, .{
                     .child = child_id,
-                    .decl = element.decl,
+                    .decl = actual,
                     .wildcard = null,
                 }) catch return null;
                 return index + 1;
@@ -760,6 +777,19 @@ const Matcher = struct {
                 @memset(flags, false);
                 return self.matchAll(all.items, index, flags);
             },
+            .group => |group| {
+                if (self.depth >= 256) return null;
+                const group_particle = group.decl.particle orelse return null;
+                self.depth += 1;
+                defer self.depth -= 1;
+                const occurs = particleOccurs(group_particle);
+                return self.matchWithOccurrences(
+                    group_particle,
+                    index,
+                    occurs.min,
+                    occurs.max,
+                );
+            },
         }
     }
 
@@ -801,6 +831,7 @@ fn particleOccurs(particle: *const schema.Particle) struct {
         .choice => |choice| .{ .min = choice.min, .max = choice.max },
         .all => |all| .{ .min = all.min, .max = all.max },
         .any => |any| .{ .min = any.min, .max = any.max },
+        .group => |group| .{ .min = group.min, .max = group.max },
     };
 }
 

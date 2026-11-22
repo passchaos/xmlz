@@ -723,6 +723,144 @@ CASES = [
         ],
     ),
     (
+        "group-ref",
+        f"""<xs:schema xmlns:xs="{XS}">
+          <xs:group name="pair">
+            <xs:sequence>
+              <xs:element name="a" type="xs:string"/>
+              <xs:element name="b" type="xs:string"/>
+            </xs:sequence>
+          </xs:group>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:group ref="pair" minOccurs="1" maxOccurs="2"/>
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root><a>1</a><b>2</b></root>",
+            "<root><a>1</a><b>2</b><a>3</a><b>4</b></root>",
+            "<root><a>1</a></root>",
+            "<root><a>1</a><b>2</b><a>3</a><b>4</b><a>5</a><b>6</b></root>",
+        ],
+    ),
+    (
+        "group-choice",
+        f"""<xs:schema xmlns:xs="{XS}">
+          <xs:group name="either">
+            <xs:choice>
+              <xs:element name="a" type="xs:string"/>
+              <xs:element name="b" type="xs:string"/>
+            </xs:choice>
+          </xs:group>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:group ref="either"/>
+                <xs:group ref="either"/>
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root><a>1</a><b>2</b></root>",
+            "<root><a>1</a><a>2</a></root>",
+            "<root><a>1</a></root>",
+            "<root><a>1</a><b>2</b><a>3</a></root>",
+        ],
+    ),
+    (
+        "recursive-group",
+        f"""<xs:schema xmlns:xs="{XS}">
+          <xs:group name="items">
+            <xs:sequence>
+              <xs:element name="item" type="xs:string"/>
+              <xs:group ref="items" minOccurs="0"/>
+            </xs:sequence>
+          </xs:group>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:group ref="items"/>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root><item>a</item></root>",
+            "<root><item>a</item><item>b</item></root>",
+            "<root><item>a</item><item>b</item><item>c</item></root>",
+            "<root/>",
+        ],
+    ),
+    (
+        "attribute-group",
+        f"""<xs:schema xmlns:xs="{XS}">
+          <xs:attributeGroup name="base">
+            <xs:attribute name="id" type="xs:integer" use="required"/>
+          </xs:attributeGroup>
+          <xs:attributeGroup name="common">
+            <xs:attributeGroup ref="base"/>
+            <xs:attribute name="name" type="xs:string"/>
+            <xs:anyAttribute namespace="##any" processContents="skip"/>
+          </xs:attributeGroup>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:attributeGroup ref="common"/>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root id='1' name='x' other='y'/>",
+            "<root id='1'/>",
+            "<root name='x'/>",
+            "<root id='x'/>",
+        ],
+    ),
+    (
+        "substitution-abstract",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+          xmlns:t="urn:t" elementFormDefault="qualified">
+          <xs:element name="head" abstract="true" type="xs:string"/>
+          <xs:element name="member" substitutionGroup="t:head" type="xs:string"/>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:element ref="t:head" maxOccurs="unbounded"/>
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t'><member>x</member></root>",
+            "<root xmlns='urn:t'><member>x</member><member>y</member></root>",
+            "<root xmlns='urn:t'><head>x</head></root>",
+            "<root xmlns='urn:t'><other>x</other></root>",
+            "<root xmlns='urn:t'/>",
+        ],
+    ),
+    (
+        "substitution-transitive",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+          xmlns:t="urn:t" elementFormDefault="qualified">
+          <xs:element name="head" abstract="true" type="xs:string"/>
+          <xs:element name="middle" substitutionGroup="t:head" type="xs:string"/>
+          <xs:element name="leaf" substitutionGroup="t:middle" type="xs:string"/>
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:element ref="t:head"/>
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t'><leaf>x</leaf></root>",
+            "<root xmlns='urn:t'><middle>x</middle></root>",
+            "<root xmlns='urn:t'><head>x</head></root>",
+        ],
+    ),
+    (
         "any-wildcard",
         f"""<xs:schema xmlns:xs="{XS}">
           <xs:element name="root">
