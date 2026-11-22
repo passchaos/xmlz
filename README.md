@@ -74,6 +74,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   identity constraints, includes/imports/redefines, notation declarations,
   built-in datatypes, facets, abstract types, `block`/`final`, and
   `xsi:type` / `xsi:nil`, with 248/248 differential checks against libxml2.
+- **OASIS XML Catalogs.** `catalog.parse` resolves system/public identifiers
+  and URIs through exact entries, rewrites, suffixes, delegates,
+  `nextCatalog`, `prefer`, and `xml:base`, with 17/17 differential checks
+  against libxml2's `xmlcatalog`.
 - **ISO Schematron.** `schematron.parse` compiles schemas and
   `schematron.validate` evaluates rule contexts, assertions, reports, lets,
   namespaces, phases, abstract rules (`extends`), and abstract patterns
@@ -121,6 +125,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | XML Schema 1.0 | Core validation (structures, datatypes, facets, groups, identity) |
 | RELAX NG | XML and compact syntax (patterns, datatypes, includes, external refs) |
 | ISO Schematron | Core rules, assertions/reports, lets, namespaces, phases, abstract patterns/rules |
+| XML Catalogs | System/public/URI resolution, rewrites, delegates, next catalogs |
 
 ## Quick start
 
@@ -234,6 +239,7 @@ src/xslt/               XSLT 1.0 stylesheet compiler and transformer
 src/xsd/                XML Schema datatypes, regex, compiler, validator
 src/rng/                RELAX NG schema parser and validator
 src/schematron/         ISO Schematron compiler and validator
+src/catalog.zig         OASIS XML Catalogs resolution
 src/namespace.zig       Namespaces in XML 1.0 resolver
 src/root.zig            public API surface
 tools/conformance.zig   W3C suite harness
@@ -262,6 +268,7 @@ zig build rng-diff      # RELAX NG differential checks vs libxml2 (needs lxml)
 zig build rng-compact-diff # RELAX NG compact syntax checks vs XML twins (needs lxml)
 zig build xinclude-diff # XInclude checks vs libxml2 xmllint
 zig build schematron-diff # ISO Schematron checks vs the ISO skeleton (needs lxml)
+zig build catalog-diff   # OASIS XML Catalogs checks vs libxml2 xmlcatalog
 zig build test          # includes deterministic mutation/fuzz smoke tests
 ```
 

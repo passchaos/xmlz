@@ -136,6 +136,15 @@ instance, binds schema/pattern/rule-level `let` variables, renders failure
 messages from text and `name`/`value-of` parts, and records failed assertions
 and successful reports separately. Phases select the active patterns.
 
+## XML Catalogs
+
+`catalog` parses OASIS XML Catalog documents into ordered entry lists,
+including groups, rewrites, suffixes, delegates, and `nextCatalog` references.
+Referenced catalogs are loaded through a caller resolver with cycle-safe
+caching. Resolution follows the specification's `prefer` ordering, applies
+`xml:base`, selects the longest matching rewrite prefix or suffix, and returns
+arena-owned URI strings.
+
 ## Trusted mode
 
 `Parser.Options.trusted = true` skips character, name, duplicate-attribute, and
@@ -164,5 +173,7 @@ by the conformance harness.
   equivalent XML-syntax twins using libxml2.
 - `zig build schematron-diff` compares Schematron validity with the ISO
   Schematron skeleton through lxml.
+- `zig build catalog-diff` compares catalog resolution with libxml2's
+  `xmlcatalog`.
 - `zig build bench` compares pull/DOM throughput against expat, pugixml, and
   libxml2 with reproducible generated input.

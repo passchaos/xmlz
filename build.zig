@@ -105,6 +105,17 @@ pub fn build(b: *std.Build) void {
     xsd_tool.root_module.addImport("xmlz", mod);
     b.installArtifact(xsd_tool);
 
+    const catalog_tool = b.addExecutable(.{
+        .name = "catalog",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/catalog.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    catalog_tool.root_module.addImport("xmlz", mod);
+    b.installArtifact(catalog_tool);
+
     const schematron_tool = b.addExecutable(.{
         .name = "schematron",
         .root_module = b.createModule(.{
@@ -225,6 +236,17 @@ pub fn build(b: *std.Build) void {
         "Differential ISO Schematron checks against the ISO skeleton through lxml",
     );
     schematron_diff_step.dependOn(&schematron_diff.step);
+
+    const catalog_diff = b.addSystemCommand(&.{
+        "python3",
+        "tools/catalog_diff.py",
+    });
+    catalog_diff.addFileArg(catalog_tool.getEmittedBin());
+    const catalog_diff_step = b.step(
+        "catalog-diff",
+        "Differential OASIS XML Catalogs checks against libxml2's xmlcatalog",
+    );
+    catalog_diff_step.dependOn(&catalog_diff.step);
 
     const check_step = b.step("check", "Run unit tests and the conformance suite");
     check_step.dependOn(test_step);

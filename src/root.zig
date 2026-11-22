@@ -20,6 +20,7 @@ pub const xslt = @import("xslt/root.zig");
 pub const xsd = @import("xsd/root.zig");
 pub const rng = @import("rng/root.zig");
 pub const schematron = @import("schematron/root.zig");
+pub const catalog = @import("catalog.zig");
 pub const validation = @import("validation.zig");
 
 const findTagEnd = markup.findTagEnd;
@@ -48,6 +49,7 @@ test {
     _ = xsd;
     _ = rng;
     _ = schematron;
+    _ = catalog;
     _ = validation;
     _ = @import("fuzz_tests.zig");
 }
