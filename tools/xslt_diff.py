@@ -379,6 +379,74 @@ STYLESHEETS = [
         {},
     ),
     (
+        "number-levels",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <xsl:for-each select="//item"><n><xsl:number level="single" count="*"/></n></xsl:for-each>
+          <xsl:for-each select="//item"><m><xsl:number level="multiple" count="sec|item" format="1.1"/></m></xsl:for-each>
+          <xsl:for-each select="//item"><a><xsl:number level="any" count="item"/></a></xsl:for-each>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<doc><sec><item/><item/></sec><sec><item/></sec></doc>",
+        {},
+    ),
+    (
+        "number-ancestor",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out><xsl:apply-templates select="//name"/></out></xsl:template>
+        <xsl:template match="name"><n><xsl:number count="item"/></n></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root><item><name>A</name></item><x/><item><name>B</name></item><item><name>C</name></item></root>",
+        {},
+    ),
+    (
+        "number-from",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <xsl:for-each select="//item">
+            <s><xsl:number level="single" count="item" from="sec"/></s>
+            <m><xsl:number level="multiple" count="item" from="sec"/></m>
+            <a><xsl:number level="any" count="item" from="sec"/></a>
+          </xsl:for-each>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<doc><sec><item/><item/></sec><sec><item/></sec></doc>",
+        {},
+    ),
+    (
+        "number-formats",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <xsl:number value="3" format="1"/>
+          <xsl:number value="3" format="01"/>
+          <xsl:number value="3" format="a"/>
+          <xsl:number value="3" format="A"/>
+          <xsl:number value="3" format="i"/>
+          <xsl:number value="3" format="I"/>
+          <xsl:number value="3" format="1. "/>
+          <xsl:number value="3" format="(1)"/>
+          <xsl:number value="3" format="1.1"/>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "number-default-any",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <xsl:for-each select="//item"><n><xsl:number level="any"/></n></xsl:for-each>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<doc><sec><item/><item/></sec><sec><item/></sec></doc>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>

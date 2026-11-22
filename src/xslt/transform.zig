@@ -5,6 +5,7 @@ const dom = @import("../dom.zig");
 const dom_builder = @import("../dom_builder.zig");
 const namespace = @import("../namespace.zig");
 const xpath = @import("../xpath/root.zig");
+const xpath_ast = @import("../xpath/ast.zig");
 const xpath_value = @import("../xpath/value.zig");
 const xpath_eval = @import("../xpath/eval.zig");
 const writer_mod = @import("../writer.zig");
@@ -94,6 +95,10 @@ pub fn apply(
         .source = source,
         .builder = &builder,
         .key_map = KeyMap.init(arena_allocator),
+        .selector_cache = std.AutoHashMap(
+            *const xpath_ast.Expr,
+            *SelectorEntry,
+        ).init(arena_allocator),
     };
     try runtime.prepareSource();
     try runtime.buildKeys();
@@ -168,6 +173,11 @@ const KeyMap = std.HashMap(
     80,
 );
 
+const SelectorEntry = struct {
+    nodes: []const xpath.NodeRef,
+    map: std.AutoHashMap(NodeKey, void),
+};
+
 const SortEntry = struct {
     node: xpath.NodeRef,
     index: usize,
@@ -189,6 +199,7 @@ const Runtime = struct {
     template_states: []TemplateState = &.{},
     messages: std.ArrayList([]const u8) = .empty,
     key_map: KeyMap,
+    selector_cache: std.AutoHashMap(*const xpath_ast.Expr, *SelectorEntry),
     keys_ready: bool = false,
     filtered_source: ?*dom.Document = null,
     current_template: ?*const compile.Template = null,
@@ -1249,6 +1260,10 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!void {
+        const format_text = if (instruction.format) |format|
+            try self.evaluateAvt(format, node, position, size)
+        else
+            "1";
         if (instruction.value) |value| {
             const number = try self.toNumber(try self.evalOwned(
                 value,
@@ -1256,41 +1271,288 @@ const Runtime = struct {
                 position,
                 size,
             ));
-            try self.appendText(try self.formatNumber(number));
+            if (std.math.isNan(number)) {
+                try self.appendText("NaN");
+                return;
+            }
+            if (std.math.isInf(number)) {
+                try self.appendText(if (number < 0) "-Infinity" else "Infinity");
+                return;
+            }
+            const rounded = std.math.floor(number + 0.5);
+            if (rounded < 1) {
+                try self.appendText(try std.fmt.allocPrint(
+                    self.allocator,
+                    "{d}",
+                    .{rounded},
+                ));
+                return;
+            }
+            try self.appendText(try self.formatPositions(
+                &.{@intFromFloat(rounded)},
+                format_text,
+            ));
             return;
         }
-        const number: f64 = @floatFromInt(self.countSiblings(node));
-        try self.appendText(try self.formatNumber(number));
+        switch (instruction.level) {
+            .single => try self.numberSingle(instruction, node, format_text),
+            .multiple => try self.numberMultiple(instruction, node, format_text),
+            .any => try self.numberAny(instruction, node, format_text),
+        }
     }
 
-    fn countSiblings(self: *Runtime, node: xpath.NodeRef) usize {
-        const id = switch (node) {
-            .node => |value| value,
-            else => return 1,
-        };
-        const node_value = self.source.node(id);
-        if (node_value.kind != .element) return 1;
+    fn numberSingle(
+        self: *Runtime,
+        instruction: compile.NumberInstruction,
+        node: xpath.NodeRef,
+        format_text: []const u8,
+    ) Error!void {
+        var target: ?xpath.NodeRef = null;
+        var current = node;
+        while (true) {
+            if (instruction.from) |from| {
+                if (try self.selectorMatches(from, current)) break;
+            }
+            if (try self.matchesCount(instruction, node, current)) {
+                target = current;
+                break;
+            }
+            current = self.parentRef(current) orelse break;
+        }
+        const found = target orelse return;
+        const sibling_position = try self.siblingPosition(
+            instruction,
+            node,
+            found,
+        );
+        if (sibling_position == 0) return;
+        try self.appendText(try self.formatPositions(
+            &.{sibling_position},
+            format_text,
+        ));
+    }
+
+    fn numberMultiple(
+        self: *Runtime,
+        instruction: compile.NumberInstruction,
+        node: xpath.NodeRef,
+        format_text: []const u8,
+    ) Error!void {
+        var positions: std.ArrayList(usize) = .empty;
+        var current = node;
+        while (true) {
+            if (instruction.from) |from| {
+                if (try self.selectorMatches(from, current)) break;
+            }
+            if (try self.matchesCount(instruction, node, current)) {
+                const sibling_position = try self.siblingPosition(
+                    instruction,
+                    node,
+                    current,
+                );
+                if (sibling_position != 0) {
+                    try positions.append(self.allocator, sibling_position);
+                }
+            }
+            current = self.parentRef(current) orelse break;
+        }
+        if (positions.items.len == 0) return;
+        std.mem.reverse(usize, positions.items);
+        try self.appendText(try self.formatPositions(
+            positions.items,
+            format_text,
+        ));
+    }
+
+    fn numberAny(
+        self: *Runtime,
+        instruction: compile.NumberInstruction,
+        node: xpath.NodeRef,
+        format_text: []const u8,
+    ) Error!void {
+        var boundary: ?xpath.NodeRef = null;
+        if (instruction.from) |from| {
+            var current = node;
+            while (true) {
+                if (try self.selectorMatches(from, current)) {
+                    boundary = current;
+                    break;
+                }
+                current = self.parentRef(current) orelse break;
+            }
+        }
         var count: usize = 0;
-        var sibling = self.source.node(node_value.parent).first_child;
-        while (sibling != dom.null_node) : (sibling = self.source.node(sibling).next_sibling) {
-            const sibling_value = self.source.node(sibling);
-            if (sibling_value.kind == .element and
-                std.mem.eql(u8, sibling_value.name, node_value.name))
-            {
+        if (instruction.count) |count_selector| {
+            const entry = try self.selectorEntry(count_selector);
+            for (entry.nodes) |candidate| {
+                if (!numberInRange(candidate, node, boundary)) continue;
                 count += 1;
             }
-            if (sibling == id) break;
+        } else {
+            for (self.source.nodes, 0..) |_, index| {
+                const candidate: xpath.NodeRef = .{
+                    .node = @intCast(index),
+                };
+                if (!defaultCountMatches(self.source, node, candidate)) {
+                    continue;
+                }
+                if (!numberInRange(candidate, node, boundary)) continue;
+                count += 1;
+            }
         }
-        return count;
+        if (count != 0) {
+            try self.appendText(try self.formatPositions(
+                &.{count},
+                format_text,
+            ));
+        }
     }
 
-    fn formatNumber(self: *Runtime, number: f64) Error![]const u8 {
-        if (std.math.isNan(number)) return "NaN";
-        if (std.math.isInf(number)) {
-            return if (number < 0) "-Infinity" else "Infinity";
+    fn selectorEntry(
+        self: *Runtime,
+        selector: compile.CompiledExpr,
+    ) Error!*SelectorEntry {
+        if (self.selector_cache.get(selector.node)) |entry| return entry;
+        var context: xpath.Context = .{
+            .document = self.source,
+            .node = .{ .node = 0 },
+            .namespaces = selector.namespaces,
+            .key_resolver = if (self.keys_ready) .{
+                .context = self,
+                .lookup = lookupKey,
+            } else null,
+        };
+        var result = xpath_eval.evaluate(
+            self.allocator,
+            selector.node,
+            &context,
+        ) catch |err| return mapEvalError(err);
+        defer result.deinit();
+        const nodes = switch (result.value) {
+            .node_set => |value| try self.allocator.dupe(
+                xpath.NodeRef,
+                value,
+            ),
+            else => return error.InvalidStylesheet,
+        };
+        const entry = try self.allocator.create(SelectorEntry);
+        entry.* = .{
+            .nodes = nodes,
+            .map = std.AutoHashMap(NodeKey, void).init(self.allocator),
+        };
+        for (nodes) |candidate| {
+            try entry.map.put(nodeKey(candidate), {});
         }
-        const rounded = std.math.floor(number + 0.5);
-        return std.fmt.allocPrint(self.allocator, "{d}", .{rounded});
+        try self.selector_cache.put(selector.node, entry);
+        return entry;
+    }
+
+    fn selectorMatches(
+        self: *Runtime,
+        selector: compile.CompiledExpr,
+        node: xpath.NodeRef,
+    ) Error!bool {
+        const entry = try self.selectorEntry(selector);
+        return entry.map.contains(nodeKey(node));
+    }
+
+    fn matchesCount(
+        self: *Runtime,
+        instruction: compile.NumberInstruction,
+        current: xpath.NodeRef,
+        candidate: xpath.NodeRef,
+    ) Error!bool {
+        if (instruction.count) |selector| {
+            return self.selectorMatches(selector, candidate);
+        }
+        return defaultCountMatches(self.source, current, candidate);
+    }
+
+    fn parentRef(
+        self: *Runtime,
+        node: xpath.NodeRef,
+    ) ?xpath.NodeRef {
+        return switch (node) {
+            .node => |id| blk: {
+                const parent = self.source.node(id).parent;
+                if (parent == dom.null_node) break :blk null;
+                break :blk .{ .node = parent };
+            },
+            .attribute => |attr| .{ .node = attr.element },
+            .namespace_node => |ns| .{ .node = ns.element },
+        };
+    }
+
+    fn siblingPosition(
+        self: *Runtime,
+        instruction: compile.NumberInstruction,
+        current: xpath.NodeRef,
+        target: xpath.NodeRef,
+    ) Error!usize {
+        switch (target) {
+            .node => |id| {
+                const node = self.source.node(id);
+                const parent = node.parent;
+                if (parent == dom.null_node) return 1;
+                var position: usize = 0;
+                var sibling = self.source.node(parent).first_child;
+                while (sibling != dom.null_node) : (sibling = self.source.node(sibling).next_sibling) {
+                    const candidate: xpath.NodeRef = .{ .node = sibling };
+                    if (try self.matchesCount(instruction, current, candidate)) {
+                        position += 1;
+                    }
+                    if (sibling == id) break;
+                }
+                return position;
+            },
+            .attribute => |attr| {
+                var position: usize = 0;
+                const attributes = self.source.attributesOf(attr.element);
+                for (attributes, 0..) |_, index| {
+                    const candidate: xpath.NodeRef = .{
+                        .attribute = .{
+                            .element = attr.element,
+                            .index = @intCast(index),
+                        },
+                    };
+                    if (try self.matchesCount(instruction, current, candidate)) {
+                        position += 1;
+                    }
+                    if (index == attr.index) break;
+                }
+                return position;
+            },
+            .namespace_node => return 1,
+        }
+    }
+
+    fn formatPositions(
+        self: *Runtime,
+        numbers: []const usize,
+        format_text: []const u8,
+    ) Error![]const u8 {
+        const parsed = try parseNumberFormat(self.allocator, format_text);
+        var out: std.ArrayList(u8) = .empty;
+        try out.appendSlice(self.allocator, parsed.prefix);
+        for (numbers, 0..) |number, index| {
+            const token_index = @min(index, parsed.tokens.len - 1);
+            try appendFormattedNumber(
+                self.allocator,
+                &out,
+                number,
+                parsed.tokens[token_index],
+            );
+            if (index + 1 < numbers.len) {
+                if (index < parsed.separators.len) {
+                    try out.appendSlice(
+                        self.allocator,
+                        parsed.separators[index],
+                    );
+                }
+            }
+        }
+        try out.appendSlice(self.allocator, parsed.suffix);
+        return out.toOwnedSlice(self.allocator);
     }
 
     fn evaluateParams(
@@ -1800,6 +2062,271 @@ fn isWhitespaceText(value: []const u8) bool {
         }
     }
     return true;
+}
+
+const NumberTokenKind = enum { decimal, alphabetic, roman };
+
+const NumberToken = struct {
+    kind: NumberTokenKind,
+    width: usize = 1,
+    upper: bool = false,
+};
+
+const ParsedNumberFormat = struct {
+    prefix: []const u8,
+    suffix: []const u8,
+    tokens: []const NumberToken,
+    separators: []const []const u8,
+};
+
+fn parseNumberFormat(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+) Error!ParsedNumberFormat {
+    const Span = struct {
+        start: usize,
+        end: usize,
+        token: NumberToken,
+    };
+    var spans: std.ArrayList(Span) = .empty;
+    var index: usize = 0;
+    while (index < text.len) {
+        const byte = text[index];
+        if (byte == '0' or byte == '1') {
+            const start = index;
+            while (index < text.len and
+                (text[index] == '0' or text[index] == '1'))
+            {
+                index += 1;
+            }
+            try spans.append(allocator, .{
+                .start = start,
+                .end = index,
+                .token = .{ .kind = .decimal, .width = index - start },
+            });
+        } else if (byte == 'a' or byte == 'A' or byte == 'i' or byte == 'I') {
+            const start = index;
+            while (index < text.len and text[index] == byte) index += 1;
+            const kind: NumberTokenKind = if (byte == 'a' or byte == 'A')
+                .alphabetic
+            else
+                .roman;
+            try spans.append(allocator, .{
+                .start = start,
+                .end = index,
+                .token = .{
+                    .kind = kind,
+                    .width = index - start,
+                    .upper = byte == 'A' or byte == 'I',
+                },
+            });
+        } else {
+            index += 1;
+        }
+    }
+    if (spans.items.len == 0) {
+        const tokens = try allocator.alloc(NumberToken, 1);
+        tokens[0] = .{ .kind = .decimal };
+        return .{
+            .prefix = "",
+            .suffix = "",
+            .tokens = tokens,
+            .separators = &.{},
+        };
+    }
+    const tokens = try allocator.alloc(NumberToken, spans.items.len);
+    for (spans.items, 0..) |span, span_index| {
+        tokens[span_index] = span.token;
+    }
+    const separator_count = if (spans.items.len > 1)
+        spans.items.len - 1
+    else
+        0;
+    const separators = try allocator.alloc([]const u8, separator_count);
+    for (0..separator_count) |separator_index| {
+        separators[separator_index] = text[spans.items[separator_index].end..][0..(spans.items[separator_index + 1].start -
+            spans.items[separator_index].end)];
+    }
+    return .{
+        .prefix = text[0..spans.items[0].start],
+        .suffix = text[spans.items[spans.items.len - 1].end..],
+        .tokens = tokens,
+        .separators = separators,
+    };
+}
+
+fn appendFormattedNumber(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    number: usize,
+    token: NumberToken,
+) Error!void {
+    switch (token.kind) {
+        .decimal => try appendDecimal(allocator, out, number, token.width),
+        .alphabetic => {
+            if (number == 0) {
+                try appendDecimal(allocator, out, number, token.width);
+                return;
+            }
+            var buffer: [32]u8 = undefined;
+            var length: usize = 0;
+            var value = number;
+            while (value > 0) {
+                value -= 1;
+                const base: u8 = if (token.upper) 'A' else 'a';
+                buffer[length] = base + @as(u8, @intCast(value % 26));
+                value /= 26;
+                length += 1;
+            }
+            while (length > 0) {
+                length -= 1;
+                try out.append(allocator, buffer[length]);
+            }
+        },
+        .roman => {
+            if (number == 0 or number >= 4000) {
+                try appendDecimal(allocator, out, number, token.width);
+                return;
+            }
+            const roman = [_]struct { usize, []const u8 }{
+                .{ 1000, "m" }, .{ 900, "cm" }, .{ 500, "d" },
+                .{ 400, "cd" }, .{ 100, "c" },  .{ 90, "xc" },
+                .{ 50, "l" },   .{ 40, "xl" },  .{ 10, "x" },
+                .{ 9, "ix" },   .{ 5, "v" },    .{ 4, "iv" },
+                .{ 1, "i" },
+            };
+            var value = number;
+            for (roman) |entry| {
+                while (value >= entry[0]) {
+                    value -= entry[0];
+                    for (entry[1]) |byte| {
+                        try out.append(
+                            allocator,
+                            if (token.upper) std.ascii.toUpper(byte) else byte,
+                        );
+                    }
+                }
+            }
+        },
+    }
+}
+
+fn appendDecimal(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    number: usize,
+    width: usize,
+) Error!void {
+    var buffer: [32]u8 = undefined;
+    const digits = std.fmt.bufPrint(&buffer, "{d}", .{number}) catch
+        return error.InvalidArgument;
+    if (digits.len < width) {
+        var padding = digits.len;
+        while (padding < width) : (padding += 1) {
+            try out.append(allocator, '0');
+        }
+    }
+    try out.appendSlice(allocator, digits);
+}
+
+fn defaultCountMatches(
+    document: *const dom.Document,
+    current: xpath.NodeRef,
+    candidate: xpath.NodeRef,
+) bool {
+    switch (current) {
+        .node => |id| {
+            const current_node = document.node(id);
+            return switch (candidate) {
+                .node => |candidate_id| blk: {
+                    const candidate_node = document.node(candidate_id);
+                    if (candidate_node.kind != current_node.kind) {
+                        break :blk false;
+                    }
+                    break :blk switch (current_node.kind) {
+                        .element => std.mem.eql(
+                            u8,
+                            candidate_node.local,
+                            current_node.local,
+                        ) and std.mem.eql(
+                            u8,
+                            candidate_node.ns,
+                            current_node.ns,
+                        ),
+                        .processing_instruction => std.mem.eql(
+                            u8,
+                            candidate_node.name,
+                            current_node.name,
+                        ),
+                        .text, .comment, .document => true,
+                    };
+                },
+                else => false,
+            };
+        },
+        .attribute => |attribute| {
+            return switch (candidate) {
+                .attribute => |other| blk: {
+                    const left = document.attributesOf(
+                        attribute.element,
+                    )[attribute.index];
+                    const right = document.attributesOf(
+                        other.element,
+                    )[other.index];
+                    break :blk std.mem.eql(
+                        u8,
+                        left.localName(),
+                        right.localName(),
+                    ) and std.mem.eql(u8, left.ns, right.ns);
+                },
+                else => false,
+            };
+        },
+        .namespace_node => |namespace_node| {
+            return switch (candidate) {
+                .namespace_node => |other| std.mem.eql(
+                    u8,
+                    namespace_node.prefix,
+                    other.prefix,
+                ),
+                else => false,
+            };
+        },
+    }
+}
+
+fn numberInRange(
+    candidate: xpath.NodeRef,
+    current: xpath.NodeRef,
+    boundary: ?xpath.NodeRef,
+) bool {
+    const candidate_key = candidate.orderKey();
+    if (boundary) |boundary_node| {
+        const boundary_key = boundary_node.orderKey();
+        if (valueOrderKeyLessThan(candidate_key, boundary_key) or
+            orderKeysEqual(candidate_key, boundary_key))
+        {
+            return false;
+        }
+    }
+    const current_key = current.orderKey();
+    if (valueOrderKeyLessThan(current_key, candidate_key)) return false;
+    return true;
+}
+
+fn valueOrderKeyLessThan(
+    a: xpath_value.OrderKey,
+    b: xpath_value.OrderKey,
+) bool {
+    return xpath_value.orderKeyLessThan(a, b);
+}
+
+fn orderKeysEqual(
+    a: xpath_value.OrderKey,
+    b: xpath_value.OrderKey,
+) bool {
+    return a.primary == b.primary and a.phase == b.phase and
+        a.index == b.index;
 }
 
 fn prefixOf(node: *const dom.Node) []const u8 {

@@ -53,9 +53,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   with 69/69 differential checks against libxml2.
 - **XSLT 1.0.** `xslt.transform` compiles templates, modes, parameters,
   variables, sorting, copy instructions, AVTs, keys, includes/imports with
-  precedence and `apply-imports`, attribute sets, whitespace stripping, HTML
+  precedence and `apply-imports`, attribute sets, whitespace stripping,
+  multi-level `xsl:number` with count/from patterns and number formats, HTML
   output, and the core instruction set, reusing the XPath engine for match
-  patterns and expressions, with 59/59 differential checks against libxslt.
+  patterns and expressions, with 64/64 differential checks against libxslt.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,

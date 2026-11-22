@@ -1083,10 +1083,10 @@ const Compiler = struct {
             }
         }
         if (self.document.attribute(id, "count")) |count| {
-            instruction.count = try self.parseExpression(id, count);
+            instruction.count = try self.compilePatternExpression(id, count);
         }
         if (self.document.attribute(id, "from")) |from| {
-            instruction.from = try self.parseExpression(id, from);
+            instruction.from = try self.compilePatternExpression(id, from);
         }
         return instruction;
     }
@@ -1255,6 +1255,18 @@ const Compiler = struct {
             });
         }
         return parts.toOwnedSlice(self.arena);
+    }
+
+    fn compilePatternExpression(
+        self: *Compiler,
+        id: dom.NodeId,
+        text: []const u8,
+    ) Error!CompiledExpr {
+        const parsed = try self.parseExpression(id, text);
+        return .{
+            .node = try self.patternSelector(parsed.node),
+            .namespaces = parsed.namespaces,
+        };
     }
 
     fn parseExpression(self: *Compiler, id: dom.NodeId, text: []const u8) Error!CompiledExpr {

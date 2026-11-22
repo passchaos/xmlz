@@ -787,3 +787,131 @@ test "XSLT strip-space affects copy-of output" {
         output,
     );
 }
+
+test "XSLT xsl:number supports levels and count patterns" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:for-each select="//item">
+        \\      <n><xsl:number level="single" count="*"/></n>
+        \\    </xsl:for-each>
+        \\    <xsl:for-each select="//item">
+        \\      <m><xsl:number level="multiple" count="sec|item" format="1.1"/></m>
+        \\    </xsl:for-each>
+        \\    <xsl:for-each select="//item">
+        \\      <a><xsl:number level="any" count="item"/></a>
+        \\    </xsl:for-each>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source = "<doc><sec><item/><item/></sec><sec><item/></sec></doc>";
+    const output = try transformToString(stylesheet, source, .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><n>1</n><n>2</n><n>1</n>" ++
+            "<m>1.1</m><m>1.2</m><m>2.1</m>" ++
+            "<a>1</a><a>2</a><a>3</a></out>",
+        output,
+    );
+}
+
+test "XSLT xsl:number numbers matching ancestors and resets at from" {
+    const ancestor =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:apply-templates select="//name"/>
+        \\  </out></xsl:template>
+        \\  <xsl:template match="name">
+        \\    <n><xsl:number count="item"/></n>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const ancestor_output = try transformToString(
+        ancestor,
+        "<root><item><name>A</name></item><x/><item><name>B</name></item>" ++
+            "<item><name>C</name></item></root>",
+        .{},
+    );
+    defer testing.allocator.free(ancestor_output);
+    try testing.expectEqualStrings(
+        "<out><n>1</n><n>2</n><n>3</n></out>",
+        ancestor_output,
+    );
+
+    const resets =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:for-each select="//item">
+        \\      <s><xsl:number level="single" count="item" from="sec"/></s>
+        \\      <m><xsl:number level="multiple" count="item" from="sec"/></m>
+        \\      <a><xsl:number level="any" count="item" from="sec"/></a>
+        \\    </xsl:for-each>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const reset_output = try transformToString(
+        resets,
+        "<doc><sec><item/><item/></sec><sec><item/></sec></doc>",
+        .{},
+    );
+    defer testing.allocator.free(reset_output);
+    try testing.expectEqualStrings(
+        "<out><s>1</s><m>1</m><a>1</a>" ++
+            "<s>2</s><m>2</m><a>2</a>" ++
+            "<s>1</s><m>1</m><a>1</a></out>",
+        reset_output,
+    );
+}
+
+test "XSLT xsl:number formats numbers" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:number value="3" format="1"/>
+        \\    <xsl:number value="3" format="01"/>
+        \\    <xsl:number value="3" format="a"/>
+        \\    <xsl:number value="3" format="A"/>
+        \\    <xsl:number value="3" format="i"/>
+        \\    <xsl:number value="3" format="I"/>
+        \\    <xsl:number value="3" format="1. "/>
+        \\    <xsl:number value="3" format="(1)"/>
+        \\    <xsl:number value="3" format="1.1"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out>303cCiiiIII3. (3)3</out>",
+        output,
+    );
+}
+
+test "XSLT xsl:number omits unmatched counts" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:for-each select="root/item">
+        \\      <n><xsl:number level="single" count="none"/></n>
+        \\    </xsl:for-each>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root><item/><item/></root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out><n/><n/></out>", output);
+}

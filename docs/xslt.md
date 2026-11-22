@@ -59,8 +59,9 @@ defer result.deinit();
 - `xsl:strip-space` / `xsl:preserve-space` name tests, applied through a
   filtered source tree. As in XSLT 1.0 and libxslt, `xml:space` does not
   override these declarations.
-- `xsl:number` with a `value` expression, and same-name sibling numbering
-  otherwise.
+- `xsl:number` with `value`, `level="single|multiple|any"`, `count`/`from`
+  match patterns, and decimal, zero-padded, alphabetic, and Roman `format`
+  tokens.
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
   `indent`, and `version`. HTML output uses HTML void elements, minimizes
   common boolean attributes, and keeps `script`/`style` content raw. Result
@@ -82,8 +83,6 @@ template priority its specified default behavior.
   result is always UTF-8).
 - HTML output is compact, does not insert a Content-Type `meta` element, and
   does not emit DOCTYPE declarations.
-- `xsl:number` `count`, `from`, `level="multiple"`, and `level="any"` are not
-  implemented.
 - `format-number`, `document`, `generate-id`, `system-property`,
   `element-available`, and `function-available` are not available in
   expressions.
@@ -101,5 +100,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-59/59 XSLT differential checks passed
+64/64 XSLT differential checks passed
 ```
