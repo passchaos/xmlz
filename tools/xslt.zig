@@ -153,12 +153,12 @@ fn resolveExternal(
     system_id: []const u8,
     public_id: ?[]const u8,
     base_system_id: ?[]const u8,
-) ?[]const u8 {
+) ?xmlz.parser.ExternalResource {
     _ = public_id;
     const resolver: *ParseResolver = @ptrCast(@alignCast(context.?));
     const base = base_system_id orelse resolver.base;
     const loaded = resolver.loader.load(system_id, base) orelse return null;
-    return loaded.data;
+    return .{ .data = loaded.data, .uri = loaded.uri };
 }
 
 fn loadFile(
@@ -189,6 +189,7 @@ fn loadFile(
         .parser = .{
             .namespaces = true,
             .allocator = init.gpa,
+            .max_external_depth = 40,
             .resolver = .{
                 .context = &resolver,
                 .resolve = resolveExternal,

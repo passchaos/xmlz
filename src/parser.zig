@@ -140,6 +140,15 @@ pub const Options = struct {
     max_external_depth: usize = 8,
 };
 
+pub const ExternalResource = struct {
+    /// Resource contents. The slice must remain valid for the parser's
+    /// lifetime; the DOM may retain slices into it (entity values, DTD
+    /// declarations) for the document lifetime.
+    data: []const u8,
+    /// Resolved URI, used as the base for nested external references.
+    uri: []const u8,
+};
+
 pub const ExternalResolver = struct {
     context: ?*anyopaque = null,
     /// Resolve an external identifier. Return null when the resource is not
@@ -149,7 +158,7 @@ pub const ExternalResolver = struct {
         system_id: []const u8,
         public_id: ?[]const u8,
         base_system_id: ?[]const u8,
-    ) ?[]const u8,
+    ) ?ExternalResource,
 };
 
 pub const Error = error{
@@ -1291,16 +1300,16 @@ pub const Parser = struct {
                 entity.public_id
             else
                 null;
-            const source = resolver.resolve(
+            const resource = resolver.resolve(
                 resolver.context,
                 entity.system_id,
                 public_id,
                 self.resolver_base,
             ) orelse return;
             const allocator = self.scratchAllocator() orelse return;
-            const decoded = try decodeExternalAlloc(source, allocator);
+            const decoded = try decodeExternalAlloc(resource.data, allocator);
             const body = try self.stripTextDeclaration(decoded);
-            try self.pushEntityFrame(body, name, entity.system_id);
+            try self.pushEntityFrame(body, name, resource.uri);
             return;
         }
 
@@ -1921,20 +1930,20 @@ pub const Parser = struct {
         if (self.external_depth >= self.options.max_external_depth) {
             return self.fail(error.ExternalEntityDepthExceeded, 0);
         }
-        const source = resolver.resolve(
+        const resource = resolver.resolve(
             resolver.context,
             system_id,
             public_id,
             self.resolver_base,
         ) orelse return;
         const allocator = self.scratchAllocator() orelse return;
-        const decoded = try decodeExternalAlloc(source, allocator);
+        const decoded = try decodeExternalAlloc(resource.data, allocator);
 
         self.external_depth += 1;
         defer self.external_depth -= 1;
 
         const saved_base = self.resolver_base;
-        self.resolver_base = system_id;
+        self.resolver_base = resource.uri;
         defer self.resolver_base = saved_base;
         const saved_external = self.in_external_subset;
         self.in_external_subset = true;
@@ -2088,33 +2097,31 @@ pub const Parser = struct {
                 entity.public_id
             else
                 null;
-            const source = resolver.resolve(
+            const resource = resolver.resolve(
                 resolver.context,
                 entity.system_id,
                 public_id,
                 self.resolver_base,
             ) orelse return;
-            const decoded = try decodeExternalAlloc(source, allocator);
+            const decoded = try decodeExternalAlloc(resource.data, allocator);
             const body = try self.stripTextDeclaration(decoded);
 
             const saved_base = self.resolver_base;
-            self.resolver_base = entity.system_id;
+            self.resolver_base = resource.uri;
             defer self.resolver_base = saved_base;
             const saved_external = self.in_external_subset;
             self.in_external_subset = true;
             defer self.in_external_subset = saved_external;
 
-            const decoded_body = try decodeParameterReplacement(
-                self,
-                body,
-                allocator,
-            );
+            // The external body is raw DTD text: character references in
+            // its declarations must stay encoded until the declaration is
+            // parsed, or a decoded '%' could be mistaken for a PE reference.
             var expanded: std.ArrayList(u8) = .empty;
             const saved_allow = self.allow_pe_in_declarations;
             self.allow_pe_in_declarations = true;
             defer self.allow_pe_in_declarations = saved_allow;
             try self.expandSubset(
-                decoded_body,
+                body,
                 true,
                 &expanded,
                 allocator,
@@ -2591,20 +2598,20 @@ pub const Parser = struct {
             entity.public_id
         else
             null;
-        const source = resolver.resolve(
+        const resource = resolver.resolve(
             resolver.context,
             entity.system_id,
             public_id,
             self.resolver_base,
         ) orelse return;
         const allocator = self.scratchAllocator() orelse return;
-        const decoded = try decodeExternalAlloc(source, allocator);
+        const decoded = try decodeExternalAlloc(resource.data, allocator);
 
         self.external_depth += 1;
         defer self.external_depth -= 1;
 
         const saved_base = self.resolver_base;
-        self.resolver_base = entity.system_id;
+        self.resolver_base = resource.uri;
         defer self.resolver_base = saved_base;
 
         var sub = Parser.initFragment(

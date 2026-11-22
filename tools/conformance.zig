@@ -58,25 +58,24 @@ fn resolveExternal(
     system_id: []const u8,
     public_id: ?[]const u8,
     base_system_id: ?[]const u8,
-) ?[]const u8 {
+) ?xmlz.parser.ExternalResource {
     _ = public_id;
     const ctx: *ResolverContext = @ptrCast(@alignCast(context orelse return null));
     const allocator = ctx.arena.allocator();
     var directory = ctx.base_dir;
     if (base_system_id) |base| {
-        if (std.fs.path.dirname(base)) |parent| {
-            directory = std.fs.path.join(allocator, &.{ directory, parent }) catch
-                return null;
-        }
+        // The parser passes the resolved URI of the referencing resource.
+        directory = std.fs.path.dirname(base) orelse ctx.base_dir;
     }
     const path = std.fs.path.join(allocator, &.{ directory, system_id }) catch
         return null;
-    return std.Io.Dir.cwd().readFileAlloc(
+    const data = std.Io.Dir.cwd().readFileAlloc(
         ctx.io,
         path,
         allocator,
         .limited(32 * 1024 * 1024),
-    ) catch null;
+    ) catch return null;
+    return .{ .data = data, .uri = path };
 }
 
 const Stats = struct {

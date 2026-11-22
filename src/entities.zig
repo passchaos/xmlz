@@ -8,7 +8,9 @@
 const std = @import("std");
 const chars = @import("chars.zig");
 
-pub const max_entities = 256;
+/// Upper bound on entity declarations held by one parser. libxml2's
+/// default limit is 10000; DocBook's DTD declares over 3000 entities.
+pub const max_entities = 4096;
 
 pub const Entity = struct {
     name: []const u8,

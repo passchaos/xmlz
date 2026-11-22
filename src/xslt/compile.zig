@@ -958,18 +958,21 @@ const Compiler = struct {
         name: NameRef,
     ) Error![]const Instruction {
         var list: std.ArrayList(Instruction) = .empty;
+        var found = false;
         for (self.attribute_sets.items, 0..) |set, index| {
             if (!std.mem.eql(u8, set.name, name.local) or
                 !std.mem.eql(u8, set.name_uri, name.uri))
             {
                 continue;
             }
+            found = true;
             try list.appendSlice(
                 self.arena,
                 try self.expandAttributeSet(index),
             );
         }
-        if (list.items.len == 0) return error.InvalidStylesheet;
+        // An empty declaration is valid; only an undefined name is an error.
+        if (!found) return error.InvalidStylesheet;
         return list.toOwnedSlice(self.arena);
     }
 

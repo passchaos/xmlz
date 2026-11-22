@@ -854,12 +854,15 @@ fn testDtdResolver(
     system_id: []const u8,
     _: ?[]const u8,
     _: ?[]const u8,
-) ?[]const u8 {
+) ?@import("parser.zig").ExternalResource {
     if (!std.mem.eql(u8, system_id, "t.dtd")) return null;
-    return "<!ELEMENT doc ANY>" ++
+    return .{
+        .uri = "t.dtd",
+        .data = "<!ELEMENT doc ANY>" ++
         "<!ELEMENT term EMPTY>" ++
-        "<!ATTLIST doc xmlns:p CDATA #FIXED \"urn:p\" p:kind CDATA \"k\">" ++
-        "<!ATTLIST term id ID #IMPLIED term CDATA #IMPLIED>";
+            "<!ATTLIST doc xmlns:p CDATA #FIXED \"urn:p\" p:kind CDATA \"k\">" ++
+            "<!ATTLIST term id ID #IMPLIED term CDATA #IMPLIED>",
+    };
 }
 
 test "parser applies DTD namespace and ID declarations" {

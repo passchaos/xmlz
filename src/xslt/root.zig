@@ -1949,10 +1949,13 @@ fn loadDtdExternal(
     system_id: []const u8,
     _: ?[]const u8,
     _: ?[]const u8,
-) ?[]const u8 {
+) ?@import("../parser.zig").ExternalResource {
     if (!std.mem.eql(u8, system_id, "t.dtd")) return null;
-    return "<!ELEMENT doc ANY><!ELEMENT term EMPTY>" ++
-        "<!ATTLIST term id ID #IMPLIED term CDATA #IMPLIED>";
+    return .{
+        .uri = "t.dtd",
+        .data = "<!ELEMENT doc ANY><!ELEMENT term EMPTY>" ++
+            "<!ATTLIST term id ID #IMPLIED term CDATA #IMPLIED>",
+    };
 }
 
 test "XSLT id() honors DTD-declared ID attributes" {
@@ -1989,4 +1992,21 @@ test "XSLT id() honors DTD-declared ID attributes" {
     const output = try result.toOwnedSlice(testing.allocator);
     defer testing.allocator.free(output);
     try testing.expectEqualStrings("<out>1|T</out>", output);
+}
+
+test "XSLT empty attribute sets are valid and can be referenced" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:attribute-set name="empty"/>
+        \\  <xsl:attribute-set name="outer" use-attribute-sets="empty">
+        \\    <xsl:attribute name="a">1</xsl:attribute>
+        \\  </xsl:attribute-set>
+        \\  <xsl:template match="/"><out xsl:use-attribute-sets="outer"/></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out a=\"1\"/>", output);
 }

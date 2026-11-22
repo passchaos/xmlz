@@ -6,6 +6,7 @@ const dom_builder = @import("../dom_builder.zig");
 const encoding = @import("../encoding.zig");
 const namespace = @import("../namespace.zig");
 const xmlbase = @import("../xmlbase.zig");
+const parser_mod = @import("../parser.zig");
 const xpath = @import("../xpath/root.zig");
 const xpath_ast = @import("../xpath/ast.zig");
 const xpath_parser = @import("../xpath/parser.zig");
@@ -706,11 +707,28 @@ const Runtime = struct {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.LoadFailed,
             };
+            // Loaded documents resolve their own external DTD subsets and
+            // parsed entities through the same resolver.
+            var parse_context: ParseExternal = .{
+                .runtime = self,
+                .base = resource.uri,
+            };
             const pointer = try self.allocator.create(dom.Document);
             pointer.* = dom.Document.parse(
                 self.allocator,
                 decoded,
-                .{ .keep_comments = true, .keep_pis = true },
+                .{
+                    .keep_comments = true,
+                    .keep_pis = true,
+                    .parser = .{
+                        .namespaces = true,
+                        .allocator = self.allocator,
+                        .resolver = .{
+                            .context = &parse_context,
+                            .resolve = resolveExternalEntity,
+                        },
+                    },
+                },
             ) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.LoadFailed,
@@ -3743,6 +3761,28 @@ fn convertTree(
         else => return null,
     };
     return .{ .node = root };
+}
+
+const ParseExternal = struct {
+    runtime: *Runtime,
+    base: []const u8,
+};
+
+fn resolveExternalEntity(
+    context: ?*anyopaque,
+    system_id: []const u8,
+    public_id: ?[]const u8,
+    base_system_id: ?[]const u8,
+) ?parser_mod.ExternalResource {
+    _ = public_id;
+    const holder: *const ParseExternal = @ptrCast(@alignCast(context.?));
+    const resolver = holder.runtime.resolver orelse return null;
+    const resource = resolver.load(
+        resolver.context,
+        system_id,
+        base_system_id orelse holder.base,
+    ) orelse return null;
+    return .{ .data = resource.data, .uri = resource.uri };
 }
 
 fn resolveDocument(
