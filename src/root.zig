@@ -8,6 +8,7 @@ pub const chars = @import("chars.zig");
 pub const entities = @import("entities.zig");
 pub const parser = @import("parser.zig");
 pub const sax = @import("sax.zig");
+pub const xinclude = @import("xinclude.zig");
 pub const namespace = @import("namespace.zig");
 pub const dom = @import("dom.zig");
 pub const dom_builder = @import("dom_builder.zig");
@@ -29,6 +30,7 @@ test {
     _ = entities;
     _ = parser;
     _ = sax;
+    _ = xinclude;
     _ = namespace;
     _ = dom;
     _ = dom_builder;

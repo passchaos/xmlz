@@ -40,6 +40,8 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **XPath 1.0.** Location paths, all core axes, predicates, operators,
   variables, and the core function library are implemented over the DOM, with
   namespace-aware name tests and 65/65 differential checks against libxml2.
+- **XInclude 1.0.** `xinclude.process` expands includes with XML/text modes,
+  fallback, nested resources, circular detection, and namespace inheritance.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.
@@ -67,6 +69,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | DOM builder | Complete |
 | Writer/serializer | Complete |
 | XPath 1.0 | Complete (core library + differential checks) |
+| XInclude 1.0 | Complete (XML/text, fallback, nesting) |
 | XPath / XSD / XSLT | Out of scope for the core engine |
 
 ## Quick start
@@ -173,6 +176,7 @@ src/dom.zig             arena-backed document tree
 src/dom_builder.zig     programmatic document construction
 src/validation.zig      optional DTD validity checking
 src/writer.zig          XML serializer
+src/xinclude.zig        XInclude 1.0 processing
 src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
 src/namespace.zig       Namespaces in XML 1.0 resolver
 src/root.zig            public API surface

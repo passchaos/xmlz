@@ -7,6 +7,7 @@ const std = @import("std");
 const chars = @import("chars.zig");
 const dom = @import("dom.zig");
 const namespace = @import("namespace.zig");
+const parser_mod = @import("parser.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -22,6 +23,8 @@ pub const Builder = struct {
     arena: std.heap.ArenaAllocator,
     nodes: std.ArrayList(dom.Node) = .empty,
     attr_lists: std.ArrayList(std.ArrayList(dom.Attribute)) = .empty,
+    declaration: ?parser_mod.Declaration = null,
+    doctype: ?parser_mod.Doctype = null,
     finished: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Error!Builder {
@@ -39,6 +42,17 @@ pub const Builder = struct {
     pub fn document(self: *const Builder) dom.NodeId {
         _ = self;
         return 0;
+    }
+
+    pub fn setDeclaration(
+        self: *Builder,
+        declaration: parser_mod.Declaration,
+    ) void {
+        self.declaration = declaration;
+    }
+
+    pub fn setDoctype(self: *Builder, doctype: parser_mod.Doctype) void {
+        self.doctype = doctype;
     }
 
     pub fn nodeAt(self: *const Builder, id: dom.NodeId) *const dom.Node {
@@ -306,6 +320,8 @@ pub const Builder = struct {
             .arena = self.arena,
             .nodes = self.nodes.items,
             .attributes = flat.items,
+            .declaration = self.declaration,
+            .doctype = self.doctype,
         };
     }
 
