@@ -166,6 +166,8 @@ pub const GroupDecl = struct {
     resolving: bool = false,
     cycle_checked: bool = false,
     visiting: bool = false,
+    /// Original declaration when this group redefines an included group.
+    original: ?*const GroupDecl = null,
     doc: ?*const SchemaDocument = null,
     node: dom.NodeId = dom.null_node,
 };
@@ -177,6 +179,8 @@ pub const AttributeGroupDecl = struct {
     any_attribute: ?Wildcard = null,
     parsed: bool = false,
     resolving: bool = false,
+    /// Original declaration when this group redefines an included group.
+    original: ?*const AttributeGroupDecl = null,
     doc: ?*const SchemaDocument = null,
     node: dom.NodeId = dom.null_node,
 };
@@ -271,6 +275,8 @@ pub const TypeDecl = struct {
     block: DerivationSet = .{},
     /// Derivations prohibited from this type.
     final: DerivationSet = .{},
+    /// Original declaration when this type redefines an included type.
+    original: ?*const TypeDecl = null,
     body: union(enum) {
         simple: SimpleDecl,
         complex: ComplexDecl,
@@ -345,7 +351,10 @@ pub const Schema = struct {
         namespace_uri: []const u8,
         local: []const u8,
     ) ?*const TypeDecl {
-        for (self.types) |decl| {
+        var index = self.types.len;
+        while (index > 0) {
+            index -= 1;
+            const decl = self.types[index];
             if (decl.global and
                 std.mem.eql(u8, decl.namespace_uri, namespace_uri) and
                 std.mem.eql(u8, decl.name, local))
@@ -361,7 +370,10 @@ pub const Schema = struct {
         namespace_uri: []const u8,
         local: []const u8,
     ) ?*const GroupDecl {
-        for (self.groups) |decl| {
+        var index = self.groups.len;
+        while (index > 0) {
+            index -= 1;
+            const decl = self.groups[index];
             if (std.mem.eql(u8, decl.namespace_uri, namespace_uri) and
                 std.mem.eql(u8, decl.name, local))
             {
@@ -376,7 +388,10 @@ pub const Schema = struct {
         namespace_uri: []const u8,
         local: []const u8,
     ) ?*const AttributeGroupDecl {
-        for (self.attribute_groups) |decl| {
+        var index = self.attribute_groups.len;
+        while (index > 0) {
+            index -= 1;
+            const decl = self.attribute_groups[index];
             if (std.mem.eql(u8, decl.namespace_uri, namespace_uri) and
                 std.mem.eql(u8, decl.name, local))
             {
@@ -663,6 +678,9 @@ const Compiler = struct {
     identity_constraints: std.ArrayList(*const IdentityConstraint) = .empty,
     local_elements: std.ArrayList(*const ElementDecl) = .empty,
     local_attributes: std.ArrayList(*const AttributeDecl) = .empty,
+    redefining_type: ?*const TypeDecl = null,
+    redefining_group: ?*const GroupDecl = null,
+    redefining_attribute_group: ?*const AttributeGroupDecl = null,
     root: dom.NodeId = dom.null_node,
 
     const SavedContext = struct {
@@ -824,8 +842,54 @@ const Compiler = struct {
                 }
                 try self.notations.append(self.arena, decl);
             } else if (std.mem.eql(u8, child_node.local, "redefine")) {
-                return error.InvalidSchema;
+                try self.processRedefine(child);
             }
+        }
+    }
+
+    /// Process `xs:redefine`: include the referenced schema, then replace the
+    /// named components. Self-references inside a redefinition resolve to the
+    /// original included component.
+    fn processRedefine(self: *Compiler, id: dom.NodeId) Error!void {
+        try self.processSchemaReference(id, false);
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const node = self.document.node(child);
+            if (node.kind != .element or !isXsd(node, null)) continue;
+            if (std.mem.eql(u8, node.local, "annotation")) continue;
+            if (std.mem.eql(u8, node.local, "simpleType") or
+                std.mem.eql(u8, node.local, "complexType"))
+            {
+                const decl = try self.globalType(child);
+                const original = self.findGlobalType(.{
+                    .namespace_uri = decl.namespace_uri,
+                    .local = decl.name,
+                }) orelse return error.InvalidSchema;
+                @constCast(decl).original = original;
+                try self.types.append(self.arena, decl);
+                continue;
+            }
+            if (std.mem.eql(u8, node.local, "group")) {
+                const decl = try self.globalGroup(child);
+                const original = self.findGlobalGroup(.{
+                    .namespace_uri = decl.namespace_uri,
+                    .local = decl.name,
+                }) orelse return error.InvalidSchema;
+                @constCast(decl).original = original;
+                try self.groups.append(self.arena, decl);
+                continue;
+            }
+            if (std.mem.eql(u8, node.local, "attributeGroup")) {
+                const decl = try self.globalAttributeGroup(child);
+                const original = self.findGlobalAttributeGroup(.{
+                    .namespace_uri = decl.namespace_uri,
+                    .local = decl.name,
+                }) orelse return error.InvalidSchema;
+                @constCast(decl).original = original;
+                try self.attribute_groups.append(self.arena, decl);
+                continue;
+            }
+            return error.InvalidSchema;
         }
     }
 
@@ -1128,6 +1192,9 @@ const Compiler = struct {
         const saved = self.enterSchema(decl.doc orelse
             return error.InvalidSchema);
         defer self.leaveSchema(saved);
+        const saved_redefinition = self.redefining_group;
+        self.redefining_group = if (decl.original != null) decl else null;
+        defer self.redefining_group = saved_redefinition;
         @constCast(decl).resolving = true;
         var particle: ?*const Particle = null;
         var child = self.document.node(decl.node).first_child;
@@ -1192,6 +1259,12 @@ const Compiler = struct {
         const saved = self.enterSchema(decl.doc orelse
             return error.InvalidSchema);
         defer self.leaveSchema(saved);
+        const saved_redefinition = self.redefining_attribute_group;
+        self.redefining_attribute_group = if (decl.original != null)
+            decl
+        else
+            null;
+        defer self.redefining_attribute_group = saved_redefinition;
         @constCast(decl).resolving = true;
         var attributes: []const AttributeUse = &.{};
         var any_attribute: ?Wildcard = null;
@@ -2164,7 +2237,17 @@ const Compiler = struct {
     }
 
     fn findGlobalGroup(self: *Compiler, qname: QName) ?*const GroupDecl {
-        for (self.groups.items) |decl| {
+        if (self.redefining_group) |redefining| {
+            if (std.mem.eql(u8, redefining.namespace_uri, qname.namespace_uri) and
+                std.mem.eql(u8, redefining.name, qname.local))
+            {
+                return redefining.original;
+            }
+        }
+        var index = self.groups.items.len;
+        while (index > 0) {
+            index -= 1;
+            const decl = self.groups.items[index];
             if (std.mem.eql(u8, decl.namespace_uri, qname.namespace_uri) and
                 std.mem.eql(u8, decl.name, qname.local))
             {
@@ -2178,7 +2261,17 @@ const Compiler = struct {
         self: *Compiler,
         qname: QName,
     ) ?*const AttributeGroupDecl {
-        for (self.attribute_groups.items) |decl| {
+        if (self.redefining_attribute_group) |redefining| {
+            if (std.mem.eql(u8, redefining.namespace_uri, qname.namespace_uri) and
+                std.mem.eql(u8, redefining.name, qname.local))
+            {
+                return redefining.original;
+            }
+        }
+        var index = self.attribute_groups.items.len;
+        while (index > 0) {
+            index -= 1;
+            const decl = self.attribute_groups.items[index];
             if (std.mem.eql(u8, decl.namespace_uri, qname.namespace_uri) and
                 std.mem.eql(u8, decl.name, qname.local))
             {
@@ -2189,7 +2282,17 @@ const Compiler = struct {
     }
 
     fn findGlobalType(self: *Compiler, qname: QName) ?*const TypeDecl {
-        for (self.types.items) |decl| {
+        if (self.redefining_type) |redefining| {
+            if (std.mem.eql(u8, redefining.namespace_uri, qname.namespace_uri) and
+                std.mem.eql(u8, redefining.name, qname.local))
+            {
+                return redefining.original;
+            }
+        }
+        var index = self.types.items.len;
+        while (index > 0) {
+            index -= 1;
+            const decl = self.types.items[index];
             if (decl.global and
                 std.mem.eql(u8, decl.namespace_uri, qname.namespace_uri) and
                 std.mem.eql(u8, decl.name, qname.local))
@@ -2274,6 +2377,9 @@ const Compiler = struct {
         const mutable = @constCast(decl);
         mutable.resolving = true;
         defer mutable.resolving = false;
+        const saved_redefinition = self.redefining_type;
+        self.redefining_type = if (decl.original != null) decl else null;
+        defer self.redefining_type = saved_redefinition;
         const info: TypeInfo = switch (decl.body) {
             .simple => |simple| .{
                 .simple = try self.resolveSimpleDecl(simple),

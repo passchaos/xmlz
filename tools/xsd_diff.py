@@ -1391,6 +1391,69 @@ INCLUDE_CASES = [
             "<root xmlns='urn:t'><a xmlns=''>x</a></root>",
         ],
     ),
+    (
+        "redefine-type-restriction",
+        {
+            "main.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+              xmlns:t="urn:t" elementFormDefault="qualified">
+              <xs:redefine schemaLocation="base.xsd">
+                <xs:complexType name="Item"><xs:complexContent>
+                  <xs:restriction base="t:Item"><xs:sequence>
+                    <xs:element name="a" type="xs:string"/>
+                  </xs:sequence></xs:restriction>
+                </xs:complexContent></xs:complexType>
+              </xs:redefine>
+              <xs:element name="root" type="t:Item"/>
+            </xs:schema>""",
+            "base.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+              xmlns:t="urn:t" elementFormDefault="qualified">
+              <xs:complexType name="Item"><xs:sequence>
+                <xs:element name="a" type="xs:string"/>
+                <xs:element name="b" type="xs:string"/>
+              </xs:sequence></xs:complexType>
+            </xs:schema>""",
+        },
+        [
+            "<root xmlns='urn:t'><a>x</a></root>",
+            "<root xmlns='urn:t'><a>x</a><b>y</b></root>",
+        ],
+    ),
+    (
+        "redefine-groups",
+        {
+            "main.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+              xmlns:t="urn:t" elementFormDefault="qualified">
+              <xs:redefine schemaLocation="base.xsd">
+                <xs:group name="items"><xs:sequence>
+                  <xs:group ref="t:items"/>
+                  <xs:element name="b" type="xs:string"/>
+                </xs:sequence></xs:group>
+                <xs:attributeGroup name="attrs">
+                  <xs:attributeGroup ref="t:attrs"/>
+                  <xs:attribute name="extra" type="xs:string" use="required"/>
+                </xs:attributeGroup>
+              </xs:redefine>
+              <xs:element name="root" type="t:Root"/>
+            </xs:schema>""",
+            "base.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+              xmlns:t="urn:t" elementFormDefault="qualified">
+              <xs:group name="items"><xs:sequence>
+                <xs:element name="a" type="xs:string"/>
+              </xs:sequence></xs:group>
+              <xs:attributeGroup name="attrs">
+                <xs:attribute name="id" type="xs:integer"/>
+              </xs:attributeGroup>
+              <xs:complexType name="Root"><xs:sequence>
+                <xs:group ref="t:items"/>
+              </xs:sequence><xs:attributeGroup ref="t:attrs"/></xs:complexType>
+            </xs:schema>""",
+        },
+        [
+            "<root xmlns='urn:t' id='1' extra='x'><a>a</a><b>b</b></root>",
+            "<root xmlns='urn:t' id='1' extra='x'><a>a</a></root>",
+            "<root xmlns='urn:t' id='1'><a>a</a><b>b</b></root>",
+        ],
+    ),
 ]
 
 

@@ -1038,3 +1038,137 @@ test "XSD validates notation declarations and NOTATION values" {
             "<xs:notation name='bad'/></xs:schema>",
     );
 }
+
+test "XSD redefine restricts an included complex type" {
+    const resources = [_]SchemaResource{
+        .{
+            .href = "base.xsd",
+            .uri = "base.xsd",
+            .data = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+                "targetNamespace='urn:t' xmlns:t='urn:t' " ++
+                "elementFormDefault='qualified'>" ++
+                "<xs:complexType name='Item'><xs:sequence>" ++
+                "<xs:element name='a' type='xs:string'/>" ++
+                "<xs:element name='b' type='xs:string'/>" ++
+                "</xs:sequence></xs:complexType></xs:schema>",
+        },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+        \\  targetNamespace="urn:t" xmlns:t="urn:t"
+        \\  elementFormDefault="qualified">
+        \\  <xs:redefine schemaLocation="base.xsd">
+        \\    <xs:complexType name="Item">
+        \\      <xs:complexContent>
+        \\        <xs:restriction base="t:Item">
+        \\          <xs:sequence>
+        \\            <xs:element name="a" type="xs:string"/>
+        \\          </xs:sequence>
+        \\        </xs:restriction>
+        \\      </xs:complexContent>
+        \\    </xs:complexType>
+        \\  </xs:redefine>
+        \\  <xs:element name="root" type="t:Item"/>
+        \\</xs:schema>
+    ;
+    var document = try parseDocument(schema_source);
+    defer document.deinit();
+    var compiled = try parseWithOptions(testing.allocator, &document, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+        .base = "main.xsd",
+    });
+    defer compiled.deinit();
+    try expectCompiledValid(&compiled, "<root xmlns='urn:t'><a>x</a></root>");
+    try expectCompiledInvalid(
+        &compiled,
+        "<root xmlns='urn:t'><a>x</a><b>y</b></root>",
+    );
+}
+
+test "XSD redefine extends included groups and attribute groups" {
+    const resources = [_]SchemaResource{
+        .{
+            .href = "base.xsd",
+            .uri = "base.xsd",
+            .data = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+                "targetNamespace='urn:t' xmlns:t='urn:t' " ++
+                "elementFormDefault='qualified'>" ++
+                "<xs:group name='items'><xs:sequence>" ++
+                "<xs:element name='a' type='xs:string'/>" ++
+                "</xs:sequence></xs:group>" ++
+                "<xs:attributeGroup name='attrs'>" ++
+                "<xs:attribute name='id' type='xs:integer'/>" ++
+                "</xs:attributeGroup>" ++
+                "<xs:complexType name='Root'><xs:sequence>" ++
+                "<xs:group ref='t:items'/>" ++
+                "</xs:sequence>" ++
+                "<xs:attributeGroup ref='t:attrs'/>" ++
+                "</xs:complexType></xs:schema>",
+        },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+        \\  targetNamespace="urn:t" xmlns:t="urn:t"
+        \\  elementFormDefault="qualified">
+        \\  <xs:redefine schemaLocation="base.xsd">
+        \\    <xs:group name="items">
+        \\      <xs:sequence>
+        \\        <xs:group ref="t:items"/>
+        \\        <xs:element name="b" type="xs:string"/>
+        \\      </xs:sequence>
+        \\    </xs:group>
+        \\    <xs:attributeGroup name="attrs">
+        \\      <xs:attributeGroup ref="t:attrs"/>
+        \\      <xs:attribute name="extra" type="xs:string" use="required"/>
+        \\    </xs:attributeGroup>
+        \\  </xs:redefine>
+        \\  <xs:element name="root" type="t:Root"/>
+        \\</xs:schema>
+    ;
+    var document = try parseDocument(schema_source);
+    defer document.deinit();
+    var compiled = try parseWithOptions(testing.allocator, &document, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+        .base = "main.xsd",
+    });
+    defer compiled.deinit();
+    try expectCompiledValid(
+        &compiled,
+        "<root xmlns='urn:t' id='1' extra='x'><a>a</a><b>b</b></root>",
+    );
+    try expectCompiledInvalid(
+        &compiled,
+        "<root xmlns='urn:t' id='1' extra='x'><a>a</a></root>",
+    );
+    try expectCompiledInvalid(
+        &compiled,
+        "<root xmlns='urn:t' id='1'><a>a</a><b>b</b></root>",
+    );
+}
+
+test "XSD redefine requires an existing component" {
+    const resources = [_]SchemaResource{
+        .{
+            .href = "base.xsd",
+            .uri = "base.xsd",
+            .data = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+                "<xs:complexType name='Other'/></xs:schema>",
+        },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
+    const schema_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+        "<xs:redefine schemaLocation='base.xsd'>" ++
+        "<xs:complexType name='Missing'/></xs:redefine></xs:schema>";
+    var document = try parseDocument(schema_source);
+    defer document.deinit();
+    try testing.expectError(
+        error.InvalidSchema,
+        parseWithOptions(testing.allocator, &document, .{
+            .resolver = .{ .context = &resolver, .load = loadResource },
+            .base = "main.xsd",
+        }),
+    );
+}
