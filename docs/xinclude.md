@@ -20,9 +20,9 @@ resolved URI and bytes, or null when the resource is unavailable.
 
 - `xi:include` with `parse="xml"` (default) and `parse="text"`; XML
   inclusion inserts the resource's document element (as libxml2 does).
-- `xpointer` with the `element()` scheme (`element(/1/2)`) and the
-  `xpointer()` scheme (an XPath expression). Selected elements are included
-  with their in-scope namespaces.
+- `xpointer` with the `element()` scheme (`element(/1/2)`, `element(id)`,
+  and the bare `id` shorthand) and the `xpointer()` scheme (an XPath
+  expression). Selected elements are included with their in-scope namespaces.
 - `xi:fallback` when the resource is missing, malformed, circular, or exceeds
   the depth limit.
 - Nested inclusions with a shared resolver and base URI tracking.
@@ -51,8 +51,8 @@ zig build xinclude-diff
 
 The step compares expanded documents against libxml2's `xmllint --xinclude`
 for XML/text inclusion, fallback, nesting, namespaces, multiple includes, and
-both XPointer schemes. Expected output:
+both XPointer schemes and ID selection. Expected output:
 
 ```text
-8/8 XInclude differential checks passed
+10/10 XInclude differential checks passed
 ```

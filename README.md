@@ -44,7 +44,8 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **XInclude 1.0.** `xinclude.process` expands includes with XML/text modes,
   fallback, nested resources, circular detection, namespace inheritance,
   element-aware `xml:base` resolution, and the XPointer `element()` and
-  `xpointer()` schemes, with 8/8 differential checks against libxml2.
+  `xpointer()` schemes and ID selection, with 10/10 differential checks
+  against libxml2.
 - **XML Base and xml:id.** `xmlbase.resolve` implements the full RFC 3986
   reference-resolution algorithm, `elementBase` applies `xml:base` along the
   ancestor chain, and `xml:id` matching uses the XML ID whitespace rules.

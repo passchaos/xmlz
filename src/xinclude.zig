@@ -422,7 +422,7 @@ const Processor = struct {
             trimmed.len > "element()".len and
             trimmed[trimmed.len - 1] == ')')
         {
-            return self.selectElementScheme(
+            return self.selectElementPointer(
                 included,
                 trimmed["element(".len .. trimmed.len - 1],
             );
@@ -436,10 +436,76 @@ const Processor = struct {
                 trimmed["xpointer(".len .. trimmed.len - 1],
             );
         }
+        if (isNCNamePointer(trimmed)) {
+            return self.selectElementById(included, trimmed);
+        }
         return error.UnsupportedXPointer;
     }
 
-    /// The `element()` scheme selects a child sequence such as `/1/2`.
+    /// The `element()` scheme selects a child sequence (`/1/2`) or an element
+    /// by ID.
+    fn selectElementPointer(
+        self: *Processor,
+        included: *const dom.Document,
+        content: []const u8,
+    ) Error![]const dom.NodeId {
+        if (content.len != 0 and content[0] == '/') {
+            return self.selectElementScheme(included, content);
+        }
+        if (isNCNamePointer(content)) {
+            return self.selectElementById(included, content);
+        }
+        return error.UnsupportedXPointer;
+    }
+
+    fn selectElementById(
+        self: *Processor,
+        included: *const dom.Document,
+        id: []const u8,
+    ) Error![]const dom.NodeId {
+        for (included.nodes, 0..) |*node, index| {
+            if (node.kind != .element) continue;
+            const node_id: dom.NodeId = @intCast(index);
+            if (included.attributeNs(node_id, namespace.xml_uri, "id")) |value| {
+                if (xmlbase.xmlIdEquals(value, id)) {
+                    return self.singleNode(node_id);
+                }
+            }
+            if (!self.hasDtdIdAttribute(included, node, "id")) continue;
+            if (included.attribute(node_id, "id")) |value| {
+                if (std.mem.eql(u8, value, id)) {
+                    return self.singleNode(node_id);
+                }
+            }
+        }
+        return error.UnsupportedXPointer;
+    }
+
+    fn hasDtdIdAttribute(
+        self: *Processor,
+        included: *const dom.Document,
+        node: *const dom.Node,
+        name: []const u8,
+    ) bool {
+        _ = self;
+        const dtd = included.dtd orelse return false;
+        for (dtd.attributes) |decl| {
+            if (decl.attr_type == .id and
+                std.mem.eql(u8, decl.element, node.name) and
+                std.mem.eql(u8, decl.name, name))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn singleNode(self: *Processor, id: dom.NodeId) Error![]const dom.NodeId {
+        const out = try self.allocator.alloc(dom.NodeId, 1);
+        out[0] = id;
+        return out;
+    }
+
     fn selectElementScheme(
         self: *Processor,
         included: *const dom.Document,
@@ -561,6 +627,27 @@ const Processor = struct {
 
 fn nodeIdLessThan(_: void, a: dom.NodeId, b: dom.NodeId) bool {
     return a < b;
+}
+
+fn isNCNamePointer(text: []const u8) bool {
+    if (text.len == 0) return false;
+    var index: usize = 0;
+    while (index < text.len) {
+        const byte = text[index];
+        if (byte >= 0x80) {
+            index += 1;
+            continue;
+        }
+        const start = index == 0;
+        const valid = if (start)
+            std.ascii.isAlphabetic(byte) or byte == '_'
+        else
+            std.ascii.isAlphanumeric(byte) or byte == '_' or
+                byte == '-' or byte == '.';
+        if (!valid) return false;
+        index += 1;
+    }
+    return true;
 }
 
 fn prefixOf(node: *const dom.Node) []const u8 {
@@ -1012,4 +1099,46 @@ test "XInclude supports element and xpointer schemes" {
             .resolver = .{ .context = &resolver, .load = loadResource },
         }),
     );
+}
+
+test "XInclude XPointer selects elements by xml:id" {
+    const resources = [_]TestResource{
+        .{
+            .href = "ids.xml",
+            .uri = "ids.xml",
+            .data = "<doc><part xml:id='p1'><a/></part>" ++
+                "<part xml:id='p2'><b/></part></doc>",
+        },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
+
+    var id_source = try parseSource(
+        "<root xmlns:xi='http://www.w3.org/2001/XInclude'>" ++
+            "<xi:include href='ids.xml' xpointer='element(p2)'/></root>",
+    );
+    defer id_source.deinit();
+    var id_document = try process(testing.allocator, &id_source, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+    });
+    defer id_document.deinit();
+    const id_root = id_document.root();
+    const id_part = id_document.findChild(id_root, "part") orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(id_document.findChild(id_part, "b") != null);
+
+    var shorthand_source = try parseSource(
+        "<root xmlns:xi='http://www.w3.org/2001/XInclude'>" ++
+            "<xi:include href='ids.xml' xpointer='p1'/></root>",
+    );
+    defer shorthand_source.deinit();
+    var shorthand_document = try process(testing.allocator, &shorthand_source, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+    });
+    defer shorthand_document.deinit();
+    const shorthand_root = shorthand_document.root();
+    const shorthand_part = shorthand_document.findChild(
+        shorthand_root,
+        "part",
+    ) orelse return error.TestUnexpectedResult;
+    try testing.expect(shorthand_document.findChild(shorthand_part, "a") != null);
 }

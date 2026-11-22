@@ -88,6 +88,24 @@ CASES = [
             "b.xml": "<b><y/></b>",
         },
     ),
+    (
+        "xpointer-element-id",
+        {
+            "main.xml": """<root xmlns:xi="http://www.w3.org/2001/XInclude">
+              <xi:include href="ids.xml" xpointer="element(p2)"/>
+            </root>""",
+            "ids.xml": "<doc><part xml:id='p1'><a/></part><part xml:id='p2'><b/></part></doc>",
+        },
+    ),
+    (
+        "xpointer-id-shorthand",
+        {
+            "main.xml": """<root xmlns:xi="http://www.w3.org/2001/XInclude">
+              <xi:include href="ids.xml" xpointer="p1"/>
+            </root>""",
+            "ids.xml": "<doc><part xml:id='p1'><a/></part><part xml:id='p2'><b/></part></doc>",
+        },
+    ),
 ]
 
 
