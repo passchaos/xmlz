@@ -93,12 +93,13 @@ The step compiles schemas and validates valid/invalid instances with both xmlz
 and libxml2 through Python `lxml`, covering particles, occurrence ranges,
 attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, facets, Unicode categories and
-blocks, catalog-resolved includes/imports, and invalid schemas that libxml2
-rejects. Expected output:
+blocks, catalog-resolved includes/imports, invalid schemas that libxml2
+rejects, and Schematron patterns embedded in `xs:appinfo`. Expected output:
 
 ```text
-322/322 XSD differential checks passed
+328/328 XSD differential checks passed
 ```
 
 The `xsd` command accepts `--catalog=FILE`; `xs:include`, `xs:import`, and
-`xs:redefine` resolve through the catalog before filesystem lookup.
+`xs:redefine` resolve through the catalog before filesystem lookup. Schematron
+patterns embedded in `xs:annotation/xs:appinfo` are validated automatically.

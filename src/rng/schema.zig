@@ -747,22 +747,48 @@ const Parser = struct {
 
     /// Parse the name class and content of an `element` or `attribute`
     /// pattern. The `name` attribute is a shorthand for a `name` child.
+    /// Multiple content children are implicitly grouped, which is the usual
+    /// way to combine attribute patterns with element or text content.
     fn nameAndContent(self: *Parser, id: dom.NodeId) Error!NameAndContent {
+        const is_attribute = std.mem.eql(
+            u8,
+            self.document.node(id).local,
+            "attribute",
+        );
         const children = try self.patternChildIds(id);
+        var name_class: *const NameClass = undefined;
+        var content_start: usize = 0;
         if (self.document.attribute(id, "name")) |text| {
-            if (children.len != 1) return error.InvalidPattern;
-            return .{
-                .name_class = try self.nameClassFromQName(id, text),
-                .content = try self.parsePattern(children[0]),
-            };
+            name_class = try self.nameClassFromQName(id, text);
+        } else {
+            if (children.len < 1) return error.InvalidPattern;
+            const first = self.document.node(children[0]);
+            if (!isNameClassElement(first.local)) {
+                return error.InvalidPattern;
+            }
+            name_class = try self.parseNameClass(children[0]);
+            content_start = 1;
         }
-        if (children.len != 2) return error.InvalidPattern;
-        const first = self.document.node(children[0]);
-        if (!isNameClassElement(first.local)) return error.InvalidPattern;
-        return .{
-            .name_class = try self.parseNameClass(children[0]),
-            .content = try self.parsePattern(children[1]),
-        };
+        const content_children = children[content_start..];
+        if (content_children.len == 0) {
+            // An attribute with no content accepts any value; an element
+            // needs an explicit content pattern.
+            if (is_attribute) {
+                return .{
+                    .name_class = name_class,
+                    .content = try self.make(.text),
+                };
+            }
+            return error.InvalidPattern;
+        }
+        var content = try self.parsePattern(content_children[0]);
+        for (content_children[1..]) |child| {
+            content = try self.make(.{ .group = .{
+                .left = content,
+                .right = try self.parsePattern(child),
+            } });
+        }
+        return .{ .name_class = name_class, .content = content };
     }
 
     fn nameClassFromQName(

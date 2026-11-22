@@ -8,11 +8,20 @@ import tempfile
 
 try:
     from lxml import etree
+    from lxml.isoschematron import Schematron
+    import lxml.isoschematron
 except ImportError:  # pragma: no cover
     print("SKIP: lxml is not installed", file=sys.stderr)
     sys.exit(0)
 
 XS = "http://www.w3.org/2001/XMLSchema"
+SCH = "http://purl.oclc.org/dsdl/schematron"
+XSD2SCH = os.path.join(
+    os.path.dirname(lxml.isoschematron.__file__),
+    "resources",
+    "xsl",
+    "XSD2Schtrn.xsl",
+)
 
 
 def pattern_schema(pattern):
@@ -1789,6 +1798,53 @@ INVALID_SCHEMA_CASES = [
 ]
 
 
+# XSD schemas carrying embedded Schematron patterns in xs:appinfo. Expected
+# validity combines XSD validation with the extracted Schematron assertions.
+EMBEDDED_CASES = [
+    (
+        "embedded-schematron",
+        f"""<xs:schema xmlns:xs="{XS}" xmlns:sch="{SCH}">
+          <xs:element name="root">
+            <xs:annotation><xs:appinfo>
+              <sch:pattern id="p">
+                <sch:rule context="root">
+                  <sch:assert test="@id != ''">id required</sch:assert>
+                </sch:rule>
+              </sch:pattern>
+            </xs:appinfo></xs:annotation>
+            <xs:complexType><xs:attribute name="id" type="xs:string"/></xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root id='x'/>",
+            "<root id=''/>",
+            "<root/>",
+        ],
+    ),
+    (
+        "embedded-schematron-multiple",
+        f"""<xs:schema xmlns:xs="{XS}" xmlns:sch="{SCH}">
+          <xs:element name="root">
+            <xs:annotation><xs:appinfo>
+              <sch:pattern id="ids">
+                <sch:rule context="root">
+                  <sch:assert test="@id">id required</sch:assert>
+                  <sch:report test="@id = 'bad'">bad id</sch:report>
+                </sch:rule>
+              </sch:pattern>
+            </xs:appinfo></xs:annotation>
+            <xs:complexType><xs:attribute name="id" type="xs:string"/></xs:complexType>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root id='1'/>",
+            "<root/>",
+            "<root id='bad'/>",
+        ],
+    ),
+]
+
+
 CATALOG_CASES = [
     (
         "catalog-includes",
@@ -2002,6 +2058,45 @@ def main():
                     f"returned {actual.returncode}: "
                     f"{actual.stderr.decode('utf-8', 'replace').strip()}"
                 )
+    for name, schema_source, instances in EMBEDDED_CASES:
+        with tempfile.TemporaryDirectory() as directory:
+            schema_path = os.path.join(directory, "schema.xsd")
+            with open(schema_path, "w", encoding="utf-8") as handle:
+                handle.write(schema_source)
+            try:
+                schema_tree = etree.parse(schema_path)
+                xml_schema = etree.XMLSchema(schema_tree)
+                extracted = etree.XSLT(etree.parse(XSD2SCH))(schema_tree)
+                schematron = Schematron(extracted)
+            except Exception as error:  # noqa: BLE001 - report libxml2 failures
+                print(f"SKIP {name}: libxml2 schema error: {error}")
+                continue
+            for index, instance in enumerate(instances):
+                instance_path = os.path.join(directory, f"instance-{index}.xml")
+                with open(instance_path, "w", encoding="utf-8") as handle:
+                    handle.write(instance)
+                actual = run([validator, schema_path, instance_path])
+                if actual.returncode == 2:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: xmlz schema error: "
+                        f"{actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
+                    continue
+                instance_document = etree.fromstring(instance.encode())
+                expected_valid = xml_schema.validate(instance_document) and \
+                    schematron.validate(instance_document)
+                actual_valid = actual.returncode == 0
+                checks += 1
+                if expected_valid != actual_valid:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: "
+                        f"libxml2={'valid' if expected_valid else 'invalid'} "
+                        f"xmlz={'valid' if actual_valid else 'invalid'}\n"
+                        f"  instance: {instance}\n"
+                        f"  xmlz: {actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
     print(f"{checks - failures}/{checks} XSD differential checks passed")
     return 1 if failures else 0
 

@@ -4,6 +4,7 @@
 //! Exit code: 0 valid, 1 invalid, 2 schema error.
 const std = @import("std");
 const xmlz = @import("xmlz");
+const embedded_schematron = @import("embedded_schematron.zig");
 const file_loader = @import("file_loader.zig");
 
 const Loaded = struct {
@@ -94,6 +95,22 @@ pub fn main(init: std.process.Init) !void {
 
     const stdout = std.Io.File.stdout();
     if (result.isValid()) {
+        const embedded_valid = embedded_schematron.validate(
+            init.gpa,
+            &schema_file.document,
+            &instance_file.document,
+            .{
+                .namespace = xmlz.xsd.schema.xsd_namespace,
+                .local = "appinfo",
+            },
+        ) catch |err| {
+            std.debug.print("schematron error: {s}\n", .{@errorName(err)});
+            std.process.exit(2);
+        };
+        if (!embedded_valid) {
+            try stdout.writeStreamingAll(init.io, "invalid\n");
+            std.process.exit(1);
+        }
         try stdout.writeStreamingAll(init.io, "valid\n");
         return;
     }

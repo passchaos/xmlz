@@ -52,10 +52,13 @@ for (result.failures) |failure| {
   `Failure.properties`.
 - Failed `assert` findings invalidate the document; successful `report`
   findings are recorded but do not affect `isValid()`.
+- Embedded patterns: `parsePatterns` compiles `sch:pattern` elements carried
+  by a host schema document, and `findEmbeddedPatterns` collects them
+  (optionally restricted to an ancestor such as `xs:appinfo`). The `rng` and
+  `xsd` tools run embedded patterns automatically and combine the results
+  with grammar/schema validation.
 
 ## Limitations
-
-- Embedded Schematron rules in XML Schema or RELAX NG are not supported.
 - The generated SVRL report format is not produced; findings are returned as
   structured values. The CLI `--report` mode prints a tab-separated summary
   for differential testing.
@@ -74,3 +77,7 @@ properties, and XPath functions. Expected output:
 ```text
 37/37 Schematron differential checks passed
 ```
+
+Embedded patterns are verified by the RELAX NG and XSD differential steps,
+which extract patterns with lxml's `RNG2Schtrn.xsl`/`XSD2Schtrn.xsl` and
+compare the combined grammar plus Schematron validity.

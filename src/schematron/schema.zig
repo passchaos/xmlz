@@ -98,6 +98,34 @@ pub fn parse(
         .abstract_rules = std.StringHashMap(dom.NodeId).init(arena.allocator()),
     };
     try compiler.compile();
+    return finish(arena, &compiler);
+}
+
+/// Compile `sch:pattern` elements embedded in a host schema (RELAX NG or
+/// XSD `xs:appinfo`). Schema-level declarations such as `sch:ns`,
+/// `sch:phase`, and `sch:let` are not present in embedded patterns; prefixes
+/// resolve through in-scope `xmlns` declarations.
+pub fn parsePatterns(
+    allocator: std.mem.Allocator,
+    document: *const dom.Document,
+    pattern_nodes: []const dom.NodeId,
+) Error!Schema {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    var compiler: Compiler = .{
+        .arena = arena.allocator(),
+        .document = document,
+        .abstract_patterns = std.StringHashMap(dom.NodeId).init(arena.allocator()),
+        .abstract_rules = std.StringHashMap(dom.NodeId).init(arena.allocator()),
+    };
+    try compiler.compilePatternNodes(pattern_nodes);
+    return finish(arena, &compiler);
+}
+
+fn finish(
+    arena: std.heap.ArenaAllocator,
+    compiler: *Compiler,
+) Error!Schema {
     return .{
         .arena = arena,
         .patterns = try compiler.patterns.toOwnedSlice(compiler.arena),
@@ -172,30 +200,47 @@ const Compiler = struct {
             } else if (std.mem.eql(u8, child_node.local, "phase")) {
                 try self.phases.append(self.arena, try self.parsePhase(child));
             } else if (std.mem.eql(u8, child_node.local, "pattern")) {
-                if (self.document.attribute(child, "abstract")) |value| {
-                    if (isYes(value)) continue;
-                }
-                if (self.document.attribute(child, "is-a")) |abstract_id| {
-                    const abstract_node = self.abstract_patterns.get(
-                        abstract_id,
-                    ) orelse return error.InvalidSchema;
-                    const params = try self.parseParams(child);
-                    var pattern = try self.parsePattern(
-                        abstract_node,
-                        params,
-                    );
-                    if (self.document.attribute(child, "id")) |value| {
-                        pattern.id = try self.arena.dupe(u8, value);
-                    }
-                    try self.appendPatternContent(child, params, &pattern);
-                    try self.patterns.append(self.arena, pattern);
-                } else {
-                    try self.patterns.append(
-                        self.arena,
-                        try self.parsePattern(child, &.{}),
-                    );
-                }
+                try self.appendPattern(child);
             }
+        }
+    }
+
+    /// Compile patterns embedded in a host schema document.
+    fn compilePatternNodes(
+        self: *Compiler,
+        pattern_nodes: []const dom.NodeId,
+    ) Error!void {
+        for (pattern_nodes) |id| {
+            try self.collectAbstractPattern(id);
+        }
+        for (pattern_nodes) |id| {
+            try self.appendPattern(id);
+        }
+    }
+
+    fn appendPattern(self: *Compiler, id: dom.NodeId) Error!void {
+        if (self.document.attribute(id, "abstract")) |value| {
+            if (isYes(value)) return;
+        }
+        if (self.document.attribute(id, "is-a")) |abstract_id| {
+            const abstract_node = self.abstract_patterns.get(
+                abstract_id,
+            ) orelse return error.InvalidSchema;
+            const params = try self.parseParams(id);
+            var pattern = try self.parsePattern(
+                abstract_node,
+                params,
+            );
+            if (self.document.attribute(id, "id")) |value| {
+                pattern.id = try self.arena.dupe(u8, value);
+            }
+            try self.appendPatternContent(id, params, &pattern);
+            try self.patterns.append(self.arena, pattern);
+        } else {
+            try self.patterns.append(
+                self.arena,
+                try self.parsePattern(id, &.{}),
+            );
         }
     }
 
@@ -209,36 +254,47 @@ const Compiler = struct {
             {
                 continue;
             }
-            if (self.document.attribute(child, "abstract")) |value| {
-                if (isYes(value)) {
-                    const id = self.document.attribute(child, "id") orelse
-                        return error.InvalidSchema;
-                    try self.abstract_patterns.put(
-                        try self.arena.dupe(u8, id),
-                        child,
-                    );
-                }
+            try self.collectAbstractPattern(child);
+        }
+    }
+
+    fn collectAbstractPattern(self: *Compiler, id: dom.NodeId) Error!void {
+        const node = self.document.node(id);
+        if (node.kind != .element or
+            !std.mem.eql(u8, node.ns, namespace_uri) or
+            !std.mem.eql(u8, node.local, "pattern"))
+        {
+            return error.InvalidSchema;
+        }
+        if (self.document.attribute(id, "abstract")) |value| {
+            if (isYes(value)) {
+                const abstract_id = self.document.attribute(id, "id") orelse
+                    return error.InvalidSchema;
+                try self.abstract_patterns.put(
+                    try self.arena.dupe(u8, abstract_id),
+                    id,
+                );
             }
-            var rule_child = node.first_child;
-            while (rule_child != dom.null_node) : (rule_child = self.document.node(rule_child).next_sibling) {
-                const rule_node = self.document.node(rule_child);
-                if (rule_node.kind != .element or
-                    !std.mem.eql(u8, rule_node.ns, namespace_uri) or
-                    !std.mem.eql(u8, rule_node.local, "rule"))
-                {
-                    continue;
-                }
-                if (self.document.attribute(rule_child, "abstract")) |value| {
-                    if (isYes(value)) {
-                        const id = self.document.attribute(
-                            rule_child,
-                            "id",
-                        ) orelse return error.InvalidSchema;
-                        try self.abstract_rules.put(
-                            try self.arena.dupe(u8, id),
-                            rule_child,
-                        );
-                    }
+        }
+        var rule_child = node.first_child;
+        while (rule_child != dom.null_node) : (rule_child = self.document.node(rule_child).next_sibling) {
+            const rule_node = self.document.node(rule_child);
+            if (rule_node.kind != .element or
+                !std.mem.eql(u8, rule_node.ns, namespace_uri) or
+                !std.mem.eql(u8, rule_node.local, "rule"))
+            {
+                continue;
+            }
+            if (self.document.attribute(rule_child, "abstract")) |value| {
+                if (isYes(value)) {
+                    const rule_id = self.document.attribute(
+                        rule_child,
+                        "id",
+                    ) orelse return error.InvalidSchema;
+                    try self.abstract_rules.put(
+                        try self.arena.dupe(u8, rule_id),
+                        rule_child,
+                    );
                 }
             }
         }

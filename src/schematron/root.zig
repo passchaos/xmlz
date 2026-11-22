@@ -22,6 +22,78 @@ pub fn parse(
     return schema.parse(allocator, document);
 }
 
+/// Compile `sch:pattern` elements embedded in a host schema document.
+pub fn parsePatterns(
+    allocator: std.mem.Allocator,
+    document: *const dom.Document,
+    pattern_nodes: []const dom.NodeId,
+) Error!Schema {
+    return schema.parsePatterns(allocator, document, pattern_nodes);
+}
+
+/// Restrict embedded patterns to those inside a host element, such as
+/// `xs:appinfo`. A null ancestor collects every `sch:pattern` in the document.
+pub const Ancestor = struct {
+    namespace: []const u8,
+    local: []const u8,
+};
+
+/// Collect `sch:pattern` element ids from a host schema document in document
+/// order. Patterns nested inside another pattern are not collected.
+pub fn findEmbeddedPatterns(
+    allocator: std.mem.Allocator,
+    document: *const dom.Document,
+    ancestor: ?Ancestor,
+) ![]const dom.NodeId {
+    var out: std.ArrayList(dom.NodeId) = .empty;
+    errdefer out.deinit(allocator);
+    try collectPatterns(
+        allocator,
+        document,
+        document.documentNode(),
+        ancestor,
+        false,
+        &out,
+    );
+    return out.toOwnedSlice(allocator);
+}
+
+fn collectPatterns(
+    allocator: std.mem.Allocator,
+    document: *const dom.Document,
+    id: dom.NodeId,
+    ancestor: ?Ancestor,
+    inside_ancestor: bool,
+    out: *std.ArrayList(dom.NodeId),
+) !void {
+    var child = document.node(id).first_child;
+    while (child != dom.null_node) : (child = document.node(child).next_sibling) {
+        const node = document.node(child);
+        if (node.kind != .element) continue;
+        if (std.mem.eql(u8, node.ns, namespace_uri) and
+            std.mem.eql(u8, node.local, "pattern"))
+        {
+            if (ancestor == null or inside_ancestor) {
+                try out.append(allocator, child);
+            }
+            continue;
+        }
+        const is_ancestor = if (ancestor) |value|
+            std.mem.eql(u8, node.ns, value.namespace) and
+                std.mem.eql(u8, node.local, value.local)
+        else
+            false;
+        try collectPatterns(
+            allocator,
+            document,
+            child,
+            ancestor,
+            inside_ancestor or is_ancestor,
+            out,
+        );
+    }
+}
+
 /// Validate an instance document against a compiled schema.
 pub fn validate(
     compiled: *const Schema,
@@ -316,4 +388,79 @@ test "Schematron diagnostics and properties render in context" {
     try testing.expectEqualStrings("urn:s", failure.properties[0].scheme);
     try testing.expectEqualStrings("error", failure.properties[0].role);
     try testing.expectEqualStrings("bad item", failure.properties[0].message);
+}
+
+test "Schematron compiles patterns embedded in a host schema" {
+    const host_source =
+        "<grammar xmlns='http://relaxng.org/ns/structure/1.0' " ++
+        "xmlns:sch='" ++ sch ++ "' xmlns:q='urn:q'>" ++
+        "<sch:pattern id='p'><sch:rule context='q:item'>" ++
+        "<sch:assert test='@id'>id required</sch:assert>" ++
+        "</sch:rule></sch:pattern></grammar>";
+    var host_document = try parseDocument(host_source);
+    defer host_document.deinit();
+    const patterns = try findEmbeddedPatterns(
+        testing.allocator,
+        &host_document,
+        null,
+    );
+    defer testing.allocator.free(patterns);
+    try testing.expectEqual(1, patterns.len);
+
+    var compiled = try parsePatterns(
+        testing.allocator,
+        &host_document,
+        patterns,
+    );
+    defer compiled.deinit();
+
+    var invalid_document = try parseDocument(
+        "<root xmlns:q='urn:q'><q:item/></root>",
+    );
+    defer invalid_document.deinit();
+    var invalid = try validate(
+        &compiled,
+        testing.allocator,
+        &invalid_document,
+        .{},
+    );
+    defer invalid.deinit();
+    try testing.expect(!invalid.isValid());
+    try testing.expectEqualStrings("id required", invalid.failures[0].message);
+
+    var valid_document = try parseDocument(
+        "<root xmlns:q='urn:q'><q:item id='1'/></root>",
+    );
+    defer valid_document.deinit();
+    var valid = try validate(&compiled, testing.allocator, &valid_document, .{});
+    defer valid.deinit();
+    try testing.expect(valid.isValid());
+}
+
+test "Schematron embedded pattern discovery can require an ancestor" {
+    const host_source =
+        "<schema xmlns='urn:host' xmlns:sch='" ++ sch ++ "'>" ++
+        "<sch:pattern id='outside'/>" ++
+        "<appinfo><sch:pattern id='inside'/></appinfo>" ++
+        "</schema>";
+    var document = try parseDocument(host_source);
+    defer document.deinit();
+    const all = try findEmbeddedPatterns(
+        testing.allocator,
+        &document,
+        null,
+    );
+    defer testing.allocator.free(all);
+    try testing.expectEqual(2, all.len);
+    const inside = try findEmbeddedPatterns(
+        testing.allocator,
+        &document,
+        .{ .namespace = "urn:host", .local = "appinfo" },
+    );
+    defer testing.allocator.free(inside);
+    try testing.expectEqual(1, inside.len);
+    try testing.expectEqualStrings(
+        "inside",
+        document.attribute(inside[0], "id").?,
+    );
 }
