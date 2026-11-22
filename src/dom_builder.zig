@@ -29,12 +29,25 @@ pub const Builder = struct {
     /// Allow more than one element child at the document node. XSLT result
     /// trees are fragments and may contain several top-level elements.
     allow_multiple_roots: bool = false,
+    /// Interned element/attribute names and namespace URIs. Result trees
+    /// repeat a small set of names, so sharing them avoids one allocation
+    /// per copied node.
+    name_cache: ?std.StringHashMap([]const u8) = null,
+    uri_cache: ?std.StringHashMap([]const u8) = null,
 
     pub fn init(allocator: std.mem.Allocator) Error!Builder {
         var builder: Builder = .{ .arena = std.heap.ArenaAllocator.init(allocator) };
         errdefer builder.arena.deinit();
         _ = try builder.addNode(.{ .kind = .document });
         return builder;
+    }
+
+    /// Preallocate node storage for an expected result size. Growth beyond
+    /// the reservation still works normally.
+    pub fn reserveNodes(self: *Builder, count: usize) Error!void {
+        const allocator = self.arena.allocator();
+        try self.nodes.ensureTotalCapacity(allocator, count);
+        try self.attr_lists.ensureTotalCapacity(allocator, count);
     }
 
     pub fn deinit(self: *Builder) void {
@@ -88,7 +101,7 @@ pub const Builder = struct {
     }
 
     pub fn createElement(self: *Builder, name: []const u8) Error!dom.NodeId {
-        const owned = try self.dupe(name);
+        const owned = try self.internName(name);
         const qname = namespace.splitQName(owned) catch return error.InvalidName;
         return self.addNode(.{
             .kind = .element,
@@ -107,20 +120,61 @@ pub const Builder = struct {
             if (prefix.len != 0) return error.InvalidName;
         };
         chars.validateNCName(local) catch return error.InvalidName;
-        const raw = if (prefix.len == 0)
-            try self.dupe(local)
-        else
-            try std.fmt.allocPrint(
+        var raw: []const u8 = undefined;
+        if (prefix.len == 0) {
+            raw = try self.internName(local);
+        } else {
+            var buffer: [128]u8 = undefined;
+            const combined = std.fmt.bufPrint(
+                &buffer,
+                "{s}:{s}",
+                .{ prefix, local },
+            ) catch try std.fmt.allocPrint(
                 self.arena.allocator(),
                 "{s}:{s}",
                 .{ prefix, local },
             );
+            raw = try self.internName(combined);
+        }
         const owned_local = if (prefix.len == 0) raw else raw[prefix.len + 1 ..];
         return self.addNode(.{
             .kind = .element,
             .name = raw,
             .local = owned_local,
-            .ns = try self.dupe(uri),
+            .ns = try self.internUri(uri),
+        });
+    }
+
+    /// Create a namespaced element whose names are already validated, such
+    /// as when copying a parsed tree.
+    pub fn createElementNsUnchecked(
+        self: *Builder,
+        prefix: []const u8,
+        local: []const u8,
+        uri: []const u8,
+    ) Error!dom.NodeId {
+        var raw: []const u8 = undefined;
+        if (prefix.len == 0) {
+            raw = try self.internName(local);
+        } else {
+            var buffer: [128]u8 = undefined;
+            const combined = std.fmt.bufPrint(
+                &buffer,
+                "{s}:{s}",
+                .{ prefix, local },
+            ) catch try std.fmt.allocPrint(
+                self.arena.allocator(),
+                "{s}:{s}",
+                .{ prefix, local },
+            );
+            raw = try self.internName(combined);
+        }
+        const owned_local = if (prefix.len == 0) raw else raw[prefix.len + 1 ..];
+        return self.addNode(.{
+            .kind = .element,
+            .name = raw,
+            .local = owned_local,
+            .ns = try self.internUri(uri),
         });
     }
 
@@ -292,7 +346,7 @@ pub const Builder = struct {
         {
             return error.InvalidTree;
         }
-        const owned_name = try self.dupe(name);
+        const owned_name = try self.internName(name);
         const qname = namespace.splitQName(owned_name) catch return error.InvalidName;
         const list = &self.attr_lists.items[element];
         for (list.items) |*attribute| {
@@ -404,6 +458,34 @@ pub const Builder = struct {
 
     fn dupe(self: *Builder, bytes: []const u8) Error![]const u8 {
         return self.arena.allocator().dupe(u8, bytes);
+    }
+
+    fn internName(self: *Builder, name: []const u8) Error![]const u8 {
+        if (name.len == 0) return "";
+        if (self.name_cache == null) {
+            self.name_cache = std.StringHashMap([]const u8).init(
+                self.arena.allocator(),
+            );
+        }
+        const cache = &self.name_cache.?;
+        if (cache.get(name)) |existing| return existing;
+        const owned = try self.dupe(name);
+        try cache.put(owned, owned);
+        return owned;
+    }
+
+    fn internUri(self: *Builder, uri: []const u8) Error![]const u8 {
+        if (uri.len == 0) return "";
+        if (self.uri_cache == null) {
+            self.uri_cache = std.StringHashMap([]const u8).init(
+                self.arena.allocator(),
+            );
+        }
+        const cache = &self.uri_cache.?;
+        if (cache.get(uri)) |existing| return existing;
+        const owned = try self.dupe(uri);
+        try cache.put(owned, owned);
+        return owned;
     }
 
     fn isAncestor(

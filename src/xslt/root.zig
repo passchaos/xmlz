@@ -1909,3 +1909,24 @@ test "XSLT EXSLT date functions and current time" {
         output,
     );
 }
+
+test "XSLT identity pattern matches namespaced elements" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="*"><xsl:copy><xsl:apply-templates/></xsl:copy></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root xmlns='urn:x'><child a='1'>t</child></root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    // xsl:copy copies the element and its namespaces, not its attributes.
+    try testing.expectEqualStrings(
+        "<root xmlns=\"urn:x\"><child>t</child></root>",
+        output,
+    );
+}

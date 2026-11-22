@@ -30,6 +30,19 @@ pub fn evaluate(
     return .{ .arena = arena, .value = result };
 }
 
+/// Evaluate without an intermediate arena. The returned value and all of its
+/// strings/node arrays are allocated with `allocator` and live as long as it
+/// does; this is intended for callers that already own a transform arena and
+/// copy out or consume the value immediately.
+pub fn evaluateDirect(
+    allocator: std.mem.Allocator,
+    expression: *const ast.Expr,
+    context: *const value.Context,
+) Error!value.Value {
+    var evaluator: Evaluator = .{ .allocator = allocator };
+    return evaluator.eval(expression, context);
+}
+
 const Kind = enum {
     document,
     element,

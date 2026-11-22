@@ -60,3 +60,44 @@ The generated document contains namespaces, nested groups, many short
 attributes, text with entity references, and self-closing elements. The
 generator is `bench/gen.zig`; the size target is 16 MiB and the output is
 deterministic.
+
+## XSLT transformation
+
+Reproduce with:
+
+```sh
+zig build -Doptimize=ReleaseFast xslt-bench
+```
+
+The benchmark generates a deterministic 3 MiB table document (20,000 rows)
+and runs two workloads 20 times each: an identity transform (`xsl:copy` plus
+`xsl:apply-templates` for every node) and a sorted report (`xsl:for-each`,
+two `xsl:sort` keys, attribute value templates, and `xsl:value-of`). Both
+engines parse the source and compile the stylesheet once; the per-transform
+column amortizes parsing and serialization over the 20 applications.
+
+## Results (2026-11-23)
+
+| Workload | Engine | Total (s) | Per transform (ms) |
+| --- | --- | ---: | ---: |
+| identity | xmlz | 0.589 | 29.45 |
+| identity | libxslt (lxml) | 1.021 | 51.06 |
+| sorted report | xmlz | 0.606 | 30.32 |
+| sorted report | libxslt (lxml) | 0.930 | 46.49 |
+
+## Interpretation
+
+- The identity transform is **1.9x faster than libxslt** and the sorted
+  report is **1.4x faster**; libxslt is measured through lxml in-process so
+  Python call overhead is included.
+- Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
+  directly against each node instead of precomputing a match set, and child
+  iteration no longer materializes node-sets for `apply-templates` without
+  `select`.
+- The merged source view aliases the parsed arrays until `document()` loads
+  another document, copies skip in-scope namespace collection for
+  namespace-free inputs, and result node storage is preallocated from the
+  source size.
+- Expression evaluation allocates directly in the transform arena instead
+  of creating a per-evaluation arena, and single-step child/attribute name
+  tests and simple `xsl:sort` keys use specialized paths.

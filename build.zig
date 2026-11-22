@@ -230,6 +230,17 @@ pub fn build(b: *std.Build) void {
     );
     xslt_misc_suite_step.dependOn(&xslt_misc_suite.step);
 
+    const xslt_bench = b.addSystemCommand(&.{
+        "python3",
+        "tools/xslt_bench.py",
+    });
+    xslt_bench.addFileArg(xslt_tool.getEmittedBin());
+    const xslt_bench_step = b.step(
+        "xslt-bench",
+        "Benchmark XSLT identity transforms against libxslt (needs lxml)",
+    );
+    xslt_bench_step.dependOn(&xslt_bench.step);
+
     const xsd_diff = b.addSystemCommand(&.{
         "python3",
         "tools/xsd_diff.py",

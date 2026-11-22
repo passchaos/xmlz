@@ -250,6 +250,10 @@ pub fn apply(
         else => return error.InvalidStylesheet,
     };
     builder.allow_multiple_roots = true;
+    builder.reserveNodes(source.nodes.len + 16) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidStylesheet,
+    };
     errdefer builder.deinit();
 
     var runtime: Runtime = .{
@@ -269,6 +273,7 @@ pub fn apply(
         ).init(arena_allocator),
     };
     try runtime.prepareSource();
+    runtime.source_has_namespaces = documentHasNamespaces(runtime.source);
     try runtime.prepareMergedSource();
     runtime.suppress_refresh = true;
     try runtime.buildKeys();
@@ -281,6 +286,8 @@ pub fn apply(
     runtime.deinitFilteredSource();
     runtime.deinitFragments();
 
+    const output = try runtime.copyOutput();
+    const messages = try runtime.messages.toOwnedSlice(arena_allocator);
     const document = builder.finish() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidStylesheet,
@@ -288,8 +295,8 @@ pub fn apply(
     return .{
         .arena = arena,
         .document = document,
-        .output = try runtime.copyOutput(),
-        .messages = try runtime.messages.toOwnedSlice(arena_allocator),
+        .output = output,
+        .messages = messages,
     };
 }
 
@@ -315,9 +322,32 @@ fn nodeKey(ref: xpath.NodeRef) NodeKey {
     };
 }
 
+const NamePattern = struct {
+    uri: []const u8,
+    /// Null matches any local name (`prefix:*`).
+    local: ?[]const u8,
+    /// False for the wildcard `*`, which matches any namespace.
+    check_namespace: bool = true,
+};
+
+/// A match pattern of the form `child-or-attribute test` that can be tested
+/// directly against a node instead of precomputing a node set. This covers
+/// the common `*`, name-test, `text()`, and `@*` templates.
+const SimplePattern = union(enum) {
+    element_any,
+    element_name: NamePattern,
+    attribute_any,
+    attribute_name: NamePattern,
+    text,
+    comment,
+    processing_instruction: ?[]const u8,
+    child_node,
+};
+
 const TemplateState = struct {
     template: *const compile.Template,
     matches: std.AutoHashMap(NodeKey, void),
+    simple: ?SimplePattern = null,
 };
 
 const KeyQuery = struct {
@@ -458,6 +488,9 @@ const Runtime = struct {
     current_template: ?*const compile.Template = null,
     current_mode: ?[]const u8 = null,
     now: ?[]const u8 = null,
+    /// True when any document in the view declares a namespace, allowing the
+    /// copy instructions to skip in-scope namespace collection.
+    source_has_namespaces: bool = false,
 
     fn copyOutput(self: *Runtime) Error!compile.Output {
         var output = self.stylesheet.output;
@@ -524,17 +557,16 @@ const Runtime = struct {
     /// node ids are preserved so references created before a `document()`
     /// call remain valid.
     fn prepareMergedSource(self: *Runtime) Error!void {
-        try self.merged_nodes.appendSlice(self.allocator, self.source.nodes);
-        try self.merged_attributes.appendSlice(
-            self.allocator,
-            self.source.attributes,
-        );
-        self.source_node_count = self.merged_nodes.items.len;
+        // Start by aliasing the source arrays: documents loaded through
+        // `document()` are rare, so the merged copy is made on first use.
+        // The merged Document stays stable so evaluation contexts keep a
+        // valid pointer while its arrays grow.
+        self.source_node_count = self.source.nodes.len;
         const document = try self.allocator.create(dom.Document);
         document.* = .{
             .arena = std.heap.ArenaAllocator.init(self.allocator),
-            .nodes = self.merged_nodes.items,
-            .attributes = self.merged_attributes.items,
+            .nodes = self.source.nodes,
+            .attributes = self.source.attributes,
             .declaration = self.source.declaration,
             .doctype = self.source.doctype,
             .dtd = self.source.dtd,
@@ -561,6 +593,16 @@ const Runtime = struct {
         self: *Runtime,
         document: *const dom.Document,
     ) Error!dom.NodeId {
+        if (self.merged_nodes.items.len == 0) {
+            try self.merged_nodes.appendSlice(
+                self.allocator,
+                self.source.nodes,
+            );
+            try self.merged_attributes.appendSlice(
+                self.allocator,
+                self.source.attributes,
+            );
+        }
         const node_offset: dom.NodeId = @intCast(self.merged_nodes.items.len);
         const attr_offset: u32 = @intCast(self.merged_attributes.items.len);
         try self.merged_nodes.ensureUnusedCapacity(
@@ -582,6 +624,9 @@ const Runtime = struct {
             self.allocator,
             document.attributes,
         );
+        if (!self.source_has_namespaces and documentHasNamespaces(document)) {
+            self.source_has_namespaces = true;
+        }
         if (self.merged) |merged| {
             merged.nodes = self.merged_nodes.items;
             merged.attributes = self.merged_attributes.items;
@@ -596,7 +641,9 @@ const Runtime = struct {
         node: xpath.NodeRef,
     ) xpath_value.NodeRange {
         const id: usize = refNodeId(node);
-        if (id < self.source_node_count) {
+        if (id < self.source_node_count or
+            self.merged_nodes.items.len == 0)
+        {
             return .{ .start = 0, .end = self.source_node_count };
         }
         var start = self.source_node_count;
@@ -754,7 +801,7 @@ const Runtime = struct {
             .current_date_time = self.now,
             .document_base = self.base_uri,
         };
-        var result = xpath_eval.evaluate(
+        const result = xpath_eval.evaluateDirect(
             self.allocator,
             expression,
             &context,
@@ -762,8 +809,7 @@ const Runtime = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.LoadFailed,
         };
-        defer result.deinit();
-        return switch (result.value) {
+        return switch (result) {
             .node_set => |nodes| blk: {
                 const out = try allocator.alloc(xpath.NodeRef, nodes.len);
                 @memcpy(out, nodes);
@@ -990,13 +1036,12 @@ const Runtime = struct {
             },
             .document_base = self.base_uri,
         };
-        var selected = xpath_eval.evaluate(
+        const selected = xpath_eval.evaluateDirect(
             self.allocator,
             selector,
             &context,
         ) catch |err| return mapEvalError(err);
-        defer selected.deinit();
-        const nodes = switch (selected.value) {
+        const nodes = switch (selected) {
             .node_set => |value| value,
             else => return error.InvalidStylesheet,
         };
@@ -1046,6 +1091,10 @@ const Runtime = struct {
                 .matches = std.AutoHashMap(NodeKey, void).init(self.allocator),
             };
             const selector = template.selector orelse continue;
+            if (simplePattern(template)) |pattern| {
+                self.template_states[index].simple = pattern;
+                continue;
+            }
             try self.collectTemplateMatches(index, selector, .{ .node = 0 });
             for (self.document_roots.items) |root| {
                 const relative = try relativePattern(self.allocator, selector);
@@ -1103,13 +1152,12 @@ const Runtime = struct {
             },
             .document_base = self.base_uri,
         };
-        var result = xpath_eval.evaluate(
+        const result = xpath_eval.evaluateDirect(
             self.allocator,
             selector,
             &context,
         ) catch |err| return mapEvalError(err);
-        defer result.deinit();
-        switch (result.value) {
+        switch (result) {
             .node_set => |nodes| {
                 for (nodes) |ref| {
                     try self.template_states[index].matches.put(
@@ -1244,22 +1292,193 @@ const Runtime = struct {
             },
             .document_base = self.base_uri,
         };
-        var result = xpath_eval.evaluate(
+        if (try self.fastPathNodes(expression, node)) |nodes| {
+            return .{ .node_set = nodes };
+        }
+        return xpath_eval.evaluateDirect(
             self.allocator,
             expression.node,
             &context,
         ) catch |err| return mapEvalError(err);
-        defer result.deinit();
-        return switch (result.value) {
-            .node_set => |nodes| .{
-                .node_set = try self.allocator.dupe(xpath.NodeRef, nodes),
+    }
+
+    /// Evaluate a single-step child/attribute name test without the generic
+    /// XPath step machinery. Returns null when the expression needs the full
+    /// evaluator.
+    fn fastPathNodes(
+        self: *Runtime,
+        expression: compile.CompiledExpr,
+        node: xpath.NodeRef,
+    ) Error!?[]const xpath.NodeRef {
+        const path = switch (expression.node.*) {
+            .path => |value| value,
+            else => return null,
+        };
+        if (path.absolute or path.start != null or path.steps.len != 1) {
+            return null;
+        }
+        const step = path.steps[0];
+        if (step.predicates.len != 0) return null;
+        const name_test = switch (step.node_test) {
+            .name => |value| value,
+            else => return null,
+        };
+        var uri: []const u8 = "";
+        if (name_test.prefix) |prefix| {
+            uri = resolvePrefix(expression.namespaces, prefix) orelse
+                return null;
+        }
+        if (step.axis == .attribute) {
+            const element_id = switch (node) {
+                .node => |id| id,
+                else => return &.{},
+            };
+            if (self.source.node(element_id).kind != .element) return &.{};
+            const check_namespace = name_test.prefix != null or
+                name_test.local != null;
+            const attributes = self.source.attributesOf(element_id);
+            var count: usize = 0;
+            for (attributes) |attribute| {
+                if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+                    continue;
+                }
+                if (check_namespace and
+                    !std.mem.eql(u8, attribute.ns, uri))
+                {
+                    continue;
+                }
+                if (name_test.local) |local| {
+                    if (!std.mem.eql(u8, attribute.localName(), local)) {
+                        continue;
+                    }
+                }
+                count += 1;
+            }
+            if (count == 0) return &.{};
+            const out = try self.allocator.alloc(xpath.NodeRef, count);
+            var write: usize = 0;
+            for (attributes, 0..) |attribute, index| {
+                if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+                    continue;
+                }
+                if (check_namespace and !std.mem.eql(u8, attribute.ns, uri)) {
+                    continue;
+                }
+                if (name_test.local) |local| {
+                    if (!std.mem.eql(u8, attribute.localName(), local)) {
+                        continue;
+                    }
+                }
+                out[write] = .{ .attribute = .{
+                    .element = element_id,
+                    .index = @intCast(index),
+                } };
+                write += 1;
+            }
+            return out;
+        }
+        if (step.axis != .child) return null;
+        const parent_id = switch (node) {
+            .node => |id| id,
+            else => return &.{},
+        };
+        const parent = self.source.node(parent_id);
+        if (parent.kind != .element and parent.kind != .document) return &.{};
+        const check_namespace = name_test.prefix != null or
+            name_test.local != null;
+        var count: usize = 0;
+        var child = parent.first_child;
+        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+            const value = self.source.node(child);
+            if (value.kind != .element) continue;
+            if (check_namespace and !std.mem.eql(u8, value.ns, uri)) continue;
+            if (name_test.local) |local| {
+                if (!std.mem.eql(u8, value.local, local)) continue;
+            }
+            count += 1;
+        }
+        if (count == 0) return &.{};
+        const out = try self.allocator.alloc(xpath.NodeRef, count);
+        var write: usize = 0;
+        child = parent.first_child;
+        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+            const value = self.source.node(child);
+            if (value.kind != .element) continue;
+            if (check_namespace and !std.mem.eql(u8, value.ns, uri)) continue;
+            if (name_test.local) |local| {
+                if (!std.mem.eql(u8, value.local, local)) continue;
+            }
+            out[write] = .{ .node = child };
+            write += 1;
+        }
+        return out;
+    }
+
+    fn simpleMatches(
+        self: *Runtime,
+        pattern: SimplePattern,
+        node: xpath.NodeRef,
+    ) bool {
+        return switch (pattern) {
+            .element_any => switch (node) {
+                .node => |id| self.source.node(id).kind == .element,
+                else => false,
             },
-            .boolean => |boolean| .{ .boolean = boolean },
-            .number => |number| .{ .number = number },
-            .string => |string| .{
-                .string = try self.allocator.dupe(u8, string),
+            .element_name => |name| switch (node) {
+                .node => |id| {
+                    const value = self.source.node(id);
+                    if (value.kind != .element) return false;
+                    if (name.check_namespace and
+                        !std.mem.eql(u8, value.ns, name.uri))
+                    {
+                        return false;
+                    }
+                    return if (name.local) |local|
+                        std.mem.eql(u8, value.local, local)
+                    else
+                        true;
+                },
+                else => false,
             },
-            .tree => |tree| .{ .tree = tree },
+            .attribute_any => node == .attribute,
+            .attribute_name => |name| switch (node) {
+                .attribute => |attr| {
+                    const value = self.source.attributesOf(attr.element)[attr.index];
+                    if (name.check_namespace and
+                        !std.mem.eql(u8, value.ns, name.uri))
+                    {
+                        return false;
+                    }
+                    return if (name.local) |local|
+                        std.mem.eql(u8, value.localName(), local)
+                    else
+                        true;
+                },
+                else => false,
+            },
+            .text => switch (node) {
+                .node => |id| self.source.node(id).kind == .text,
+                else => false,
+            },
+            .comment => switch (node) {
+                .node => |id| self.source.node(id).kind == .comment,
+                else => false,
+            },
+            .processing_instruction => |target| switch (node) {
+                .node => |id| {
+                    const value = self.source.node(id);
+                    if (value.kind != .processing_instruction) return false;
+                    return if (target) |expected|
+                        std.mem.eql(u8, value.name, expected)
+                    else
+                        true;
+                },
+                else => false,
+            },
+            .child_node => switch (node) {
+                .node => |id| self.source.node(id).kind != .document,
+                else => false,
+            },
         };
     }
 
@@ -1273,7 +1492,11 @@ const Runtime = struct {
         for (self.template_states) |state| {
             if (state.template.selector == null) continue;
             if (!modeMatches(state.template.mode, mode)) continue;
-            if (!state.matches.contains(key)) continue;
+            if (state.simple) |pattern| {
+                if (!self.simpleMatches(pattern, node)) continue;
+            } else if (!state.matches.contains(key)) {
+                continue;
+            }
             if (best) |current| {
                 if (state.template.precedence < current.precedence) continue;
                 if (state.template.precedence == current.precedence) {
@@ -1300,17 +1523,65 @@ const Runtime = struct {
         self.current_mode = mode;
         defer self.current_mode = saved_mode;
         for (nodes, 0..) |node, index| {
-            if (self.findTemplate(node, mode)) |template| {
-                try self.executeTemplate(
-                    template,
-                    node,
-                    index + 1,
-                    nodes.len,
-                    params,
-                );
-            } else {
-                try self.builtinTemplate(node, mode, params);
-            }
+            try self.applyTemplateNode(
+                node,
+                mode,
+                params,
+                index + 1,
+                nodes.len,
+            );
+        }
+    }
+
+    fn applyTemplateNode(
+        self: *Runtime,
+        node: xpath.NodeRef,
+        mode: ?[]const u8,
+        params: []const xpath.Variable,
+        position: usize,
+        size: usize,
+    ) Error!void {
+        if (self.findTemplate(node, mode)) |template| {
+            try self.executeTemplate(template, node, position, size, params);
+        } else {
+            try self.builtinTemplate(node, mode, params);
+        }
+    }
+
+    /// Apply templates to an element or document's children without
+    /// materializing a node-set, which is the hot path for identity-style
+    /// stylesheets.
+    fn applyTemplateChildren(
+        self: *Runtime,
+        node: xpath.NodeRef,
+        mode: ?[]const u8,
+        params: []const xpath.Variable,
+    ) Error!void {
+        const id = switch (node) {
+            .node => |value| value,
+            .attribute, .namespace_node => return,
+        };
+        const value = self.source.node(id);
+        if (value.kind != .document and value.kind != .element) return;
+        var size: usize = 0;
+        var child = value.first_child;
+        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+            size += 1;
+        }
+        const saved_mode = self.current_mode;
+        self.current_mode = mode;
+        defer self.current_mode = saved_mode;
+        var position: usize = 0;
+        child = value.first_child;
+        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+            position += 1;
+            try self.applyTemplateNode(
+                .{ .node = child },
+                mode,
+                params,
+                position,
+                size,
+            );
         }
     }
 
@@ -1399,10 +1670,9 @@ const Runtime = struct {
                 const node_value = self.source.node(id);
                 switch (node_value.kind) {
                     .document, .element => {
-                        const children = try self.childrenOf(node);
                         // libxslt passes parameters through the built-in
                         // template rules (XSLT 2.0 behavior).
-                        try self.applyTemplates(children, mode, params);
+                        try self.applyTemplateChildren(node, mode, params);
                     },
                     .text => try self.appendText(node_value.value),
                     .comment, .processing_instruction => {},
@@ -1636,7 +1906,11 @@ const Runtime = struct {
             if (state.template.selector == null) continue;
             if (state.template.precedence >= maximum_precedence) continue;
             if (!modeMatches(state.template.mode, mode)) continue;
-            if (!state.matches.contains(key)) continue;
+            if (state.simple) |pattern| {
+                if (!self.simpleMatches(pattern, node)) continue;
+            } else if (!state.matches.contains(key)) {
+                continue;
+            }
             if (best) |current| {
                 if (state.template.precedence < current.precedence) continue;
                 if (state.template.precedence == current.precedence) {
@@ -1706,6 +1980,19 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!void {
+        if (instruction.select == null and instruction.sorts.len == 0) {
+            try self.applyTemplateChildren(
+                node,
+                instruction.mode,
+                try self.evaluateParams(
+                    instruction.params,
+                    node,
+                    position,
+                    size,
+                ),
+            );
+            return;
+        }
         const selected: []const xpath.NodeRef = if (instruction.select) |select|
             try self.requireNodeSet(try self.evalOwned(
                 select,
@@ -1899,24 +2186,28 @@ const Runtime = struct {
                 const node_value = self.source.node(id);
                 switch (node_value.kind) {
                     .element => {
-                        const new_id = self.builder.createElementNs(
+                        const new_id = self.builder.createElementNsUnchecked(
                             prefixOf(node_value),
                             node_value.local,
                             node_value.ns,
                         ) catch |err| return mapBuilderError(err);
                         self.builder.appendChild(self.parent, new_id) catch |err|
                             return mapBuilderError(err);
-                        const bindings = try self.source.inScopeNamespaces(
-                            self.allocator,
-                            id,
-                        );
-                        for (bindings) |binding| {
-                            if (std.mem.eql(u8, binding.prefix, "xml")) continue;
-                            try self.addNamespaceDecl(
-                                new_id,
-                                binding.prefix,
-                                binding.uri,
+                        if (self.source_has_namespaces) {
+                            const bindings = try self.source.inScopeNamespaces(
+                                self.allocator,
+                                id,
                             );
+                            for (bindings) |binding| {
+                                if (std.mem.eql(u8, binding.prefix, "xml")) {
+                                    continue;
+                                }
+                                try self.addNamespaceDecl(
+                                    new_id,
+                                    binding.prefix,
+                                    binding.uri,
+                                );
+                            }
                         }
                         const saved_parent = self.parent;
                         self.parent = new_id;
@@ -2347,13 +2638,12 @@ const Runtime = struct {
             },
             .document_base = self.base_uri,
         };
-        var result = xpath_eval.evaluate(
+        const result = xpath_eval.evaluateDirect(
             self.allocator,
             selector.node,
             &context,
         ) catch |err| return mapEvalError(err);
-        defer result.deinit();
-        const nodes = switch (result.value) {
+        const nodes = switch (result) {
             .node_set => |value| try self.allocator.dupe(
                 xpath.NodeRef,
                 value,
@@ -2983,7 +3273,7 @@ const Runtime = struct {
                 }
             },
             .element => {
-                const new_id = self.builder.createElementNs(
+                const new_id = self.builder.createElementNsUnchecked(
                     prefixOf(node_value),
                     node_value.local,
                     node_value.ns,
@@ -3099,29 +3389,38 @@ const Runtime = struct {
     ) Error![]const xpath.NodeRef {
         if (sorts.len == 0 or nodes.len <= 1) return nodes;
         const entries = try self.allocator.alloc(SortEntry, nodes.len);
+        const all_keys = try self.allocator.alloc(
+            SortValue,
+            nodes.len * sorts.len,
+        );
         for (nodes, 0..) |current, index| {
-            const keys = try self.allocator.alloc(SortValue, sorts.len);
+            const base = index * sorts.len;
             for (sorts, 0..) |sort, key_index| {
+                var text: ?[]const u8 = null;
                 if (sort.select) |select| {
-                    const value = try self.evalOwned(
-                        select,
-                        current,
-                        index + 1,
-                        nodes.len,
-                    );
-                    keys[key_index] = switch (sort.data_type) {
-                        .text => .{ .text = try self.toString(value) },
-                        .number => .{ .number = try self.toNumber(value) },
-                    };
+                    text = try self.simpleChildString(select, current);
+                    if (text == null) {
+                        const value = try self.evalOwned(
+                            select,
+                            current,
+                            index + 1,
+                            nodes.len,
+                        );
+                        text = try self.toString(value);
+                    }
                 } else {
-                    const text = try self.stringValue(current);
-                    keys[key_index] = switch (sort.data_type) {
-                        .text => .{ .text = text },
-                        .number => .{ .number = xpath_value.parseNumber(text) },
-                    };
+                    text = try self.stringValue(current);
                 }
+                all_keys[base + key_index] = switch (sort.data_type) {
+                    .text => .{ .text = text.? },
+                    .number => .{ .number = xpath_value.parseNumber(text.?) },
+                };
             }
-            entries[index] = .{ .node = current, .index = index, .keys = keys };
+            entries[index] = .{
+                .node = current,
+                .index = index,
+                .keys = all_keys[base..][0..sorts.len],
+            };
         }
         std.mem.sort(SortEntry, entries, sorts, sortEntryLessThan);
         const out = try self.allocator.alloc(xpath.NodeRef, nodes.len);
@@ -3130,6 +3429,48 @@ const Runtime = struct {
         _ = position;
         _ = size;
         return out;
+    }
+
+    /// Fast path for a sort key such as `lastname`: a single child name test
+    /// whose string value is the first matching child's text.
+    fn simpleChildString(
+        self: *Runtime,
+        select: compile.CompiledExpr,
+        node: xpath.NodeRef,
+    ) Error!?[]const u8 {
+        const path = switch (select.node.*) {
+            .path => |value| value,
+            else => return null,
+        };
+        if (path.absolute or path.start != null or path.steps.len != 1) {
+            return null;
+        }
+        const step = path.steps[0];
+        if (step.axis != .child or step.predicates.len != 0) return null;
+        const name_test = switch (step.node_test) {
+            .name => |value| value,
+            else => return null,
+        };
+        const local = name_test.local orelse return null;
+        var uri: []const u8 = "";
+        if (name_test.prefix) |prefix| {
+            uri = resolvePrefix(select.namespaces, prefix) orelse return null;
+        }
+        const id = switch (node) {
+            .node => |value| value,
+            else => return null,
+        };
+        const parent = self.source.node(id);
+        if (parent.kind != .element and parent.kind != .document) return null;
+        var child = parent.first_child;
+        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+            const value = self.source.node(child);
+            if (value.kind != .element) continue;
+            if (!std.mem.eql(u8, value.ns, uri)) continue;
+            if (!std.mem.eql(u8, value.local, local)) continue;
+            return try self.stringValue(.{ .node = child });
+        }
+        return "";
     }
 
     fn childrenOf(
@@ -3291,6 +3632,13 @@ fn lookupKey(
         return out.toOwnedSlice(runtime.allocator);
     }
     return &.{};
+}
+
+fn documentHasNamespaces(document: *const dom.Document) bool {
+    for (document.attributes) |attr| {
+        if (namespace.Resolver.isNamespaceDeclaration(attr.name)) return true;
+    }
+    return false;
 }
 
 fn refNodeId(node: xpath.NodeRef) usize {
@@ -3475,6 +3823,72 @@ fn generateNodeId(
         return out.toOwnedSlice(allocator);
     }
     return std.fmt.allocPrint(allocator, "id{d}", .{entry.value_ptr.*});
+}
+
+fn simplePattern(template: *const compile.Template) ?SimplePattern {
+    const expression = template.selector orelse return null;
+    const path = switch (expression.*) {
+        .path => |value| value,
+        else => return null,
+    };
+    if (!path.absolute or path.start != null or path.steps.len != 2) {
+        return null;
+    }
+    const first = path.steps[0];
+    if (first.axis != .descendant_or_self or first.predicates.len != 0) {
+        return null;
+    }
+    switch (first.node_test) {
+        .node => {},
+        else => return null,
+    }
+    const second = path.steps[1];
+    if (second.predicates.len != 0) return null;
+    const axis = second.axis;
+    if (axis != .child and axis != .attribute) return null;
+    switch (second.node_test) {
+        .name => |name_test| {
+            var uri: []const u8 = "";
+            if (name_test.prefix) |prefix| {
+                uri = resolvePrefix(template.namespaces, prefix) orelse
+                    return null;
+            }
+            if (axis == .attribute) {
+                if (name_test.prefix == null and name_test.local == null) {
+                    return .attribute_any;
+                }
+                return .{ .attribute_name = .{
+                    .uri = uri,
+                    .local = name_test.local,
+                    .check_namespace = true,
+                } };
+            }
+            if (name_test.prefix == null and name_test.local == null) {
+                return .element_any;
+            }
+            return .{ .element_name = .{
+                .uri = uri,
+                .local = name_test.local,
+                .check_namespace = true,
+            } };
+        },
+        .node => {
+            if (axis != .child) return null;
+            return .child_node;
+        },
+        .text => {
+            if (axis != .child) return null;
+            return .text;
+        },
+        .comment => {
+            if (axis != .child) return null;
+            return .comment;
+        },
+        .processing_instruction => |target| {
+            if (axis != .child) return null;
+            return .{ .processing_instruction = target };
+        },
+    }
 }
 
 fn modeMatches(template_mode: ?[]const u8, mode: ?[]const u8) bool {

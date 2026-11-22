@@ -32,6 +32,7 @@ pub fn main(init: std.process.Init) !void {
     var stylesheet_path: ?[]const u8 = null;
     var source_path: ?[]const u8 = null;
     var catalog_path: ?[]const u8 = null;
+    var repeat: usize = 1;
     var parameters: std.ArrayList(xmlz.xpath.Variable) = .empty;
     defer parameters.deinit(init.gpa);
     while (args.next()) |arg| {
@@ -43,6 +44,13 @@ pub fn main(init: std.process.Init) !void {
                 .name = assignment[0..equals],
                 .value = .{ .string = assignment[equals + 1 ..] },
             });
+        } else if (std.mem.startsWith(u8, arg, "--repeat=")) {
+            repeat = std.fmt.parseUnsigned(
+                usize,
+                arg["--repeat=".len..],
+                10,
+            ) catch return error.InvalidArgument;
+            if (repeat == 0) return error.InvalidArgument;
         } else if (std.mem.startsWith(u8, arg, "--catalog=")) {
             catalog_path = arg["--catalog=".len..];
         } else if (stylesheet_path == null) {
@@ -106,6 +114,23 @@ pub fn main(init: std.process.Init) !void {
             .now = now,
         },
     );
+    var iteration: usize = 1;
+    while (iteration < repeat) : (iteration += 1) {
+        result.deinit();
+        result = try xmlz.xslt.apply(
+            &compiled,
+            &source.document,
+            .{
+                .parameters = parameters.items,
+                .resolver = .{
+                    .context = &loader,
+                    .load = loadStylesheet,
+                },
+                .base = stylesheet_file_path,
+                .now = now,
+            },
+        );
+    }
     defer result.deinit();
 
     for (result.messages) |message| {
