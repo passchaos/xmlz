@@ -1166,6 +1166,16 @@ const Evaluator = struct {
             }
             return .{ .boolean = false };
         }
+        if (std.mem.eql(u8, name, "unparsed-entity-uri")) {
+            if (!context.xslt_functions) return error.UnknownFunction;
+            if (items.len != 1) return error.InvalidArgument;
+            const entity_name = try self.toString(items[0], context);
+            const dtd = context.document.dtd orelse return .{ .string = "" };
+            const entity = dtd.entities.find(entity_name) orelse
+                return .{ .string = "" };
+            if (!entity.unparsed) return .{ .string = "" };
+            return .{ .string = entity.system_id };
+        }
         if (std.mem.eql(u8, name, "document")) {
             if (!context.xslt_functions) return error.UnknownFunction;
             if (items.len == 0 or items.len > 2) return error.InvalidArgument;
@@ -1434,6 +1444,7 @@ const xslt_functions = [_][]const u8{
     "key",
     "format-number",
     "system-property",
+    "unparsed-entity-uri",
 };
 
 /// XSLT instruction and subsidiary elements reported by `element-available`.

@@ -382,6 +382,9 @@ const Runtime = struct {
             .arena = std.heap.ArenaAllocator.init(self.allocator),
             .nodes = self.merged_nodes.items,
             .attributes = self.merged_attributes.items,
+            .declaration = self.source.declaration,
+            .doctype = self.source.doctype,
+            .dtd = self.source.dtd,
         };
         self.merged = document;
         self.source = document;

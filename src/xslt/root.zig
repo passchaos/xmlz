@@ -1425,3 +1425,28 @@ test "XSLT document reports load failures" {
         }),
     );
 }
+
+test "XSLT unparsed-entity-uri returns system identifiers" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <uri><xsl:value-of select="unparsed-entity-uri('logo')"/></uri>
+        \\    <none><xsl:value-of select="unparsed-entity-uri('missing')"/></none>
+        \\    <parsed><xsl:value-of select="unparsed-entity-uri('e')"/></parsed>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source =
+        "<!DOCTYPE root [" ++
+        "<!NOTATION gif SYSTEM 'image/gif'>" ++
+        "<!ENTITY logo SYSTEM 'logo.gif' NDATA gif>" ++
+        "<!ENTITY e 'text'>]><root/>";
+    const output = try transformToString(stylesheet, source, .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><uri>logo.gif</uri><none/><parsed/></out>",
+        output,
+    );
+}

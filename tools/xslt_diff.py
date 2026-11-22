@@ -625,9 +625,27 @@ STYLESHEETS = [
           <f7><xsl:value-of select="function-available('unknown')"/></f7>
           <f8><xsl:value-of select="function-available('node-set')"/></f8>
           <f9><xsl:value-of select="function-available('document')"/></f9>
+          <f10><xsl:value-of select="function-available('unparsed-entity-uri')"/></f10>
         </out></xsl:template>
         </xsl:stylesheet>""",
         b"<root/>",
+        {},
+    ),
+    (
+        "unparsed-entity-uri",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <uri><xsl:value-of select="unparsed-entity-uri('logo')"/></uri>
+          <none><xsl:value-of select="unparsed-entity-uri('missing')"/></none>
+          <parsed><xsl:value-of select="unparsed-entity-uri('e')"/></parsed>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"""<!DOCTYPE root [
+<!NOTATION gif SYSTEM "image/gif">
+<!ENTITY logo SYSTEM "logo.gif" NDATA gif>
+<!ENTITY e "text">
+]><root/>""",
         {},
     ),
     (
