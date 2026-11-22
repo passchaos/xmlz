@@ -143,7 +143,9 @@ including groups, rewrites, suffixes, delegates, and `nextCatalog` references.
 Referenced catalogs are loaded through a caller resolver with cycle-safe
 caching. Resolution follows the specification's `prefer` ordering, applies
 `xml:base`, selects the longest matching rewrite prefix or suffix, and returns
-arena-owned URI strings.
+arena-owned URI strings. CLI tools share `tools/file_loader.zig`, which tries
+`system` entries and then falls back to `uri` entries before touching the
+filesystem, matching libxml2's entity loader.
 
 ## Trusted mode
 
@@ -164,11 +166,12 @@ by the conformance harness.
   node-sets.
 - `zig build xinclude-diff` compares expanded documents against libxml2's
   `xmllint --xinclude`, including XPointer selection.
-- `zig build xslt-diff` compares XSLT result trees against libxslt via `lxml`.
+- `zig build xslt-diff` compares XSLT result trees against libxslt via `lxml`,
+  including catalog-resolved includes.
 - `zig build xsd-diff` compares schema validation results against libxml2 via
-  `lxml`.
+  `lxml`, including catalog-resolved includes/imports.
 - `zig build rng-diff` compares RELAX NG validation results against libxml2 via
-  `lxml`.
+  `lxml`, including catalog-resolved includes.
 - `zig build rng-compact-diff` validates compact-syntax schemas against
   equivalent XML-syntax twins using libxml2.
 - `zig build schematron-diff` compares Schematron validity with the ISO

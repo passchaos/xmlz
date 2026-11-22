@@ -1516,6 +1516,53 @@ INCLUDE_CASES = [
 ]
 
 
+# libxml2 loads XML_CATALOG_FILES once per process, so every catalog case
+# shares one catalog file exercising system, uri, and rewriteSystem entries.
+CATALOG_CASES = [
+    (
+        "catalog-includes",
+        {
+            "main.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:include schemaLocation="http://example.org/sys.xsd"/>
+              <xs:include schemaLocation="http://example.org/uri.xsd"/>
+              <xs:include schemaLocation="http://example.org/rewrite/rw.xsd"/>
+              <xs:element name="root"><xs:complexType><xs:sequence>
+                <xs:element name="a" type="xs:string"/>
+                <xs:element name="b" type="xs:string"/>
+                <xs:element name="c" type="xs:string"/>
+              </xs:sequence></xs:complexType></xs:element>
+            </xs:schema>""",
+            "sys.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:complexType name="Sys">
+                <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+              </xs:complexType>
+            </xs:schema>""",
+            "uri.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:complexType name="Uri">
+                <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+              </xs:complexType>
+            </xs:schema>""",
+            "rw.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:complexType name="Rw">
+                <xs:sequence><xs:element name="c" type="xs:string"/></xs:sequence>
+              </xs:complexType>
+            </xs:schema>""",
+            "catalog.xml": """<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+              <system systemId="http://example.org/sys.xsd" uri="sys.xsd"/>
+              <uri name="http://example.org/uri.xsd" uri="uri.xsd"/>
+              <rewriteSystem systemIdStartString="http://example.org/rewrite/"
+                             rewritePrefix="./"/>
+            </catalog>""",
+        },
+        [
+            "<root><a>1</a><b>2</b><c>3</c></root>",
+            "<root><a>1</a><c>3</c></root>",
+            "<root><a>1</a><b>2</b></root>",
+        ],
+    ),
+]
+
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True)
 
@@ -1581,6 +1628,58 @@ def main():
                 with open(instance_path, "w", encoding="utf-8") as handle:
                     handle.write(instance)
                 actual = run([validator, main_path, instance_path])
+                if actual.returncode == 2:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: xmlz schema/validation "
+                        f"error: {actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
+                    continue
+                expected_valid = lxml_schema.validate(
+                    etree.fromstring(instance.encode())
+                )
+                actual_valid = actual.returncode == 0
+                checks += 1
+                if expected_valid != actual_valid:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: "
+                        f"libxml2={'valid' if expected_valid else 'invalid'} "
+                        f"xmlz={'valid' if actual_valid else 'invalid'}\n"
+                        f"  instance: {instance}\n"
+                        f"  lxml: {lxml_schema.error_log}\n"
+                        f"  xmlz: {actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
+    for name, files, instances in CATALOG_CASES:
+        with tempfile.TemporaryDirectory() as directory:
+            for filename, content in files.items():
+                path = os.path.join(directory, filename)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content)
+            main_path = os.path.join(directory, "main.xsd")
+            catalog_path = os.path.join(directory, "catalog.xml")
+            previous = os.environ.get("XML_CATALOG_FILES")
+            os.environ["XML_CATALOG_FILES"] = catalog_path
+            try:
+                lxml_schema = etree.XMLSchema(etree.parse(main_path))
+            except Exception as error:  # noqa: BLE001 - report libxml2 failures
+                print(f"SKIP {name}: libxml2 schema error: {error}")
+                continue
+            finally:
+                if previous is None:
+                    os.environ.pop("XML_CATALOG_FILES", None)
+                else:
+                    os.environ["XML_CATALOG_FILES"] = previous
+            for index, instance in enumerate(instances):
+                instance_path = os.path.join(directory, f"instance-{index}.xml")
+                with open(instance_path, "w", encoding="utf-8") as handle:
+                    handle.write(instance)
+                actual = run([
+                    validator,
+                    f"--catalog={catalog_path}",
+                    main_path,
+                    instance_path,
+                ])
                 if actual.returncode == 2:
                     failures += 1
                     print(

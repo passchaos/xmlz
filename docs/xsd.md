@@ -83,8 +83,12 @@ zig build xsd-diff
 The step compiles schemas and validates valid/invalid instances with both xmlz
 and libxml2 through Python `lxml`, covering particles, occurrence ranges,
 attributes, simple content, extension/restriction, namespaces, wildcards,
-`xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
+`xsi:type`, `xsi:nil`, built-in datatypes, facets, and catalog-resolved
+includes/imports. Expected output:
 
 ```text
-248/248 XSD differential checks passed
+251/251 XSD differential checks passed
 ```
+
+The `xsd` command accepts `--catalog=FILE`; `xs:include`, `xs:import`, and
+`xs:redefine` resolve through the catalog before filesystem lookup.

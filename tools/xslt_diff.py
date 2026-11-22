@@ -1105,6 +1105,45 @@ BUNDLES = [
 ]
 
 
+# Catalog cases: libxml2 loads XML_CATALOG_FILES once per process, so a single
+# catalog file covers system, uri, and rewriteSystem entries.
+CATALOG_BUNDLES = [
+    (
+        "catalog-includes",
+        {
+            "main.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:output method="xml" omit-xml-declaration="yes"/>
+              <xsl:include href="http://example.org/sys.xsl"/>
+              <xsl:include href="http://example.org/uri.xsl"/>
+              <xsl:include href="http://example.org/rewrite/rw.xsl"/>
+              <xsl:template match="/"><out>
+                <xsl:call-template name="sys"/>
+                <xsl:call-template name="uri"/>
+                <xsl:call-template name="rw"/>
+              </out></xsl:template>
+            </xsl:stylesheet>""",
+            "sys.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:template name="sys"><sys>S</sys></xsl:template>
+            </xsl:stylesheet>""",
+            "uri.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:template name="uri"><uri>U</uri></xsl:template>
+            </xsl:stylesheet>""",
+            "rw.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:template name="rw"><rw>R</rw></xsl:template>
+            </xsl:stylesheet>""",
+            "catalog.xml": """<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+              <system systemId="http://example.org/sys.xsl" uri="sys.xsl"/>
+              <uri name="http://example.org/uri.xsl" uri="uri.xsl"/>
+              <rewriteSystem systemIdStartString="http://example.org/rewrite/"
+                             rewritePrefix="./"/>
+            </catalog>""",
+        },
+        "<root/>",
+        {},
+    ),
+]
+
+
 # Cases whose serialization is compared byte-for-byte instead of structurally:
 # CDATA sections and DOCTYPE declarations do not survive XML re-parsing.
 RAW_CASES = {
@@ -1344,6 +1383,62 @@ def main():
                         f"  libxslt: {expected_html!r}\n"
                         f"  xmlz:    {actual_text!r}"
                     )
+                continue
+            expected_xml = etree.tostring(
+                expected_result,
+                method="xml",
+                xml_declaration=False,
+                encoding="unicode",
+            )
+            actual_text = actual.stdout.decode("utf-8", "replace")
+            matched, reason = compare_xml(expected_xml, actual_text)
+            if not matched:
+                failures += 1
+                print(
+                    f"FAIL {name}: {reason}\n"
+                    f"  libxslt: {expected_xml!r}\n"
+                    f"  xmlz:    {actual_text!r}"
+                )
+    for name, files, source, params in CATALOG_BUNDLES:
+        with tempfile.TemporaryDirectory() as directory:
+            for filename, content in files.items():
+                path = os.path.join(directory, filename)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content)
+            main_path = os.path.join(directory, "main.xsl")
+            catalog_path = os.path.join(directory, "catalog.xml")
+            source_path = os.path.join(directory, "source.xml")
+            with open(source_path, "w", encoding="utf-8") as handle:
+                handle.write(source)
+            command = [
+                transformer,
+                f"--catalog={catalog_path}",
+                main_path,
+                source_path,
+            ]
+            for key, value in params.items():
+                command.append(f"--param={key}={value}")
+            actual = run(command)
+            previous = os.environ.get("XML_CATALOG_FILES")
+            os.environ["XML_CATALOG_FILES"] = catalog_path
+            try:
+                transform = etree.XSLT(etree.parse(main_path))
+            except Exception as error:  # noqa: BLE001 - report libxslt failures
+                print(f"SKIP {name}: libxslt failed: {error}")
+                continue
+            finally:
+                if previous is None:
+                    os.environ.pop("XML_CATALOG_FILES", None)
+                else:
+                    os.environ["XML_CATALOG_FILES"] = previous
+            expected_result = transform(etree.parse(source_path))
+            checks += 1
+            if actual.returncode != 0:
+                failures += 1
+                print(
+                    f"FAIL {name}: xmlz failed: "
+                    f"{actual.stderr.decode('utf-8', 'replace').strip()}"
+                )
                 continue
             expected_xml = etree.tostring(
                 expected_result,

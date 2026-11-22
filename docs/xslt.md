@@ -118,8 +118,12 @@ zig build xslt-diff
 
 The step compares the result tree against libxslt through Python `lxml` for
 templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
-patterns, priorities, comments/PIs, and text output. Expected output:
+patterns, priorities, comments/PIs, text output, and catalog-resolved
+includes. Expected output:
 
 ```text
-86/86 XSLT differential checks passed
+87/87 XSLT differential checks passed
 ```
+
+The `xslt` command accepts `--catalog=FILE`; includes, imports, and
+`document()` calls resolve through the catalog before filesystem lookup.

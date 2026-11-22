@@ -1,8 +1,9 @@
 //! Apply an XSLT 1.0 stylesheet to an XML document.
 //!
-//! Usage: xslt STYLESHEET SOURCE [--param=name=value]...
+//! Usage: xslt [--catalog=FILE] STYLESHEET SOURCE [--param=name=value]...
 const std = @import("std");
 const xmlz = @import("xmlz");
+const file_loader = @import("file_loader.zig");
 
 const Loaded = struct {
     document: xmlz.dom.Document,
@@ -14,90 +15,64 @@ const Loaded = struct {
     }
 };
 
-const StylesheetLoader = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    buffers: std.ArrayList([]u8) = .empty,
-    paths: std.ArrayList([]u8) = .empty,
-
-    fn deinit(self: *StylesheetLoader) void {
-        for (self.buffers.items) |buffer| self.allocator.free(buffer);
-        for (self.paths.items) |path| self.allocator.free(path);
-        self.buffers.deinit(self.allocator);
-        self.paths.deinit(self.allocator);
-    }
-};
-
 fn loadStylesheet(
     context: ?*anyopaque,
     href: []const u8,
     base: []const u8,
 ) ?xmlz.xslt.Resource {
-    const loader: *StylesheetLoader = @ptrCast(@alignCast(context.?));
-    const path = resolvePath(loader.allocator, base, href) catch return null;
-    const data = std.Io.Dir.cwd().readFileAlloc(
-        loader.io,
-        path,
-        loader.allocator,
-        .limited(64 * 1024 * 1024),
-    ) catch {
-        loader.allocator.free(path);
-        return null;
-    };
-    loader.paths.append(loader.allocator, path) catch {
-        loader.allocator.free(path);
-        loader.allocator.free(data);
-        return null;
-    };
-    loader.buffers.append(loader.allocator, data) catch {
-        loader.allocator.free(data);
-        return null;
-    };
-    return .{ .uri = path, .data = data };
-}
-
-fn resolvePath(
-    allocator: std.mem.Allocator,
-    base: []const u8,
-    href: []const u8,
-) ![]u8 {
-    if (std.fs.path.isAbsolute(href)) return allocator.dupe(u8, href);
-    const directory = std.fs.path.dirname(base) orelse ".";
-    return std.fs.path.resolve(allocator, &.{ directory, href });
+    const loader: *file_loader.Loader = @ptrCast(@alignCast(context.?));
+    const loaded = loader.load(href, base) orelse return null;
+    return .{ .uri = loaded.uri, .data = loaded.data };
 }
 
 pub fn main(init: std.process.Init) !void {
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
     defer args.deinit();
     _ = args.next();
-    const stylesheet_path = args.next() orelse return error.MissingStylesheet;
-    const source_path = args.next() orelse return error.MissingSource;
-
+    var stylesheet_path: ?[]const u8 = null;
+    var source_path: ?[]const u8 = null;
+    var catalog_path: ?[]const u8 = null;
     var parameters: std.ArrayList(xmlz.xpath.Variable) = .empty;
     defer parameters.deinit(init.gpa);
     while (args.next()) |arg| {
-        if (!std.mem.startsWith(u8, arg, "--param=")) {
+        if (std.mem.startsWith(u8, arg, "--param=")) {
+            const assignment = arg["--param=".len..];
+            const equals = std.mem.indexOfScalar(u8, assignment, '=') orelse
+                return error.InvalidArgument;
+            try parameters.append(init.gpa, .{
+                .name = assignment[0..equals],
+                .value = .{ .string = assignment[equals + 1 ..] },
+            });
+        } else if (std.mem.startsWith(u8, arg, "--catalog=")) {
+            catalog_path = arg["--catalog=".len..];
+        } else if (stylesheet_path == null) {
+            stylesheet_path = arg;
+        } else if (source_path == null) {
+            source_path = arg;
+        } else {
             return error.InvalidArgument;
         }
-        const assignment = arg["--param=".len..];
-        const equals = std.mem.indexOfScalar(u8, assignment, '=') orelse
-            return error.InvalidArgument;
-        try parameters.append(init.gpa, .{
-            .name = assignment[0..equals],
-            .value = .{ .string = assignment[equals + 1 ..] },
-        });
     }
+    const stylesheet_file_path = stylesheet_path orelse
+        return error.MissingStylesheet;
+    const source_file_path = source_path orelse return error.MissingSource;
 
-    var stylesheet = try loadFile(init, stylesheet_path);
+    var stylesheet = try loadFile(init, stylesheet_file_path);
     defer stylesheet.deinit(init.gpa);
-    var source = try loadFile(init, source_path);
+    var source = try loadFile(init, source_file_path);
     defer source.deinit(init.gpa);
 
-    var loader: StylesheetLoader = .{
-        .allocator = init.gpa,
-        .io = init.io,
-    };
+    var loader: file_loader.Loader = .{ .allocator = init.gpa, .io = init.io };
     defer loader.deinit();
+    var catalog: ?xmlz.catalog.Catalog = null;
+    defer if (catalog) |*value| value.deinit();
+    if (catalog_path) |path| {
+        catalog = loader.loadCatalog(path) catch |err| {
+            std.debug.print("catalog error: {s}\n", .{@errorName(err)});
+            std.process.exit(2);
+        };
+        loader.catalog = &catalog.?;
+    }
     var compiled = try xmlz.xslt.parseWithOptions(
         init.gpa,
         &stylesheet.document,
@@ -107,7 +82,7 @@ pub fn main(init: std.process.Init) !void {
                 .context = &loader,
                 .load = loadStylesheet,
             },
-            .base = stylesheet_path,
+            .base = stylesheet_file_path,
         },
     );
     defer compiled.deinit();
@@ -120,7 +95,7 @@ pub fn main(init: std.process.Init) !void {
                 .context = &loader,
                 .load = loadStylesheet,
             },
-            .base = stylesheet_path,
+            .base = stylesheet_file_path,
         },
     );
     defer result.deinit();

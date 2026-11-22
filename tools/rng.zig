@@ -1,9 +1,10 @@
 //! Validate an XML document against a RELAX NG schema.
 //!
-//! Usage: rng SCHEMA INSTANCE
+//! Usage: rng [--catalog=FILE] [--compact] SCHEMA INSTANCE
 //! Exit code: 0 valid, 1 invalid, 2 schema error.
 const std = @import("std");
 const xmlz = @import("xmlz");
+const file_loader = @import("file_loader.zig");
 
 const Loaded = struct {
     document: xmlz.dom.Document,
@@ -15,56 +16,14 @@ const Loaded = struct {
     }
 };
 
-const SchemaLoader = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    buffers: std.ArrayList([]u8) = .empty,
-    paths: std.ArrayList([]u8) = .empty,
-
-    fn deinit(self: *SchemaLoader) void {
-        for (self.buffers.items) |buffer| self.allocator.free(buffer);
-        for (self.paths.items) |path| self.allocator.free(path);
-        self.buffers.deinit(self.allocator);
-        self.paths.deinit(self.allocator);
-    }
-};
-
 fn loadSchema(
     context: ?*anyopaque,
     href: []const u8,
     base: []const u8,
 ) ?xmlz.rng.Resource {
-    const loader: *SchemaLoader = @ptrCast(@alignCast(context.?));
-    const path = resolvePath(loader.allocator, base, href) catch return null;
-    const data = std.Io.Dir.cwd().readFileAlloc(
-        loader.io,
-        path,
-        loader.allocator,
-        .limited(64 * 1024 * 1024),
-    ) catch {
-        loader.allocator.free(path);
-        return null;
-    };
-    loader.paths.append(loader.allocator, path) catch {
-        loader.allocator.free(path);
-        loader.allocator.free(data);
-        return null;
-    };
-    loader.buffers.append(loader.allocator, data) catch {
-        loader.allocator.free(data);
-        return null;
-    };
-    return .{ .uri = path, .data = data };
-}
-
-fn resolvePath(
-    allocator: std.mem.Allocator,
-    base: []const u8,
-    href: []const u8,
-) ![]u8 {
-    if (std.fs.path.isAbsolute(href)) return allocator.dupe(u8, href);
-    const directory = std.fs.path.dirname(base) orelse ".";
-    return std.fs.path.resolve(allocator, &.{ directory, href });
+    const loader: *file_loader.Loader = @ptrCast(@alignCast(context.?));
+    const loaded = loader.load(href, base) orelse return null;
+    return .{ .uri = loaded.uri, .data = loaded.data };
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -72,33 +31,54 @@ pub fn main(init: std.process.Init) !void {
     defer args.deinit();
     _ = args.next();
     var compact = false;
-    var schema_path = args.next() orelse return error.MissingSchema;
-    if (std.mem.eql(u8, schema_path, "--compact")) {
-        compact = true;
-        schema_path = args.next() orelse return error.MissingSchema;
+    var schema_path: ?[]const u8 = null;
+    var instance_path: ?[]const u8 = null;
+    var catalog_path: ?[]const u8 = null;
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--compact")) {
+            compact = true;
+        } else if (std.mem.startsWith(u8, arg, "--catalog=")) {
+            catalog_path = arg["--catalog=".len..];
+        } else if (schema_path == null) {
+            schema_path = arg;
+        } else if (instance_path == null) {
+            instance_path = arg;
+        } else {
+            return error.InvalidArgument;
+        }
     }
-    const instance_path = args.next() orelse return error.MissingInstance;
+    const schema_file_path = schema_path orelse return error.MissingSchema;
+    const instance_file_path = instance_path orelse return error.MissingInstance;
 
     var schema_file: ?Loaded = null;
     if (!compact) {
-        schema_file = loadFile(init, schema_path) catch |err| {
+        schema_file = loadFile(init, schema_file_path) catch |err| {
             std.debug.print("schema load failed: {s}\n", .{@errorName(err)});
             std.process.exit(2);
         };
     }
     defer if (schema_file) |*loaded| loaded.deinit(init.gpa);
-    var instance_file = loadFile(init, instance_path) catch |err| {
+    var instance_file = loadFile(init, instance_file_path) catch |err| {
         std.debug.print("instance load failed: {s}\n", .{@errorName(err)});
         std.process.exit(2);
     };
     defer instance_file.deinit(init.gpa);
 
-    var loader: SchemaLoader = .{ .allocator = init.gpa, .io = init.io };
+    var loader: file_loader.Loader = .{ .allocator = init.gpa, .io = init.io };
     defer loader.deinit();
+    var catalog: ?xmlz.catalog.Catalog = null;
+    defer if (catalog) |*value| value.deinit();
+    if (catalog_path) |path| {
+        catalog = loader.loadCatalog(path) catch |err| {
+            std.debug.print("catalog error: {s}\n", .{@errorName(err)});
+            std.process.exit(2);
+        };
+        loader.catalog = &catalog.?;
+    }
     var compiled = if (compact) blk: {
         const source = std.Io.Dir.cwd().readFileAlloc(
             init.io,
-            schema_path,
+            schema_file_path,
             init.gpa,
             .limited(64 * 1024 * 1024),
         ) catch |err| {
@@ -119,8 +99,11 @@ pub fn main(init: std.process.Init) !void {
             init.gpa,
             decoded,
             .{
-                .resolver = .{ .context = &loader, .load = loadSchema },
-                .base = schema_path,
+                .resolver = .{
+                    .context = &loader,
+                    .load = loadSchema,
+                },
+                .base = schema_file_path,
             },
         ) catch |err| {
             std.debug.print("schema error: {s}\n", .{@errorName(err)});
@@ -131,7 +114,7 @@ pub fn main(init: std.process.Init) !void {
         &schema_file.?.document,
         .{
             .resolver = .{ .context = &loader, .load = loadSchema },
-            .base = schema_path,
+            .base = schema_file_path,
         },
     ) catch |err| {
         std.debug.print("schema error: {s}\n", .{@errorName(err)});

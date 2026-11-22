@@ -51,9 +51,17 @@ this case is covered by unit tests rather than the differential harness.
 
 ## Integration
 
-The `xinclude` tool accepts `--catalog=FILE` and consults the catalog before
-filesystem lookup. Other tools can wrap their resolver callbacks the same way:
-query `resolveSystem` (or `resolveUri`) and read the returned URI.
+The `xinclude`, `xsd`, `xslt`, and `rng` tools accept `--catalog=FILE` and
+consult the catalog before filesystem lookup. The shared CLI loader
+(`tools/file_loader.zig`) tries a `system` match first and falls back to `uri`
+entries, matching libxml2's entity loader. Each tool wires the loader into its
+own resolver callback, so XInclude `href`s, `xs:include`/`xs:import`,
+`xsl:include`/`xsl:import`, `document()`, and RELAX NG `include`/`externalRef`
+all resolve through the catalog.
+
+The differential harnesses exercise this end to end: each suite contains a
+catalog case with `system`, `uri`, and `rewriteSystem` entries, compared against
+libxml2/libxslt configured with `XML_CATALOG_FILES`.
 
 ## Differential verification
 

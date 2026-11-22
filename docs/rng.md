@@ -86,11 +86,15 @@ zig build rng-diff
 The step compares validity results against libxml2 through Python `lxml` for
 sequences, attributes, choices, repetition, interleave, mixed content, name
 classes, namespaces, data/value/list patterns, facets, includes, define
-overrides, and external references. Expected output:
+overrides, external references, and catalog-resolved includes. Expected
+output:
 
 ```text
-67/67 RELAX NG differential checks passed
+70/70 RELAX NG differential checks passed
 ```
+
+The `rng` command accepts `--catalog=FILE`; `include` and `externalRef`
+resolve through the catalog before filesystem lookup.
 
 Compact syntax is verified separately against XML-syntax twins:
 

@@ -67,18 +67,21 @@ then exposes them through a pull parser and reusable lexical primitives.
   `exsl:node-set()`), CDATA
   sections, DOCTYPE declarations, HTML output, and output encodings,
   and the core instruction set, reusing the XPath engine for match patterns
-  and expressions, with 86/86 differential checks against libxslt.
+  and expressions, with 87/87 differential checks against libxslt (including
+  catalog-aware includes and `document()`).
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,
   identity constraints, includes/imports/redefines, notation declarations,
   built-in datatypes, facets, abstract types, `block`/`final`, and
-  `xsi:type` / `xsi:nil`, with 248/248 differential checks against libxml2.
+  `xsi:type` / `xsi:nil`, with 251/251 differential checks against libxml2
+  (including catalog-aware includes/imports).
 - **OASIS XML Catalogs.** `catalog.parse` resolves system/public identifiers
   and URIs through exact entries, rewrites, suffixes, delegates,
   `nextCatalog`, `prefer`, and `xml:base`, with 17/17 differential checks
-  against libxml2's `xmlcatalog`; the `xinclude` tool consumes catalogs via
-  `--catalog`.
+  against libxml2's `xmlcatalog`; the `xinclude`, `xsd`, `xslt`, and `rng`
+  tools consume catalogs via `--catalog=FILE`, falling back from `system` to
+  `uri` entries like libxml2.
 - **ISO Schematron.** `schematron.parse` compiles schemas and
   `schematron.validate` evaluates rule contexts, assertions, reports, lets,
   namespaces, phases, abstract rules (`extends`), and abstract patterns
@@ -90,8 +93,8 @@ then exposes them through a pull parser and reusable lexical primitives.
   element/attribute name classes, group, choice, interleave, optional,
   repetition, mixed content, text, empty, data/value (XSD datatype libraries,
   facets, `except`), lists, recursive defines, includes, nested grammars,
-  `parentRef`, and external references, with 67/67 differential checks against
-  libxml2 plus 33/33 compact-syntax checks.
+  `parentRef`, and external references, with 70/70 differential checks against
+  libxml2 (including catalog-aware includes) plus 33/33 compact-syntax checks.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.

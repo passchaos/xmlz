@@ -347,6 +347,47 @@ BUNDLES = [
 ]
 
 
+# libxml2 loads XML_CATALOG_FILES once per process, so a single catalog file
+# covers system, uri, and rewriteSystem entries.
+CATALOG_BUNDLES = [
+    (
+        "catalog-includes",
+        {
+            "main.rng": f"""<grammar xmlns="{RNG}">
+              <include href="http://example.org/sys.rng"/>
+              <include href="http://example.org/uri.rng"/>
+              <include href="http://example.org/rewrite/rw.rng"/>
+              <start><element name="root">
+                <group><ref name="sys"/>
+                  <group><ref name="uri"/><ref name="rw"/></group>
+                </group>
+              </element></start>
+            </grammar>""",
+            "sys.rng": f"""<grammar xmlns="{RNG}">
+              <define name="sys"><element name="a"><text/></element></define>
+            </grammar>""",
+            "uri.rng": f"""<grammar xmlns="{RNG}">
+              <define name="uri"><element name="b"><text/></element></define>
+            </grammar>""",
+            "rw.rng": f"""<grammar xmlns="{RNG}">
+              <define name="rw"><element name="c"><text/></element></define>
+            </grammar>""",
+            "catalog.xml": """<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+              <system systemId="http://example.org/sys.rng" uri="sys.rng"/>
+              <uri name="http://example.org/uri.rng" uri="uri.rng"/>
+              <rewriteSystem systemIdStartString="http://example.org/rewrite/"
+                             rewritePrefix="./"/>
+            </catalog>""",
+        },
+        [
+            "<root><a>1</a><b>2</b><c>3</c></root>",
+            "<root><a>1</a><c>3</c></root>",
+            "<root><a>1</a><b>2</b></root>",
+        ],
+    ),
+]
+
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True)
 
@@ -412,6 +453,58 @@ def main():
                 with open(instance_path, "w", encoding="utf-8") as handle:
                     handle.write(instance)
                 actual = run([validator, main_path, instance_path])
+                if actual.returncode == 2:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: xmlz schema error: "
+                        f"{actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
+                    continue
+                expected_valid = relaxng.validate(
+                    etree.fromstring(instance.encode())
+                )
+                actual_valid = actual.returncode == 0
+                checks += 1
+                if expected_valid != actual_valid:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: "
+                        f"libxml2={'valid' if expected_valid else 'invalid'} "
+                        f"xmlz={'valid' if actual_valid else 'invalid'}\n"
+                        f"  instance: {instance}\n"
+                        f"  lxml: {relaxng.error_log}\n"
+                        f"  xmlz: {actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
+    for name, files, instances in CATALOG_BUNDLES:
+        with tempfile.TemporaryDirectory() as directory:
+            for filename, content in files.items():
+                path = os.path.join(directory, filename)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content)
+            main_path = os.path.join(directory, "main.rng")
+            catalog_path = os.path.join(directory, "catalog.xml")
+            previous = os.environ.get("XML_CATALOG_FILES")
+            os.environ["XML_CATALOG_FILES"] = catalog_path
+            try:
+                relaxng = etree.RelaxNG(etree.parse(main_path))
+            except Exception as error:  # noqa: BLE001 - report libxml2 failures
+                print(f"SKIP {name}: libxml2 schema error: {error}")
+                continue
+            finally:
+                if previous is None:
+                    os.environ.pop("XML_CATALOG_FILES", None)
+                else:
+                    os.environ["XML_CATALOG_FILES"] = previous
+            for index, instance in enumerate(instances):
+                instance_path = os.path.join(directory, f"instance-{index}.xml")
+                with open(instance_path, "w", encoding="utf-8") as handle:
+                    handle.write(instance)
+                actual = run([
+                    validator,
+                    f"--catalog={catalog_path}",
+                    main_path,
+                    instance_path,
+                ])
                 if actual.returncode == 2:
                     failures += 1
                     print(
