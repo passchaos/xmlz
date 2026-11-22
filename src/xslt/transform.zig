@@ -1179,7 +1179,7 @@ const Runtime = struct {
                     params,
                 );
             } else {
-                try self.builtinTemplate(node, mode);
+                try self.builtinTemplate(node, mode, params);
             }
         }
     }
@@ -1256,6 +1256,7 @@ const Runtime = struct {
         self: *Runtime,
         node: xpath.NodeRef,
         mode: ?[]const u8,
+        params: []const xpath.Variable,
     ) Error!void {
         switch (node) {
             .attribute => |attr| {
@@ -1269,7 +1270,9 @@ const Runtime = struct {
                 switch (node_value.kind) {
                     .document, .element => {
                         const children = try self.childrenOf(node);
-                        try self.applyTemplates(children, mode, &.{});
+                        // libxslt passes parameters through the built-in
+                        // template rules (XSLT 2.0 behavior).
+                        try self.applyTemplates(children, mode, params);
                     },
                     .text => try self.appendText(node_value.value),
                     .comment, .processing_instruction => {},
@@ -1487,7 +1490,7 @@ const Runtime = struct {
         )) |template| {
             try self.executeTemplate(template, node, position, size, params);
         } else {
-            try self.builtinTemplate(node, self.current_mode);
+            try self.builtinTemplate(node, self.current_mode, params);
         }
     }
 
@@ -2943,9 +2946,20 @@ const Runtime = struct {
     }
 
     fn requireNodeSet(self: *Runtime, value: xpath.Value) Error![]const xpath.NodeRef {
-        _ = self;
         return switch (value) {
             .node_set => |nodes| nodes,
+            // libxslt treats result tree fragments as node-sets containing
+            // the fragment root in node-set contexts.
+            .tree => |tree| blk: {
+                const converted = try convertTree(
+                    self,
+                    self.allocator,
+                    tree,
+                ) orelse return error.InvalidArgument;
+                const nodes = try self.allocator.alloc(xpath.NodeRef, 1);
+                nodes[0] = converted;
+                break :blk nodes;
+            },
             else => error.InvalidArgument,
         };
     }

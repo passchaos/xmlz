@@ -476,7 +476,11 @@ pub fn encodeUri(
             ";/?:@&=+$,[]",
             byte,
         ) != null;
-        if (unreserved or (!escape_reserved and reserved)) {
+        // libxml2's xmlURIEscapeStr always leaves '@' alone, even when
+        // every reserved character is escaped.
+        if (unreserved or byte == '@' or
+            (!escape_reserved and reserved))
+        {
             try out.append(allocator, byte);
         } else {
             try out.append(allocator, '%');
@@ -622,16 +626,12 @@ test "EXSLT URI escaping and replacement" {
         try encodeUri(allocator, ";/?", true),
     );
     try testing.expectEqualStrings(
-        "%40",
+        "@",
         try encodeUri(allocator, "@", true),
     );
     try testing.expectEqualStrings(
         ";/?",
         try encodeUri(allocator, ";/?", false),
-    );
-    try testing.expectEqualStrings(
-        "@",
-        try encodeUri(allocator, "@", false),
     );
     try testing.expectEqualStrings(
         "%F0%9F%91%8C",

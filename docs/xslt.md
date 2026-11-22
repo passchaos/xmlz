@@ -115,6 +115,23 @@ baseline is **205 passed, 0 known differences, 28 include-only skips**.
 Known differences are tracked in `tools/libxslt_suite.py`; unexpected
 failures or newly fixed tests fail the gate.
 
+The libxslt EXSLT corpus (`tests/exslt`) is vendored under
+`testdata/libxslt-exslt` for the implemented modules:
+
+```sh
+zig build xslt-exslt-suite
+```
+
+Expected summary:
+
+```text
+libxslt EXSLT suite: 47 passed, 1 failed, 0 skipped
+```
+
+The single tracked difference (`common/object-type.1.xsl`) requires the
+Saxon extension module, whose `saxon:expression()` returns an opaque
+external value.
+
 ## Limitations
 
 - XPath node-set operations directly on result tree fragments require the
@@ -129,12 +146,14 @@ failures or newly fixed tests fail the gate.
   `str:decode-uri`, `date:add`, `math:max`, `math:min`, `math:highest`,
   `math:lowest`, `math:power`, `math:abs`, `math:sqrt`, and
   `common:object-type` are implemented. The EXSLT regexp, remaining math,
-  and remaining string/date functions are not implemented.
+  remaining string/date, crypto, dynamic, and Saxon modules are not
+  implemented.
 - Global variables are evaluated lazily on first use, so globals can
   reference each other in any order, including through templates applied
   from a global's body.
-- Result tree fragments behave as node-sets when used with node-set
-  operations, matching libxslt.
+- Result tree fragments keep their type (`exsl:object-type` reports `RTF`)
+  but act as node-sets in node-set contexts, matching libxslt. Parameters
+  are passed through the built-in template rules like libxslt.
 - Extension elements designated by `extension-element-prefixes` process
   `xsl:fallback` children; libxslt's built-in `test` extension element is
   also recognized.

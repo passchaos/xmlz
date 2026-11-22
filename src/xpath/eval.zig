@@ -60,36 +60,16 @@ const Evaluator = struct {
             .filter => |filter| self.evalFilter(filter, context),
             .literal => |literal| .{ .string = literal },
             .number => |number| .{ .number = number },
-            .variable => |name| blk: {
-                const found = context.variable(name) orelse blk2: {
-                    const resolver = context.variable_resolver orelse
-                        return error.UndefinedVariable;
-                    break :blk2 (resolver.resolve(
-                        resolver.context,
-                        name,
-                    ) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        else => return error.UndefinedVariable,
-                    }) orelse return error.UndefinedVariable;
-                };
-                if (found == .tree) {
-                    // libxslt implicitly treats result tree fragments as
-                    // node-sets containing the fragment root.
-                    const converter = context.tree_converter orelse
-                        break :blk found;
-                    const converted = try converter.convert(
-                        converter.context,
-                        self.allocator,
-                        found.tree,
-                    ) orelse break :blk found;
-                    const nodes = try self.allocator.alloc(
-                        value.NodeRef,
-                        1,
-                    );
-                    nodes[0] = converted;
-                    break :blk .{ .node_set = nodes };
-                }
-                break :blk found;
+            .variable => |name| context.variable(name) orelse blk: {
+                const resolver = context.variable_resolver orelse
+                    return error.UndefinedVariable;
+                break :blk (resolver.resolve(
+                    resolver.context,
+                    name,
+                ) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.UndefinedVariable,
+                }) orelse return error.UndefinedVariable;
             },
             .function_call => |call| self.evalFunction(call, context),
         };
@@ -114,9 +94,11 @@ const Evaluator = struct {
             .union_ => {
                 const lhs = try self.requireNodeSet(
                     try self.eval(binary.lhs, context),
+                    context,
                 );
                 const rhs = try self.requireNodeSet(
                     try self.eval(binary.rhs, context),
+                    context,
                 );
                 var combined: std.ArrayList(value.NodeRef) = .empty;
                 try combined.appendSlice(self.allocator, lhs);
@@ -158,6 +140,7 @@ const Evaluator = struct {
         if (path.start) |start_expression| {
             current = try self.requireNodeSet(
                 try self.eval(start_expression, context),
+                context,
             );
         } else if (path.absolute) {
             const nodes = try self.allocator.alloc(value.NodeRef, 1);
@@ -182,6 +165,7 @@ const Evaluator = struct {
     ) Error!value.Value {
         const primary = try self.requireNodeSet(
             try self.eval(filter.primary, context),
+            context,
         );
         const sorted = try self.sortDedup(primary);
         return .{ .node_set = try self.applyPredicates(
@@ -853,10 +837,27 @@ const Evaluator = struct {
         };
     }
 
-    fn requireNodeSet(self: *Evaluator, result: value.Value) Error![]const value.NodeRef {
-        _ = self;
+    fn requireNodeSet(
+        self: *Evaluator,
+        result: value.Value,
+        context: *const value.Context,
+    ) Error![]const value.NodeRef {
         return switch (result) {
             .node_set => |nodes| nodes,
+            // libxslt treats result tree fragments as node-sets containing
+            // the fragment root in node-set contexts.
+            .tree => |tree| blk: {
+                const converter = context.tree_converter orelse
+                    return error.InvalidArgument;
+                const converted = try converter.convert(
+                    converter.context,
+                    self.allocator,
+                    tree,
+                ) orelse return error.InvalidArgument;
+                const nodes = try self.allocator.alloc(value.NodeRef, 1);
+                nodes[0] = converted;
+                break :blk nodes;
+            },
             else => error.InvalidArgument,
         };
     }
@@ -1103,7 +1104,7 @@ const Evaluator = struct {
         if (std.mem.eql(u8, name, "count")) {
             if (items.len != 1) return error.InvalidArgument;
             return .{ .number = @floatFromInt(
-                (try self.requireNodeSet(items[0])).len,
+                (try self.requireNodeSet(items[0], context)).len,
             ) };
         }
         if (std.mem.eql(u8, name, "local-name")) {
@@ -1233,7 +1234,7 @@ const Evaluator = struct {
         }
         if (std.mem.eql(u8, name, "sum")) {
             if (items.len != 1) return error.InvalidArgument;
-            const nodes = try self.requireNodeSet(items[0]);
+            const nodes = try self.requireNodeSet(items[0], context);
             var total: f64 = 0;
             for (nodes) |node| {
                 total += value.parseNumber(try self.stringValue(context, node));
@@ -1265,7 +1266,7 @@ const Evaluator = struct {
                 context.node
             else
                 self.firstInDocumentOrder(
-                    try self.requireNodeSet(items[0]),
+                    try self.requireNodeSet(items[0], context),
                 ) orelse return .{ .string = "" };
             const generator = context.node_id_generator orelse
                 return .{ .string = "" };
@@ -1311,6 +1312,18 @@ const Evaluator = struct {
                 uri = context.resolvePrefix("") orelse "";
             }
             if (!std.mem.eql(u8, uri, namespace.xsl_uri)) {
+                // Extension instructions provided by the EXSLT functions
+                // module and libxslt's test module, matching libxslt.
+                if (std.mem.eql(u8, uri, "http://exslt.org/functions") and
+                    std.mem.eql(u8, qname.local, "result"))
+                {
+                    return .{ .boolean = true };
+                }
+                if (std.mem.eql(u8, uri, "http://xmlsoft.org/XSLT/") and
+                    std.mem.eql(u8, qname.local, "test"))
+                {
+                    return .{ .boolean = true };
+                }
                 return .{ .boolean = false };
             }
             return .{ .boolean = nameInTable(&xslt_elements, qname.local) };
@@ -1392,7 +1405,7 @@ const Evaluator = struct {
                 return error.UnknownFunction;
             var base = context.document_base;
             if (items.len == 2) {
-                const base_nodes = try self.requireNodeSet(items[1]);
+                const base_nodes = try self.requireNodeSet(items[1], context);
                 if (self.firstInDocumentOrder(base_nodes)) |base_node| {
                     const base_id = switch (base_node) {
                         .node => |id| id,
@@ -1444,7 +1457,7 @@ const Evaluator = struct {
             switch (builtin) {
                 .distinct => {
                     if (items.len != 1) return error.InvalidArgument;
-                    const nodes = try self.requireNodeSet(items[0]);
+                    const nodes = try self.requireNodeSet(items[0], context);
                     var out: std.ArrayList(value.NodeRef) = .empty;
                     var seen: std.ArrayList([]const u8) = .empty;
                     for (nodes) |node| {
@@ -1842,7 +1855,7 @@ const Evaluator = struct {
     ) Error!?value.NodeRef {
         if (args.len == 0) return context.node;
         if (args.len != 1) return error.InvalidArgument;
-        const nodes = try self.requireNodeSet(args[0]);
+        const nodes = try self.requireNodeSet(args[0], context);
         return self.firstInDocumentOrder(nodes);
     }
 

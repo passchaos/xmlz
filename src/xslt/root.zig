@@ -1633,3 +1633,98 @@ test "XSLT EXSLT functions return values and node-sets" {
         output,
     );
 }
+
+test "XSLT result tree fragments keep their type but act as node-sets" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:exsl="http://exslt.org/common"
+        \\  exclude-result-prefixes="exsl">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:variable name="tree"><a><b>1</b></a></xsl:variable>
+        \\  <xsl:template match="/">
+        \\    <out><xsl:value-of select="exsl:object-type($tree)"/>|</out><xsl:value-of select="count(exsl:node-set($tree)/a/b)"/>|<xsl:value-of select="$tree/a/b"/>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>RTF|</out>1|1", output);
+}
+
+test "XSLT element-available reports EXSLT extension instructions" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:func="http://exslt.org/functions"
+        \\  xmlns:f="urn:f"
+        \\  extension-element-prefixes="func"
+        \\  exclude-result-prefixes="func f">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <func:function name="f:noop"/>
+        \\  <xsl:template match="/">
+        \\    <out><xsl:value-of select="element-available('func:result')"/>|<xsl:value-of select="element-available('func:function')"/></out>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>true|false</out>", output);
+}
+
+test "XSLT parameters pass through built-in template rules" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/">
+        \\    <xsl:apply-templates select="root/wrap">
+        \\      <xsl:with-param name="p">passed</xsl:with-param>
+        \\    </xsl:apply-templates>
+        \\  </xsl:template>
+        \\  <xsl:template match="item">
+        \\    <xsl:param name="p"/>
+        \\    <out><xsl:value-of select="$p"/></out>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root><wrap><item/></wrap></root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>passed</out>", output);
+}
+
+test "XSLT output honors version and standalone" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" version="1.1" standalone="yes"/>
+        \\  <xsl:template match="/"><out/></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<?xml version=\"1.1\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<out/>",
+        output,
+    );
+}
+
+test "XSLT merges adjacent text into one CDATA section" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"
+        \\    cdata-section-elements="x"/>
+        \\  <xsl:template match="/">
+        \\    <x><xsl:text>a</xsl:text><xsl:value-of select="'b'"/></x>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<x><![CDATA[ab]]></x>", output);
+}

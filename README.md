@@ -68,16 +68,18 @@ then exposes them through a pull parser and reusable lexical primitives.
   sections, DOCTYPE declarations, HTML output, and output encodings,
   and the core instruction set, reusing the XPath engine for match patterns
   and expressions, with 87/87 differential checks against libxslt (including
-  catalog-aware includes and `document()`), plus the complete libxslt general
+  catalog-aware includes and `document()`), the complete libxslt general
   regression suite (`zig build xslt-suite`, 205 passed with no tracked
-  differences). EXSLT `func:function` user-defined functions,
-  `libxslt:node-set`, the `set:*` node-set functions, `str:replace`,
-  `str:tokenize`, `str:split`, `str:concat`, `str:padding`, `str:align`,
-  `str:encode-uri`, `str:decode-uri`, `date:add`, `math:max`, `math:min`,
-  `math:highest`, `math:lowest`, `math:power`, `math:abs`, `math:sqrt`, and
-  `common:object-type` are supported; globals are evaluated lazily and RTFs
-  act as node-sets like libxslt. HTML/XHTML output matches libxslt's method
-  auto-detection, charset meta elements, URI escaping, and formatting.
+  differences), and the libxslt EXSLT corpus (`zig build xslt-exslt-suite`,
+  47 passed with one Saxon-module test tracked). EXSLT `func:function`
+  user-defined functions, `libxslt:node-set`, the `set:*` node-set
+  functions, `str:replace`, `str:tokenize`, `str:split`, `str:concat`,
+  `str:padding`, `str:align`, `str:encode-uri`, `str:decode-uri`, `date:add`,
+  `math:max`, `math:min`, `math:highest`, `math:lowest`, `math:power`,
+  `math:abs`, `math:sqrt`, and `common:object-type` are supported; globals
+  are evaluated lazily and RTFs keep their type like libxslt. HTML/XHTML
+  output matches libxslt's method auto-detection, charset meta elements,
+  URI escaping, and formatting.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,
@@ -287,6 +289,7 @@ zig build xpath-diff    # XPath differential checks vs libxml2 xmllint
 zig build c14n-diff     # canonicalization differential checks vs libxml2
 zig build xslt-diff     # XSLT differential checks vs libxslt (needs lxml)
 zig build xslt-suite    # libxslt general regression suite (needs lxml)
+zig build xslt-exslt-suite # libxslt EXSLT regression suite (needs lxml)
 zig build xsd-diff      # XML Schema differential checks vs libxml2 (needs lxml)
 zig build rng-diff      # RELAX NG differential checks vs libxml2 (needs lxml)
 zig build rng-compact-diff # RELAX NG compact syntax checks vs XML twins (needs lxml)
