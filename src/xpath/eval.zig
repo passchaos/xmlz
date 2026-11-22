@@ -377,6 +377,22 @@ const Evaluator = struct {
                 return owned;
             }
         }
+        // Predicates that do not depend on position can be evaluated while
+        // collecting the axis matches, which avoids a filtered list per
+        // input node (important for `$nodes/child[@attr = $value]`).
+        if (step.predicates.len != 0 and
+            !predicatesNeedPositions(step.predicates) and
+            (step.axis == .child or step.axis == .attribute))
+        {
+            if (try self.applyStepPredicates(
+                context,
+                input,
+                step,
+                prefix_uri,
+            )) |nodes| {
+                return nodes;
+            }
+        }
         var result: std.ArrayList(value.NodeRef) = .empty;
         var axis_buffer: std.ArrayList(value.NodeRef) = .empty;
         var matched: std.ArrayList(value.NodeRef) = .empty;
@@ -417,6 +433,61 @@ const Evaluator = struct {
             return owned;
         }
         return self.sortDedup(result.items);
+    }
+
+    /// Evaluate a child/attribute step whose predicates do not depend on
+    /// position, collecting and filtering candidates in one pass. Returns
+    /// null when a predicate produces a number and the general path must run.
+    fn applyStepPredicates(
+        self: *Evaluator,
+        context: *const value.Context,
+        input: []const value.NodeRef,
+        step: ast.Step,
+        prefix_uri: ?[]const u8,
+    ) Error!?[]const value.NodeRef {
+        var out: std.ArrayList(value.NodeRef) = .empty;
+        var axis_buffer: std.ArrayList(value.NodeRef) = .empty;
+        var predicate_context = context.*;
+        predicate_context.position = 1;
+        predicate_context.size = 1;
+        for (input) |node| {
+            axis_buffer.clearRetainingCapacity();
+            try self.appendAxisNodes(
+                context,
+                node,
+                step.axis,
+                &axis_buffer,
+            );
+            for (axis_buffer.items) |candidate| {
+                if (!try self.matchesTest(
+                    context,
+                    candidate,
+                    step.node_test,
+                    step.axis,
+                    prefix_uri,
+                )) continue;
+                predicate_context.node = candidate;
+                var keep = true;
+                for (step.predicates) |predicate| {
+                    const result = try self.eval(predicate, &predicate_context);
+                    if (result == .number) return null;
+                    if (!result.toBoolean()) {
+                        keep = false;
+                        break;
+                    }
+                }
+                if (keep) try out.append(self.allocator, candidate);
+            }
+        }
+        if (input.len == 1) {
+            if (out.items.len == 0) return &.{};
+            const owned: ?[]const value.NodeRef = try out.toOwnedSlice(
+                self.allocator,
+            );
+            return owned;
+        }
+        const sorted: ?[]const value.NodeRef = try self.sortDedup(out.items);
+        return sorted;
     }
 
     fn applyPredicates(
