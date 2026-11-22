@@ -124,7 +124,43 @@ pub fn resolvePath(
     base: []const u8,
     href: []const u8,
 ) ![]u8 {
-    if (std.fs.path.isAbsolute(href)) return allocator.dupe(u8, href);
+    if (std.fs.path.isAbsolute(href)) {
+        return percentDecode(allocator, href);
+    }
     const directory = std.fs.path.dirname(base) orelse ".";
-    return std.fs.path.resolve(allocator, &.{ directory, href });
+    const resolved = try std.fs.path.resolve(allocator, &.{ directory, href });
+    defer allocator.free(resolved);
+    // Filesystem paths are not URIs: decode percent escapes such as %20.
+    return percentDecode(allocator, resolved);
+}
+
+fn percentDecode(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    if (std.mem.indexOfScalar(u8, text, '%') == null) {
+        return allocator.dupe(u8, text);
+    }
+    var out: std.ArrayList(u8) = .empty;
+    var index: usize = 0;
+    while (index < text.len) {
+        if (text[index] == '%' and index + 2 < text.len) {
+            const high = hexValue(text[index + 1]);
+            const low = hexValue(text[index + 2]);
+            if (high != null and low != null) {
+                try out.append(allocator, high.? << 4 | low.?);
+                index += 3;
+                continue;
+            }
+        }
+        try out.append(allocator, text[index]);
+        index += 1;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn hexValue(byte: u8) ?u8 {
+    return switch (byte) {
+        '0'...'9' => byte - '0',
+        'a'...'f' => byte - 'a' + 10,
+        'A'...'F' => byte - 'A' + 10,
+        else => null,
+    };
 }

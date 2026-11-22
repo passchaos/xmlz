@@ -276,6 +276,14 @@ fn writeElement(
             child_default = node.ns;
         }
     }
+    // XHTML serialization gives a plain <html> root the XHTML namespace
+    // declaration (libxml2's xhtmlNodeDumpOutput behavior).
+    if (options.html_meta_charset != null and node.ns.len == 0 and
+        std.mem.eql(u8, node.local, "html") and
+        !hasNamespaceDeclaration(doc, id))
+    {
+        try writer.writeAll(" xmlns=\"http://www.w3.org/1999/xhtml\"");
+    }
     for (doc.attributesOf(id)) |attr| {
         if (std.mem.eql(u8, attr.name, "xmlns")) {
             // Skip a default-namespace declaration that repeats the
@@ -372,6 +380,17 @@ fn writeElement(
     try writer.writeAll("</");
     try writer.writeAll(node.name);
     try writer.writeByte('>');
+}
+
+fn hasNamespaceDeclaration(doc: *const dom.Document, id: dom.NodeId) bool {
+    for (doc.attributesOf(id)) |attr| {
+        if (std.mem.eql(u8, attr.name, "xmlns") or
+            std.mem.startsWith(u8, attr.name, "xmlns:"))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn ancestorBindsPrefix(

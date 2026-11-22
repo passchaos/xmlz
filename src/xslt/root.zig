@@ -1784,3 +1784,92 @@ test "XSLT xsl:attribute synthesizes a prefix for reserved xmlns" {
         output,
     );
 }
+
+test "XSLT format-number handles separator-only and hash patterns" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out><xsl:value-of select="format-number(0.5, '.')"/>|<xsl:value-of select="format-number(0.5, '.#')"/>|<xsl:value-of select="format-number(0.0, '.#')"/>|<xsl:value-of select="format-number(0.05, '.##')"/>|<xsl:value-of select="format-number(1.0, '.#')"/></out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>1.|.5|.0|.05|1.0</out>", output);
+}
+
+fn loadFragmentDocument(
+    _: ?*anyopaque,
+    href: []const u8,
+    base: []const u8,
+) ?Resource {
+    _ = base;
+    if (!std.mem.eql(u8, href, "frag.xml")) return null;
+    return .{
+        .uri = "frag.xml",
+        .data = "<test><doc><p>hello</p><title>foo</title>" ++
+            "<p>goodbye</p></doc></test>",
+    };
+}
+
+test "XSLT document supports XPointer fragments" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><doc>
+        \\    <xsl:copy-of select="document('frag.xml#xpointer(//p[1])')"/>
+        \\  </doc></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{
+        .resolver = .{ .context = null, .load = loadFragmentDocument },
+    });
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<doc><p>hello</p></doc>", output);
+}
+
+test "XSLT XHTML serialization namespaces a plain html root" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" doctype-public="-//W3C//DTD XHTML 1.0 Strict//EN"
+        \\    doctype-system="http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"/>
+        \\  <xsl:template match="/"><html><head><title>t</title></head></html></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    var stylesheet_document = try parseDocument(stylesheet);
+    defer stylesheet_document.deinit();
+    var source_document = try parseDocument("<root/>");
+    defer source_document.deinit();
+    var result = try transform(
+        testing.allocator,
+        &stylesheet_document,
+        &source_document,
+        .{},
+    );
+    defer result.deinit();
+    const output = try result.toOwnedSliceWithOptions(
+        testing.allocator,
+        .{ .libxslt_compat = true },
+    );
+    defer testing.allocator.free(output);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        output,
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\">",
+    ) != null);
+}
+
+test "XSLT format-number empty negative subpattern suppresses the sign" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out><xsl:value-of select="format-number(-1234.5, '#,##0.00;')"/>|<xsl:value-of select="format-number(-1234.5, '#,##0.00')"/></out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>1,234.50|-1,234.50</out>", output);
+}

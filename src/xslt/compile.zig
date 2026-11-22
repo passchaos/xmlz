@@ -495,6 +495,18 @@ const Compiler = struct {
             return;
         }
 
+        // A stylesheet may only contain whitespace text outside its
+        // top-level elements.
+        var check = document.node(root).first_child;
+        while (check != dom.null_node) : (check = document.node(check).next_sibling) {
+            const check_node = document.node(check);
+            if (check_node.kind == .text and
+                !isWhitespaceOnly(check_node.value))
+            {
+                return error.InvalidStylesheet;
+            }
+        }
+
         // Imports must be processed before the importing stylesheet receives
         // its precedence so that imported declarations rank lower. XSLT also
         // requires imports to precede all other top-level declarations.

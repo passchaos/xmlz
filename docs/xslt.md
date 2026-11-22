@@ -62,6 +62,8 @@ defer result.deinit();
 - `xsl:number` with `value`, `level="single|multiple|any"`, `count`/`from`
   match patterns, decimal, zero-padded, alphabetic, and Roman `format`
   tokens, and `grouping-separator`/`grouping-size`.
+- `document()` with resolver caching, percent-decoded local URIs, and
+  XPointer `xpointer()`/`element()`/xml:id fragments.
 - `disable-output-escaping` on `xsl:value-of` and `xsl:text`, carried as raw
   text nodes and honored by the XML and HTML serializers.
 - `xsl:decimal-format` declarations and `format-number()` patterns: grouping,
@@ -147,6 +149,23 @@ libxslt REC suite: 79 passed, 1 failed, 3 skipped
 
 The single tracked difference (`REC/test-10-3.xsl`) needs locale-aware
 collation; libxslt skips it when the C library lacks locale support.
+
+libxslt's feature corpora for `documents`, `encoding`, `keys`, `namespaces`,
+`numbers`, and `reports` are vendored under `testdata/libxslt-misc`:
+
+```sh
+zig build xslt-misc-suite
+```
+
+Expected summary:
+
+```text
+libxslt misc suite: 27 passed, 1 failed, 0 skipped
+```
+
+The tracked difference (`namespaces/extra2.xsl`) asserts xsltproc's
+`--debug` template/variable dump, which is not a diagnostic the library
+reproduces.
 
 ## Limitations
 

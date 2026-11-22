@@ -8,6 +8,7 @@ const namespace = @import("../namespace.zig");
 const xmlbase = @import("../xmlbase.zig");
 const xpath = @import("../xpath/root.zig");
 const xpath_ast = @import("../xpath/ast.zig");
+const xpath_parser = @import("../xpath/parser.zig");
 const xpath_value = @import("../xpath/value.zig");
 const xpath_eval = @import("../xpath/eval.zig");
 const writer_mod = @import("../writer.zig");
@@ -615,25 +616,31 @@ const Runtime = struct {
         href: []const u8,
         base: []const u8,
     ) xpath_value.DocumentError![]const xpath.NodeRef {
-        const absolute = if (href.len == 0)
+        // `document()` accepts an XPointer fragment; the document itself is
+        // cached without it.
+        var document_href = href;
+        var fragment: ?[]const u8 = null;
+        if (std.mem.indexOfScalar(u8, href, '#')) |index| {
+            document_href = href[0..index];
+            fragment = href[index + 1 ..];
+        }
+        const absolute = if (document_href.len == 0)
             ""
         else if (base.len != 0)
-            xmlbase.resolve(self.allocator, base, href) catch
+            xmlbase.resolve(self.allocator, base, document_href) catch
                 return error.OutOfMemory
         else
-            try self.allocator.dupe(u8, href);
+            try self.allocator.dupe(u8, document_href);
         if (self.document_cache.get(absolute)) |root| {
-            const nodes = try allocator.alloc(xpath.NodeRef, 1);
-            nodes[0] = .{ .node = root };
-            return nodes;
+            return self.documentNodes(allocator, root, fragment);
         }
-        const document = if (href.len == 0)
+        const document = if (document_href.len == 0)
             self.stylesheet.principal
         else blk: {
             const resolver = self.resolver orelse return error.LoadFailed;
             const resource = resolver.load(
                 resolver.context,
-                href,
+                document_href,
                 if (base.len != 0) base else self.base_uri,
             ) orelse return error.LoadFailed;
             const owned = try self.allocator.dupe(u8, resource.data);
@@ -667,9 +674,126 @@ const Runtime = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.LoadFailed,
         };
-        const nodes = try allocator.alloc(xpath.NodeRef, 1);
-        nodes[0] = .{ .node = root };
-        return nodes;
+        return self.documentNodes(allocator, root, fragment);
+    }
+
+    fn documentNodes(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        root: dom.NodeId,
+        fragment: ?[]const u8,
+    ) xpath_value.DocumentError![]const xpath.NodeRef {
+        const text = fragment orelse {
+            const nodes = try allocator.alloc(xpath.NodeRef, 1);
+            nodes[0] = .{ .node = root };
+            return nodes;
+        };
+        return self.selectDocumentFragment(allocator, root, text);
+    }
+
+    /// Evaluate the XPointer schemes supported by `document()`: `xpointer()`
+    /// with an XPath expression and `element()`/bare xml:id lookups.
+    fn selectDocumentFragment(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        root: dom.NodeId,
+        fragment: []const u8,
+    ) xpath_value.DocumentError![]const xpath.NodeRef {
+        const trimmed = std.mem.trim(u8, fragment, " \t\r\n");
+        if (std.mem.startsWith(u8, trimmed, "xpointer(") and
+            trimmed.len > "xpointer()".len and
+            trimmed[trimmed.len - 1] == ')')
+        {
+            return self.evaluateXPointer(
+                allocator,
+                root,
+                trimmed["xpointer(".len .. trimmed.len - 1],
+            );
+        }
+        if (std.mem.startsWith(u8, trimmed, "element(") and
+            trimmed.len > "element()".len and
+            trimmed[trimmed.len - 1] == ')')
+        {
+            const content = std.mem.trim(
+                u8,
+                trimmed["element(".len .. trimmed.len - 1],
+                " \t\r\n",
+            );
+            if (content.len != 0 and content[0] == '/') {
+                return error.LoadFailed;
+            }
+            return self.selectDocumentElementId(allocator, root, content);
+        }
+        return self.selectDocumentElementId(allocator, root, trimmed);
+    }
+
+    fn evaluateXPointer(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        root: dom.NodeId,
+        expression_text: []const u8,
+    ) xpath_value.DocumentError![]const xpath.NodeRef {
+        var parser = xpath_parser.Parser.init(
+            self.allocator,
+            expression_text,
+        ) catch return error.LoadFailed;
+        const expression = parser.parse() catch return error.LoadFailed;
+        const root_ref: xpath.NodeRef = .{ .node = root };
+        var context: xpath.Context = .{
+            .document = self.source,
+            .node = root_ref,
+            .current = root_ref,
+            .position = 1,
+            .size = 1,
+            .namespaces = &.{},
+            .variables = &.{},
+            .document_range = self.documentRange(root_ref),
+            .xslt_functions = true,
+            .document_base = self.base_uri,
+        };
+        var result = xpath_eval.evaluate(
+            self.allocator,
+            expression,
+            &context,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.LoadFailed,
+        };
+        defer result.deinit();
+        return switch (result.value) {
+            .node_set => |nodes| blk: {
+                const out = try allocator.alloc(xpath.NodeRef, nodes.len);
+                @memcpy(out, nodes);
+                break :blk out;
+            },
+            else => error.LoadFailed,
+        };
+    }
+
+    fn selectDocumentElementId(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        root: dom.NodeId,
+        id: []const u8,
+    ) xpath_value.DocumentError![]const xpath.NodeRef {
+        if (id.len == 0) return error.LoadFailed;
+        const range = self.documentRange(.{ .node = root });
+        const end = @min(range.end, self.merged_nodes.items.len);
+        var index = range.start;
+        while (index < end) : (index += 1) {
+            if (self.merged_nodes.items[index].kind != .element) continue;
+            const node_id: dom.NodeId = @intCast(index);
+            const value = self.source.attributeNs(
+                node_id,
+                namespace.xml_uri,
+                "id",
+            ) orelse continue;
+            if (!xmlbase.xmlIdEquals(value, id)) continue;
+            const nodes = try allocator.alloc(xpath.NodeRef, 1);
+            nodes[0] = .{ .node = node_id };
+            return nodes;
+        }
+        return error.LoadFailed;
     }
 
     /// Recompute template matches, keys, and selector caches so the newly
@@ -2393,27 +2517,40 @@ const Runtime = struct {
         }
         const negative = number < 0;
         var subpattern = parsed.positive;
-        var auto_minus = false;
+        var default_sign = false;
         if (negative) {
             if (parsed.negative) |negative_pattern| {
-                if (negative_pattern.has_digits) {
-                    subpattern = negative_pattern;
-                } else {
-                    subpattern.prefix = negative_pattern.prefix;
-                    subpattern.suffix = negative_pattern.suffix;
-                }
+                // libxslt takes only the negative prefix/suffix; digit
+                // placeholders always come from the positive subpattern.
+                // An explicit (even empty or identical) negative subpattern
+                // suppresses the default minus sign.
+                subpattern.prefix = negative_pattern.prefix;
+                subpattern.suffix = negative_pattern.suffix;
             } else {
-                auto_minus = true;
+                default_sign = true;
             }
         }
         const value = @abs(number) * subpattern.scale;
-        const max_fraction = @min(subpattern.max_fraction, 18);
-        var scale: f64 = 1;
+        var frac_digits = subpattern.frac_digits;
+        var frac_hash = subpattern.frac_hash;
+        if (subpattern.integer_digits + subpattern.integer_hash +
+            frac_digits == 0 and frac_hash > 0)
+        {
+            // Java treats '.#' like '.0' and '.##' like '.0#'.
+            frac_digits += 1;
+            frac_hash -= 1;
+        }
+        const max_fraction = @min(frac_digits + frac_hash, 18);
+        var scale: u128 = 1;
         for (0..max_fraction) |_| scale *= 10;
-        const rounded = std.math.floor(value * scale + 0.5);
-        if (!std.math.isFinite(rounded) or rounded > 1e30) {
+        const scaled_value = std.math.floor(
+            value * @as(f64, @floatFromInt(scale)) + 0.5,
+        );
+        if (!std.math.isFinite(scaled_value) or scaled_value > 1e30) {
             var out: std.ArrayList(u8) = .empty;
-            if (auto_minus) try appendCodepoint(allocator, &out, format.minus_sign);
+            if (default_sign) {
+                try appendCodepoint(allocator, &out, format.minus_sign);
+            }
             try out.appendSlice(allocator, subpattern.prefix);
             try out.appendSlice(
                 allocator,
@@ -2422,50 +2559,58 @@ const Runtime = struct {
             try out.appendSlice(allocator, subpattern.suffix);
             return out.toOwnedSlice(allocator);
         }
-        const integer_value: u128 = @intFromFloat(rounded / scale);
-        const fraction_value: u128 = @intFromFloat(
-            rounded - @as(f64, @floatFromInt(integer_value)) * scale,
-        );
-        var integer_buffer: [64]u8 = undefined;
-        const integer_digits = std.fmt.bufPrint(
-            &integer_buffer,
-            "{d}",
-            .{integer_value},
-        ) catch return error.InvalidFormat;
-        var fraction_buffer: [32]u8 = undefined;
-        var fraction_length: usize = 0;
-        if (max_fraction != 0) {
+        const scaled_total: u128 = @intFromFloat(scaled_value);
+        const integer_value = scaled_total / scale;
+        const fraction_value = scaled_total % scale;
+
+        var out: std.ArrayList(u8) = .empty;
+        if (default_sign) {
+            try appendCodepoint(allocator, &out, format.minus_sign);
+        }
+        try out.appendSlice(allocator, subpattern.prefix);
+        if (integer_value != 0 or subpattern.integer_digits != 0) {
+            var integer_buffer: [64]u8 = undefined;
+            const integer_digits = std.fmt.bufPrint(
+                &integer_buffer,
+                "{d}",
+                .{integer_value},
+            ) catch return error.InvalidFormat;
+            try appendFormattedInteger(
+                allocator,
+                &out,
+                integer_digits,
+                subpattern.integer_digits,
+                subpattern.group_size,
+                format,
+            );
+        }
+        if (integer_value == 0 and
+            subpattern.integer_digits + frac_digits == 0)
+        {
+            try appendDigit(allocator, &out, '0', format.zero_digit);
+        }
+        if (frac_digits + frac_hash == 0) {
+            if (subpattern.add_decimal) {
+                try appendCodepoint(allocator, &out, format.decimal_separator);
+            }
+        } else if (fraction_value != 0 or frac_digits != 0) {
+            try appendCodepoint(allocator, &out, format.decimal_separator);
+            var fraction_buffer: [32]u8 = undefined;
             var divisor: u128 = 1;
-            for (0..max_fraction - 1) |_| divisor *= 10;
+            for (0..max_fraction) |_| divisor *= 10;
+            divisor /= 10;
             var remaining = fraction_value;
-            var index: usize = 0;
-            while (index < max_fraction) : (index += 1) {
+            for (0..max_fraction) |index| {
                 const digit: u8 = @intCast(remaining / divisor);
                 fraction_buffer[index] = '0' + digit;
                 remaining %= divisor;
                 if (divisor >= 10) divisor /= 10;
-                fraction_length += 1;
             }
-            while (fraction_length > subpattern.min_fraction and
-                fraction_buffer[fraction_length - 1] == '0')
-            {
-                fraction_length -= 1;
+            var length = max_fraction;
+            while (length > frac_digits and fraction_buffer[length - 1] == '0') {
+                length -= 1;
             }
-        }
-        var out: std.ArrayList(u8) = .empty;
-        if (auto_minus) try appendCodepoint(allocator, &out, format.minus_sign);
-        try out.appendSlice(allocator, subpattern.prefix);
-        try appendFormattedInteger(
-            allocator,
-            &out,
-            integer_digits,
-            subpattern.min_integer,
-            subpattern.group_size,
-            format,
-        );
-        if (fraction_length != 0) {
-            try appendCodepoint(allocator, &out, format.decimal_separator);
-            for (fraction_buffer[0..fraction_length]) |digit| {
+            for (fraction_buffer[0..length]) |digit| {
                 try appendDigit(allocator, &out, digit, format.zero_digit);
             }
         }
@@ -3380,12 +3525,16 @@ const default_decimal_format: compile.DecimalFormat = .{};
 const Subpattern = struct {
     prefix: []const u8,
     suffix: []const u8,
-    min_integer: usize,
-    min_fraction: usize,
-    max_fraction: usize,
-    group_size: usize,
-    scale: f64,
-    has_digits: bool = true,
+    /// Zero-digit (`0`) placeholders in the integer and fraction parts.
+    integer_digits: usize = 0,
+    frac_digits: usize = 0,
+    /// Optional-digit (`#`) placeholders; only the fraction count matters for
+    /// output, but the integer count feeds libxslt's `.#` special case.
+    integer_hash: usize = 0,
+    frac_hash: usize = 0,
+    group_size: usize = 0,
+    scale: f64 = 1,
+    add_decimal: bool = false,
 };
 
 const ParsedFormatPattern = struct {
@@ -3464,87 +3613,96 @@ fn parseSubpattern(
 ) xpath_value.NumberFormatError!Subpattern {
     if (text.len == 0) {
         if (!allow_empty) return error.InvalidFormat;
-        return .{
-            .prefix = "",
-            .suffix = "",
-            .min_integer = 0,
-            .min_fraction = 0,
-            .max_fraction = 0,
-            .group_size = 0,
-            .scale = 1,
-            .has_digits = false,
-        };
+        return .{ .prefix = "", .suffix = "" };
     }
 
-    var first_start: ?usize = null;
-    var last_end: usize = 0;
+    var scale: f64 = 1;
+    scanScale(text, format, &scale);
+
+    // Prefix: literal text up to the first numeric or grouping character.
+    // Percent/per-mille are literal here and also set the multiplier.
     var index: usize = 0;
     while (index < text.len) {
         const decoded = decodeAt(text, index) orelse
             return error.InvalidFormat;
-        if (decoded.cp == format.zero_digit or decoded.cp == format.digit) {
-            if (first_start == null) first_start = index;
-            last_end = decoded.end;
+        const cp = decoded.cp;
+        if (cp == format.zero_digit or cp == format.digit or
+            cp == format.decimal_separator or
+            cp == format.grouping_separator)
+        {
+            break;
         }
         index = decoded.end;
     }
-    const placeholder_start = first_start orelse return error.InvalidFormat;
+    const prefix = text[0..index];
 
-    var structural_start = placeholder_start;
-    index = 0;
-    while (index < placeholder_start) {
-        const decoded = decodeAt(text, index) orelse
-            return error.InvalidFormat;
-        if (decoded.cp == format.decimal_separator) {
-            structural_start = index;
-        }
-        index = decoded.end;
-    }
-
-    var min_integer: usize = 0;
-    var min_fraction: usize = 0;
-    var max_fraction: usize = 0;
     var integer_digits: usize = 0;
-    var last_group_integer_digits: ?usize = null;
-    var decimal_seen = false;
-    index = structural_start;
-    while (index < last_end) {
+    var integer_hash: usize = 0;
+    var group_size: usize = 0;
+    var group_active = false;
+    var group_count: usize = 0;
+    while (index < text.len) {
         const decoded = decodeAt(text, index) orelse
             return error.InvalidFormat;
         const cp = decoded.cp;
-        if (cp == format.zero_digit or cp == format.digit) {
-            if (decimal_seen) {
-                max_fraction += 1;
-                if (cp == format.zero_digit) min_fraction += 1;
-            } else {
-                integer_digits += 1;
-                if (cp == format.zero_digit) min_integer += 1;
-            }
-        } else if (cp == format.decimal_separator) {
-            decimal_seen = true;
-        } else if (cp == format.grouping_separator and !decimal_seen) {
-            last_group_integer_digits = integer_digits;
+        if (cp == format.decimal_separator) break;
+        if (cp == format.zero_digit) {
+            integer_digits += 1;
+            if (group_active) group_count += 1;
+        } else if (cp == format.digit) {
+            integer_hash += 1;
+            if (group_active) group_count += 1;
+        } else if (cp == format.grouping_separator) {
+            group_active = true;
+            group_count = 0;
+        } else {
+            break;
+        }
+        index = decoded.end;
+    }
+    if (group_active) group_size = group_count;
+
+    var add_decimal = false;
+    if (index < text.len) {
+        const decoded = decodeAt(text, index) orelse
+            return error.InvalidFormat;
+        if (decoded.cp == format.decimal_separator) {
+            add_decimal = true;
+            index = decoded.end;
+        }
+    }
+
+    var frac_digits: usize = 0;
+    var frac_hash: usize = 0;
+    while (index < text.len) {
+        const decoded = decodeAt(text, index) orelse
+            return error.InvalidFormat;
+        const cp = decoded.cp;
+        if (cp == format.zero_digit) {
+            if (frac_hash != 0) return error.InvalidFormat;
+            frac_digits += 1;
+        } else if (cp == format.digit) {
+            frac_hash += 1;
+        } else if (cp == format.grouping_separator) {
+            // Grouping in the fraction is ignored.
+        } else {
+            // Percent/per-mille belong to the suffix (the whole-pattern
+            // scan above already applied the multiplier).
+            break;
         }
         index = decoded.end;
     }
 
-    const prefix = text[0..structural_start];
-    const suffix = text[last_end..];
-    var scale: f64 = 1;
-    scanScale(prefix, format, &scale);
-    scanScale(suffix, format, &scale);
     return .{
         .prefix = prefix,
-        .suffix = suffix,
-        .min_integer = min_integer,
-        .min_fraction = min_fraction,
-        .max_fraction = max_fraction,
-        .group_size = if (last_group_integer_digits) |group_start|
-            integer_digits - group_start
-        else
-            0,
+        .suffix = text[index..],
+        .integer_digits = integer_digits,
+        .integer_hash = integer_hash,
+        .frac_digits = frac_digits,
+        .frac_hash = frac_hash,
+        .group_size = group_size,
         .scale = scale,
-        .has_digits = true,
+        .add_decimal = add_decimal,
     };
 }
 

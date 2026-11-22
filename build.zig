@@ -218,6 +218,18 @@ pub fn build(b: *std.Build) void {
     );
     xslt_rec_suite_step.dependOn(&xslt_rec_suite.step);
 
+    const xslt_misc_suite = b.addSystemCommand(&.{
+        "python3",
+        "tools/libxslt_misc_suite.py",
+        "testdata/libxslt-misc",
+    });
+    xslt_misc_suite.addFileArg(xslt_tool.getEmittedBin());
+    const xslt_misc_suite_step = b.step(
+        "xslt-misc-suite",
+        "Run the libxslt feature regression corpora",
+    );
+    xslt_misc_suite_step.dependOn(&xslt_misc_suite.step);
+
     const xsd_diff = b.addSystemCommand(&.{
         "python3",
         "tools/xsd_diff.py",
