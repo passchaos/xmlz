@@ -865,6 +865,30 @@ const Evaluator = struct {
             nodes[0] = context.current orelse context.node;
             return .{ .node_set = nodes };
         }
+        if (std.mem.eql(u8, name, "format-number")) {
+            if (items.len != 2 and items.len != 3) {
+                return error.InvalidArgument;
+            }
+            const number = try self.toNumber(items[0], context);
+            const pattern = try self.toString(items[1], context);
+            const format_name = if (items.len == 3)
+                try self.toString(items[2], context)
+            else
+                null;
+            const formatter = context.number_formatter orelse
+                return error.UnknownFunction;
+            const text = formatter.format(
+                formatter.context,
+                self.allocator,
+                number,
+                pattern,
+                format_name,
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidFormat => return error.InvalidArgument,
+            };
+            return .{ .string = text };
+        }
         if (std.mem.eql(u8, name, "key")) {
             if (items.len != 2) return error.InvalidArgument;
             const key_name = try self.toString(items[0], context);

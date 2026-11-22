@@ -64,6 +64,9 @@ defer result.deinit();
   tokens.
 - `disable-output-escaping` on `xsl:value-of` and `xsl:text`, carried as raw
   text nodes and honored by the XML and HTML serializers.
+- `xsl:decimal-format` declarations and `format-number()` patterns: grouping,
+  optional and required digits, percent/per-mille scaling, negative
+  subpatterns, named formats, and NaN/Infinity rendering.
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
   `indent`, and `version`. HTML output uses HTML void elements, minimizes
   common boolean attributes, and keeps `script`/`style` content raw. Result
@@ -85,9 +88,8 @@ template priority its specified default behavior.
   UTF-8).
 - HTML output is compact, does not insert a Content-Type `meta` element, and
   does not emit DOCTYPE declarations.
-- `format-number`, `document`, `generate-id`, `system-property`,
-  `element-available`, and `function-available` are not available in
-  expressions.
+- `document`, `generate-id`, `system-property`, `element-available`, and
+  `function-available` are not available in expressions.
 - Template conflict resolution uses a single import precedence; imported
   stylesheets are not supported.
 
@@ -102,5 +104,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-66/66 XSLT differential checks passed
+69/69 XSLT differential checks passed
 ```

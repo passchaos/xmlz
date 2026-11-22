@@ -70,6 +70,20 @@ pub const SpaceRule = struct {
     }
 };
 
+pub const DecimalFormat = struct {
+    name: ?[]const u8 = null,
+    decimal_separator: u21 = '.',
+    grouping_separator: u21 = ',',
+    infinity: []const u8 = "Infinity",
+    minus_sign: u21 = '-',
+    nan: []const u8 = "NaN",
+    percent: u21 = '%',
+    per_mille: u21 = 0x2030,
+    zero_digit: u21 = '0',
+    digit: u21 = '#',
+    pattern_separator: u21 = ';',
+};
+
 pub const SortKey = struct {
     select: ?CompiledExpr = null,
     data_type: enum { text, number } = .text,
@@ -123,6 +137,7 @@ pub const Stylesheet = struct {
     keys: []const KeyDef = &.{},
     attribute_sets: []const AttributeSet = &.{},
     space_rules: []const SpaceRule = &.{},
+    decimal_formats: []const DecimalFormat = &.{},
     output: Output = .{},
     documents: []const *dom.Document = &.{},
 
@@ -333,6 +348,9 @@ pub fn compileWithOptions(
             compiler.arena,
         ),
         .space_rules = try compiler.space_rules.toOwnedSlice(compiler.arena),
+        .decimal_formats = try compiler.decimal_formats.toOwnedSlice(
+            compiler.arena,
+        ),
         .output = compiler.output,
         .documents = try compiler.included_documents.toOwnedSlice(
             compiler.arena,
@@ -350,6 +368,7 @@ const Compiler = struct {
     keys: std.ArrayList(KeyDef) = .empty,
     attribute_sets: std.ArrayList(AttributeSet) = .empty,
     space_rules: std.ArrayList(SpaceRule) = .empty,
+    decimal_formats: std.ArrayList(DecimalFormat) = .empty,
     output: Output = .{},
     order: usize = 0,
     next_precedence: usize = 0,
@@ -460,9 +479,9 @@ const Compiler = struct {
                 try self.compileSpaceRule(child, true);
             } else if (std.mem.eql(u8, local, "preserve-space")) {
                 try self.compileSpaceRule(child, false);
-            } else if (std.mem.eql(u8, local, "decimal-format") or
-                std.mem.eql(u8, local, "namespace-alias"))
-            {
+            } else if (std.mem.eql(u8, local, "decimal-format")) {
+                try self.compileDecimalFormat(child);
+            } else if (std.mem.eql(u8, local, "namespace-alias")) {
                 return error.InvalidStylesheet;
             }
         }
@@ -701,6 +720,52 @@ const Compiler = struct {
             .namespace_uri = "",
             .local = token,
         };
+    }
+
+    fn compileDecimalFormat(self: *Compiler, id: dom.NodeId) Error!void {
+        var format: DecimalFormat = .{};
+        format.name = self.document.attribute(id, "name");
+        if (self.document.attribute(id, "decimal-separator")) |value| {
+            format.decimal_separator = try singleCodepoint(value);
+        }
+        if (self.document.attribute(id, "grouping-separator")) |value| {
+            format.grouping_separator = try singleCodepoint(value);
+        }
+        if (self.document.attribute(id, "infinity")) |value| {
+            format.infinity = value;
+        }
+        if (self.document.attribute(id, "minus-sign")) |value| {
+            format.minus_sign = try singleCodepoint(value);
+        }
+        if (self.document.attribute(id, "NaN")) |value| {
+            format.nan = value;
+        }
+        if (self.document.attribute(id, "percent")) |value| {
+            format.percent = try singleCodepoint(value);
+        }
+        if (self.document.attribute(id, "per-mille")) |value| {
+            format.per_mille = try singleCodepoint(value);
+        }
+        if (self.document.attribute(id, "zero-digit")) |value| {
+            format.zero_digit = try singleCodepoint(value);
+        }
+        if (self.document.attribute(id, "digit")) |value| {
+            format.digit = try singleCodepoint(value);
+        }
+        if (self.document.attribute(id, "pattern-separator")) |value| {
+            format.pattern_separator = try singleCodepoint(value);
+        }
+        for (self.decimal_formats.items) |existing| {
+            if (existing.name == null and format.name == null) {
+                return error.InvalidStylesheet;
+            }
+            if (existing.name != null and format.name != null and
+                std.mem.eql(u8, existing.name.?, format.name.?))
+            {
+                return error.InvalidStylesheet;
+            }
+        }
+        try self.decimal_formats.append(self.arena, format);
     }
 
     fn compileAttributeSet(self: *Compiler, id: dom.NodeId) Error!void {
@@ -1385,6 +1450,16 @@ fn isWhitespaceOnly(value: []const u8) bool {
         }
     }
     return true;
+}
+
+fn singleCodepoint(value: []const u8) Error!u21 {
+    var view = std.unicode.Utf8View.init(value) catch
+        return error.InvalidStylesheet;
+    var iterator = view.iterator();
+    const codepoint = iterator.nextCodepoint() orelse
+        return error.InvalidStylesheet;
+    if (iterator.nextCodepoint() != null) return error.InvalidStylesheet;
+    return codepoint;
 }
 
 fn isYes(value: []const u8) bool {

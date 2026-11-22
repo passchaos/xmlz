@@ -81,6 +81,20 @@ pub const Variable = struct {
 
 pub const KeyError = error{OutOfMemory};
 
+pub const NumberFormatError = error{ OutOfMemory, InvalidFormat };
+
+/// XSLT `format-number()` formatter hook.
+pub const NumberFormatter = struct {
+    context: ?*anyopaque = null,
+    format: *const fn (
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        number: f64,
+        pattern: []const u8,
+        format_name: ?[]const u8,
+    ) NumberFormatError![]const u8,
+};
+
 /// XSLT `key()` lookup hook.
 pub const KeyResolver = struct {
     context: ?*anyopaque = null,
@@ -99,6 +113,8 @@ pub const Context = struct {
     current: ?NodeRef = null,
     /// XSLT `key()` resolver.
     key_resolver: ?KeyResolver = null,
+    /// XSLT `format-number()` formatter.
+    number_formatter: ?NumberFormatter = null,
     position: usize = 1,
     size: usize = 1,
     /// Prefix bindings for name tests. XPath 1.0 does not use the document's
@@ -136,6 +152,7 @@ pub const Context = struct {
             .node = node,
             .current = self.current,
             .key_resolver = self.key_resolver,
+            .number_formatter = self.number_formatter,
             .position = position,
             .size = size,
             .namespaces = self.namespaces,

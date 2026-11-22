@@ -958,3 +958,83 @@ test "XSLT disable-output-escaping works in HTML output" {
     defer testing.allocator.free(output);
     try testing.expectEqualStrings("<out><b>x</b></out>", output);
 }
+
+test "XSLT format-number formats patterns" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <a><xsl:value-of select="format-number(1234.5, '#,##0.00')"/></a>
+        \\    <b><xsl:value-of select="format-number(0.5, '0%')"/></b>
+        \\    <c><xsl:value-of select="format-number(-1234.5, '#,##0.00')"/></c>
+        \\    <d><xsl:value-of select="format-number(-1234.5, '#,##0.00;(#,##0.00)')"/></d>
+        \\    <e><xsl:value-of select="format-number(1234.5, '#,##0.##')"/></e>
+        \\    <f><xsl:value-of select="format-number(1234.5, '00000.00')"/></f>
+        \\    <g><xsl:value-of select="format-number(0.5, '0‰')"/></g>
+        \\    <h><xsl:value-of select="format-number(0.125, '0.00')"/></h>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><a>1,234.50</a><b>50%</b><c>-1,234.50</c>" ++
+            "<d>(1,234.50)</d><e>1,234.5</e><f>01234.50</f>" ++
+            "<g>500‰</g><h>0.13</h></out>",
+        output,
+    );
+}
+
+test "XSLT format-number handles NaN and infinity" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <a><xsl:value-of select="format-number(1 div 0, '$#,##0.00')"/></a>
+        \\    <b><xsl:value-of select="format-number(-1 div 0, '$#,##0.00')"/></b>
+        \\    <c><xsl:value-of select="format-number(0 div 0, '$#,##0.00')"/></c>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><a>Infinity</a><b>-Infinity</b><c>NaN</c></out>",
+        output,
+    );
+}
+
+test "XSLT format-number uses named decimal formats" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:decimal-format name="eu" decimal-separator=","
+        \\    grouping-separator="." minus-sign="~"/>
+        \\  <xsl:template match="/"><out>
+        \\    <a><xsl:value-of select="format-number(-1234.5, '#.##0,00', 'eu')"/></a>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out><a>~1.234,50</a></out>", output);
+}
+
+test "XSLT format-number rejects unknown decimal formats" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="format-number(1, '0', 'missing')"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    try testing.expectError(
+        error.InvalidArgument,
+        transformToString(stylesheet, "<root/>", .{}),
+    );
+}

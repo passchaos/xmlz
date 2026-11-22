@@ -55,9 +55,9 @@ then exposes them through a pull parser and reusable lexical primitives.
   variables, sorting, copy instructions, AVTs, keys, includes/imports with
   precedence and `apply-imports`, attribute sets, whitespace stripping,
   multi-level `xsl:number` with count/from patterns and number formats,
-  `disable-output-escaping`, HTML output, and the core instruction set,
-  reusing the XPath engine for match patterns and expressions, with 66/66
-  differential checks against libxslt.
+  `disable-output-escaping`, `format-number()` with decimal formats, HTML
+  output, and the core instruction set, reusing the XPath engine for match
+  patterns and expressions, with 69/69 differential checks against libxslt.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,

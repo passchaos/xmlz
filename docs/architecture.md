@@ -94,9 +94,9 @@ resolution follows XSLT priority and document order. The runtime executes
 templates, modes, parameters, variables, sorting, copy instructions, keys,
 includes/imports with import precedence and `apply-imports`, attribute sets,
 whitespace stripping via a filtered source tree, multi-level numbering with
-count/from patterns and number formats, raw text from
-`disable-output-escaping`, literal result elements, AVTs, and the core
-instruction set into a `dom_builder` document,
+count/from patterns and number formats, decimal formats with
+`format-number()`, raw text from `disable-output-escaping`, literal result
+elements, AVTs, and the core instruction set into a `dom_builder` document,
 reusing the XPath engine for expressions, `current()`, and `key()`. Result
 serialization supports XML, HTML (void elements, boolean attributes, raw
 script/style text), and text output; result-tree-fragment node sets are not

@@ -469,6 +469,53 @@ STYLESHEETS = [
         {},
     ),
     (
+        "format-number-common",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <a><xsl:value-of select="format-number(1234.5, '#,##0.00')"/></a>
+          <b><xsl:value-of select="format-number(0.5, '0%')"/></b>
+          <c><xsl:value-of select="format-number(-1234.5, '#,##0.00')"/></c>
+          <d><xsl:value-of select="format-number(-1234.5, '#,##0.00;(#,##0.00)')"/></d>
+          <e><xsl:value-of select="format-number(1234.5, '#,##0.##')"/></e>
+          <f><xsl:value-of select="format-number(1234.5, '00000.00')"/></f>
+          <g><xsl:value-of select="format-number(0.5, '0&#x2030;')"/></g>
+          <h><xsl:value-of select="format-number(0.125, '0.00')"/></h>
+          <i><xsl:value-of select="format-number(1234.5, '.00')"/></i>
+          <j><xsl:value-of select="format-number(1234.5, '#,##0.')"/></j>
+          <k><xsl:value-of select="format-number(1234567, '#,##,##0')"/></k>
+          <l><xsl:value-of select="format-number(-1234.5, '#,##0.00;')"/></l>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "format-number-special",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/"><out>
+          <a><xsl:value-of select="format-number(1 div 0, '$#,##0.00')"/></a>
+          <b><xsl:value-of select="format-number(-1 div 0, '$#,##0.00')"/></b>
+          <c><xsl:value-of select="format-number(0 div 0, '$#,##0.00')"/></c>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "format-number-named",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:decimal-format name="eu" decimal-separator="," grouping-separator="." minus-sign="~"/>
+        <xsl:template match="/"><out>
+          <a><xsl:value-of select="format-number(-1234.5, '#.##0,00', 'eu')"/></a>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>

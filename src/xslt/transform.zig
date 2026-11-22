@@ -515,6 +515,10 @@ const Runtime = struct {
                 .context = self,
                 .lookup = lookupKey,
             } else null,
+            .number_formatter = .{
+                .context = self,
+                .format = formatNumberCallback,
+            },
         };
         var result = xpath_eval.evaluate(
             self.allocator,
@@ -1561,6 +1565,119 @@ const Runtime = struct {
         return out.toOwnedSlice(self.allocator);
     }
 
+    fn findDecimalFormat(
+        self: *Runtime,
+        name: ?[]const u8,
+    ) ?*const compile.DecimalFormat {
+        for (self.stylesheet.decimal_formats) |*format| {
+            if (name == null) {
+                if (format.name == null) return format;
+            } else if (format.name) |format_name| {
+                if (std.mem.eql(u8, format_name, name.?)) return format;
+            }
+        }
+        if (name == null) return &default_decimal_format;
+        return null;
+    }
+
+    fn formatNumberPattern(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        number: f64,
+        pattern: []const u8,
+        format: *const compile.DecimalFormat,
+    ) xpath_value.NumberFormatError![]const u8 {
+        _ = self;
+        const parsed = try parseFormatPattern(pattern, format);
+        if (std.math.isNan(number)) return format.nan;
+        if (std.math.isInf(number)) {
+            var out: std.ArrayList(u8) = .empty;
+            if (number < 0) try appendCodepoint(allocator, &out, format.minus_sign);
+            try out.appendSlice(allocator, format.infinity);
+            return out.toOwnedSlice(allocator);
+        }
+        const negative = number < 0;
+        var subpattern = parsed.positive;
+        var auto_minus = false;
+        if (negative) {
+            if (parsed.negative) |negative_pattern| {
+                if (negative_pattern.has_digits) {
+                    subpattern = negative_pattern;
+                } else {
+                    subpattern.prefix = negative_pattern.prefix;
+                    subpattern.suffix = negative_pattern.suffix;
+                }
+            } else {
+                auto_minus = true;
+            }
+        }
+        const value = @abs(number) * subpattern.scale;
+        const max_fraction = @min(subpattern.max_fraction, 18);
+        var scale: f64 = 1;
+        for (0..max_fraction) |_| scale *= 10;
+        const rounded = std.math.floor(value * scale + 0.5);
+        if (!std.math.isFinite(rounded) or rounded > 1e30) {
+            var out: std.ArrayList(u8) = .empty;
+            if (auto_minus) try appendCodepoint(allocator, &out, format.minus_sign);
+            try out.appendSlice(allocator, subpattern.prefix);
+            try out.appendSlice(
+                allocator,
+                try std.fmt.allocPrint(allocator, "{d}", .{value}),
+            );
+            try out.appendSlice(allocator, subpattern.suffix);
+            return out.toOwnedSlice(allocator);
+        }
+        const integer_value: u128 = @intFromFloat(rounded / scale);
+        const fraction_value: u128 = @intFromFloat(
+            rounded - @as(f64, @floatFromInt(integer_value)) * scale,
+        );
+        var integer_buffer: [64]u8 = undefined;
+        const integer_digits = std.fmt.bufPrint(
+            &integer_buffer,
+            "{d}",
+            .{integer_value},
+        ) catch return error.InvalidFormat;
+        var fraction_buffer: [32]u8 = undefined;
+        var fraction_length: usize = 0;
+        if (max_fraction != 0) {
+            var divisor: u128 = 1;
+            for (0..max_fraction - 1) |_| divisor *= 10;
+            var remaining = fraction_value;
+            var index: usize = 0;
+            while (index < max_fraction) : (index += 1) {
+                const digit: u8 = @intCast(remaining / divisor);
+                fraction_buffer[index] = '0' + digit;
+                remaining %= divisor;
+                if (divisor >= 10) divisor /= 10;
+                fraction_length += 1;
+            }
+            while (fraction_length > subpattern.min_fraction and
+                fraction_buffer[fraction_length - 1] == '0')
+            {
+                fraction_length -= 1;
+            }
+        }
+        var out: std.ArrayList(u8) = .empty;
+        if (auto_minus) try appendCodepoint(allocator, &out, format.minus_sign);
+        try out.appendSlice(allocator, subpattern.prefix);
+        try appendFormattedInteger(
+            allocator,
+            &out,
+            integer_digits,
+            subpattern.min_integer,
+            subpattern.group_size,
+            format,
+        );
+        if (fraction_length != 0) {
+            try appendCodepoint(allocator, &out, format.decimal_separator);
+            for (fraction_buffer[0..fraction_length]) |digit| {
+                try appendDigit(allocator, &out, digit, format.zero_digit);
+            }
+        }
+        try out.appendSlice(allocator, subpattern.suffix);
+        return out.toOwnedSlice(allocator);
+    }
+
     fn evaluateParams(
         self: *Runtime,
         params: []const compile.ParamBinding,
@@ -2076,6 +2193,241 @@ fn isWhitespaceText(value: []const u8) bool {
         }
     }
     return true;
+}
+
+const default_decimal_format: compile.DecimalFormat = .{};
+
+const Subpattern = struct {
+    prefix: []const u8,
+    suffix: []const u8,
+    min_integer: usize,
+    min_fraction: usize,
+    max_fraction: usize,
+    group_size: usize,
+    scale: f64,
+    has_digits: bool = true,
+};
+
+const ParsedFormatPattern = struct {
+    positive: Subpattern,
+    negative: ?Subpattern,
+};
+
+fn formatNumberCallback(
+    context: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    number: f64,
+    pattern: []const u8,
+    format_name: ?[]const u8,
+) xpath_value.NumberFormatError![]const u8 {
+    const runtime: *Runtime = @ptrCast(@alignCast(context.?));
+    const format = runtime.findDecimalFormat(format_name) orelse
+        return error.InvalidFormat;
+    return runtime.formatNumberPattern(allocator, number, pattern, format);
+}
+
+const DecodedCodepoint = struct {
+    cp: u21,
+    end: usize,
+};
+
+fn decodeAt(text: []const u8, index: usize) ?DecodedCodepoint {
+    const length = std.unicode.utf8ByteSequenceLength(text[index]) catch
+        return null;
+    if (index + length > text.len) return null;
+    const cp = std.unicode.utf8Decode(text[index..][0..length]) catch
+        return null;
+    return .{ .cp = cp, .end = index + length };
+}
+
+fn parseFormatPattern(
+    pattern: []const u8,
+    format: *const compile.DecimalFormat,
+) xpath_value.NumberFormatError!ParsedFormatPattern {
+    var separator_start: ?usize = null;
+    var separator_end: usize = 0;
+    var index: usize = 0;
+    while (index < pattern.len) {
+        const decoded = decodeAt(pattern, index) orelse
+            return error.InvalidFormat;
+        if (decoded.cp == format.pattern_separator) {
+            if (separator_start != null) return error.InvalidFormat;
+            separator_start = index;
+            separator_end = decoded.end;
+        }
+        index = decoded.end;
+    }
+    if (separator_start) |start| {
+        return .{
+            .positive = try parseSubpattern(
+                pattern[0..start],
+                format,
+                false,
+            ),
+            .negative = try parseSubpattern(
+                pattern[separator_end..],
+                format,
+                true,
+            ),
+        };
+    }
+    return .{
+        .positive = try parseSubpattern(pattern, format, false),
+        .negative = null,
+    };
+}
+
+fn parseSubpattern(
+    text: []const u8,
+    format: *const compile.DecimalFormat,
+    allow_empty: bool,
+) xpath_value.NumberFormatError!Subpattern {
+    if (text.len == 0) {
+        if (!allow_empty) return error.InvalidFormat;
+        return .{
+            .prefix = "",
+            .suffix = "",
+            .min_integer = 0,
+            .min_fraction = 0,
+            .max_fraction = 0,
+            .group_size = 0,
+            .scale = 1,
+            .has_digits = false,
+        };
+    }
+
+    var first_start: ?usize = null;
+    var last_end: usize = 0;
+    var index: usize = 0;
+    while (index < text.len) {
+        const decoded = decodeAt(text, index) orelse
+            return error.InvalidFormat;
+        if (decoded.cp == format.zero_digit or decoded.cp == format.digit) {
+            if (first_start == null) first_start = index;
+            last_end = decoded.end;
+        }
+        index = decoded.end;
+    }
+    const placeholder_start = first_start orelse return error.InvalidFormat;
+
+    var structural_start = placeholder_start;
+    index = 0;
+    while (index < placeholder_start) {
+        const decoded = decodeAt(text, index) orelse
+            return error.InvalidFormat;
+        if (decoded.cp == format.decimal_separator) {
+            structural_start = index;
+        }
+        index = decoded.end;
+    }
+
+    var min_integer: usize = 0;
+    var min_fraction: usize = 0;
+    var max_fraction: usize = 0;
+    var integer_digits: usize = 0;
+    var last_group_integer_digits: ?usize = null;
+    var decimal_seen = false;
+    index = structural_start;
+    while (index < last_end) {
+        const decoded = decodeAt(text, index) orelse
+            return error.InvalidFormat;
+        const cp = decoded.cp;
+        if (cp == format.zero_digit or cp == format.digit) {
+            if (decimal_seen) {
+                max_fraction += 1;
+                if (cp == format.zero_digit) min_fraction += 1;
+            } else {
+                integer_digits += 1;
+                if (cp == format.zero_digit) min_integer += 1;
+            }
+        } else if (cp == format.decimal_separator) {
+            decimal_seen = true;
+        } else if (cp == format.grouping_separator and !decimal_seen) {
+            last_group_integer_digits = integer_digits;
+        }
+        index = decoded.end;
+    }
+
+    const prefix = text[0..structural_start];
+    const suffix = text[last_end..];
+    var scale: f64 = 1;
+    scanScale(prefix, format, &scale);
+    scanScale(suffix, format, &scale);
+    return .{
+        .prefix = prefix,
+        .suffix = suffix,
+        .min_integer = min_integer,
+        .min_fraction = min_fraction,
+        .max_fraction = max_fraction,
+        .group_size = if (last_group_integer_digits) |group_start|
+            integer_digits - group_start
+        else
+            0,
+        .scale = scale,
+        .has_digits = true,
+    };
+}
+
+fn scanScale(
+    text: []const u8,
+    format: *const compile.DecimalFormat,
+    scale: *f64,
+) void {
+    var index: usize = 0;
+    while (index < text.len) {
+        const decoded = decodeAt(text, index) orelse return;
+        if (decoded.cp == format.percent) {
+            scale.* = 100;
+        } else if (decoded.cp == format.per_mille) {
+            scale.* = 1000;
+        }
+        index = decoded.end;
+    }
+}
+
+fn appendCodepoint(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    codepoint: u21,
+) xpath_value.NumberFormatError!void {
+    var buffer: [4]u8 = undefined;
+    const length = std.unicode.utf8Encode(codepoint, &buffer) catch
+        return error.InvalidFormat;
+    try out.appendSlice(allocator, buffer[0..length]);
+}
+
+fn appendDigit(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    digit: u8,
+    zero_digit: u21,
+) xpath_value.NumberFormatError!void {
+    const codepoint = zero_digit + @as(u21, digit - '0');
+    try appendCodepoint(allocator, out, codepoint);
+}
+
+fn appendFormattedInteger(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    digits: []const u8,
+    min_integer: usize,
+    group_size: usize,
+    format: *const compile.DecimalFormat,
+) xpath_value.NumberFormatError!void {
+    var padded: std.ArrayList(u8) = .empty;
+    var padding = digits.len;
+    while (padding < min_integer) : (padding += 1) {
+        try padded.append(allocator, '0');
+    }
+    try padded.appendSlice(allocator, digits);
+    for (padded.items, 0..) |digit, index| {
+        if (group_size != 0 and index != 0 and
+            (padded.items.len - index) % group_size == 0)
+        {
+            try appendCodepoint(allocator, out, format.grouping_separator);
+        }
+        try appendDigit(allocator, out, digit, format.zero_digit);
+    }
 }
 
 const NumberTokenKind = enum { decimal, alphabetic, roman };
