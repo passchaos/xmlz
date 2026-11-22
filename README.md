@@ -44,8 +44,8 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **XInclude 1.0.** `xinclude.process` expands includes with XML/text modes,
   fallback, nested resources, circular detection, namespace inheritance,
   element-aware `xml:base` resolution, and the XPointer `element()` and
-  `xpointer()` schemes and ID selection, with 10/10 differential checks
-  against libxml2.
+  `xpointer()` schemes and ID selection, with 12/12 differential checks
+  against libxml2 (including catalog-aware resolution).
 - **XML Base and xml:id.** `xmlbase.resolve` implements the full RFC 3986
   reference-resolution algorithm, `elementBase` applies `xml:base` along the
   ancestor chain, and `xml:id` matching uses the XML ID whitespace rules.
@@ -77,7 +77,8 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **OASIS XML Catalogs.** `catalog.parse` resolves system/public identifiers
   and URIs through exact entries, rewrites, suffixes, delegates,
   `nextCatalog`, `prefer`, and `xml:base`, with 17/17 differential checks
-  against libxml2's `xmlcatalog`.
+  against libxml2's `xmlcatalog`; the `xinclude` tool consumes catalogs via
+  `--catalog`.
 - **ISO Schematron.** `schematron.parse` compiles schemas and
   `schematron.validate` evaluates rule contexts, assertions, reports, lets,
   namespaces, phases, abstract rules (`extends`), and abstract patterns

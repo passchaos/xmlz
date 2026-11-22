@@ -43,6 +43,12 @@ resolved URI and bytes, or null when the resource is unavailable.
 - The included XML is parsed with the standard parser (well-formedness and
   namespace checking), without external entity resolution.
 
+## Catalog-aware resolution
+
+The `xinclude` command accepts `--catalog=FILE`; hrefs are resolved through
+the catalog before filesystem lookup, and catalog `nextCatalog`/delegate
+references use the same loader.
+
 ## Differential verification
 
 ```sh
@@ -50,9 +56,10 @@ zig build xinclude-diff
 ```
 
 The step compares expanded documents against libxml2's `xmllint --xinclude`
-for XML/text inclusion, fallback, nesting, namespaces, multiple includes, and
-both XPointer schemes and ID selection. Expected output:
+for XML/text inclusion, fallback, nesting, namespaces, multiple includes, both
+XPointer schemes and ID selection, and catalog-aware resolution. Expected
+output:
 
 ```text
-10/10 XInclude differential checks passed
+12/12 XInclude differential checks passed
 ```

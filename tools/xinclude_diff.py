@@ -109,8 +109,42 @@ CASES = [
 ]
 
 
+CATALOG_CASES = [
+    (
+        "catalog-system",
+        {
+            "catalog.xml": """<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+              <system systemId="http://example.org/inc.xml" uri="inc.xml"/>
+            </catalog>""",
+            "inc.xml": "<inc><x/></inc>",
+            "main.xml": """<root xmlns:xi="http://www.w3.org/2001/XInclude">
+              <xi:include href="http://example.org/inc.xml"/>
+            </root>""",
+        },
+    ),
+    (
+        "catalog-next",
+        {
+            "catalog.xml": """<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+              <nextCatalog catalog="next.xml"/>
+            </catalog>""",
+            "next.xml": """<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+              <system systemId="http://example.org/inc.xml" uri="inc.xml"/>
+            </catalog>""",
+            "inc.xml": "<inc><y/></inc>",
+            "main.xml": """<root xmlns:xi="http://www.w3.org/2001/XInclude">
+              <xi:include href="http://example.org/inc.xml"/>
+            </root>""",
+        },
+    ),
+]
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True)
+
+
+def run_env(cmd, env):
+    return subprocess.run(cmd, capture_output=True, env=env)
 
 
 def main():
@@ -157,6 +191,52 @@ def main():
                     f"FAIL {name}: xmlz output is not XML: {error}\n"
                     f"  xmlz: {actual.stdout!r}"
                 )
+                continue
+            expected_c14n = etree.tostring(expected_tree, method="c14n")
+            actual_c14n = etree.tostring(actual_tree, method="c14n")
+            if expected_c14n != actual_c14n:
+                failures += 1
+                print(
+                    f"FAIL {name}\n"
+                    f"  libxml2: {expected_c14n!r}\n"
+                    f"  xmlz:    {actual_c14n!r}"
+                )
+    for name, files in CATALOG_CASES:
+        with tempfile.TemporaryDirectory() as directory:
+            for filename, content in files.items():
+                path = os.path.join(directory, filename)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content)
+            main_path = os.path.join(directory, "main.xml")
+            catalog_path = os.path.join(directory, "catalog.xml")
+            env = os.environ.copy()
+            env["XML_CATALOG_FILES"] = catalog_path
+            expected = run_env(
+                ["xmllint", "--nonet", "--xinclude", main_path],
+                env,
+            )
+            if expected.returncode != 0:
+                print(
+                    f"SKIP {name}: xmllint failed: "
+                    f"{expected.stderr.decode('utf-8', 'replace').strip()}"
+                )
+                continue
+            actual = run([processor, f"--catalog={catalog_path}", main_path])
+            checks += 1
+            if actual.returncode != 0:
+                failures += 1
+                print(
+                    f"FAIL {name}: xmlz failed: "
+                    f"{actual.stderr.decode('utf-8', 'replace').strip()}"
+                )
+                continue
+            try:
+                expected_tree = etree.fromstring(expected.stdout)
+                actual_tree = etree.fromstring(actual.stdout)
+            except etree.XMLSyntaxError as error:
+                failures += 1
+                print(f"FAIL {name}: output is not XML: {error}")
                 continue
             expected_c14n = etree.tostring(expected_tree, method="c14n")
             actual_c14n = etree.tostring(actual_tree, method="c14n")

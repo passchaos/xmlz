@@ -49,6 +49,12 @@ with `prefer="public"` a matching public entry wins over a matching system
 entry. libxml2's `xmlcatalog resolve` always prefers the system identifier, so
 this case is covered by unit tests rather than the differential harness.
 
+## Integration
+
+The `xinclude` tool accepts `--catalog=FILE` and consults the catalog before
+filesystem lookup. Other tools can wrap their resolver callbacks the same way:
+query `resolveSystem` (or `resolveUri`) and read the returned URI.
+
 ## Differential verification
 
 ```sh
