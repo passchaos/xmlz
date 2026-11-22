@@ -105,6 +105,17 @@ pub fn build(b: *std.Build) void {
     xsd_tool.root_module.addImport("xmlz", mod);
     b.installArtifact(xsd_tool);
 
+    const xinclude_tool = b.addExecutable(.{
+        .name = "xinclude",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/xinclude.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    xinclude_tool.root_module.addImport("xmlz", mod);
+    b.installArtifact(xinclude_tool);
+
     const rng_tool = b.addExecutable(.{
         .name = "rng",
         .root_module = b.createModule(.{
@@ -181,6 +192,17 @@ pub fn build(b: *std.Build) void {
         "Differential RELAX NG compact syntax checks against libxml2",
     );
     rng_compact_diff_step.dependOn(&rng_compact_diff.step);
+
+    const xinclude_diff = b.addSystemCommand(&.{
+        "python3",
+        "tools/xinclude_diff.py",
+    });
+    xinclude_diff.addFileArg(xinclude_tool.getEmittedBin());
+    const xinclude_diff_step = b.step(
+        "xinclude-diff",
+        "Differential XInclude checks against libxml2's xmllint",
+    );
+    xinclude_diff_step.dependOn(&xinclude_diff.step);
 
     const check_step = b.step("check", "Run unit tests and the conformance suite");
     check_step.dependOn(test_step);

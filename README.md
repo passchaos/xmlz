@@ -42,8 +42,9 @@ then exposes them through a pull parser and reusable lexical primitives.
   implemented over the DOM, with namespace-aware name tests and 82/82
   differential checks against libxml2.
 - **XInclude 1.0.** `xinclude.process` expands includes with XML/text modes,
-  fallback, nested resources, circular detection, namespace inheritance, and
-  element-aware `xml:base` resolution.
+  fallback, nested resources, circular detection, namespace inheritance,
+  element-aware `xml:base` resolution, and the XPointer `element()` and
+  `xpointer()` schemes, with 8/8 differential checks against libxml2.
 - **XML Base and xml:id.** `xmlbase.resolve` implements the full RFC 3986
   reference-resolution algorithm, `elementBase` applies `xml:base` along the
   ancestor chain, and `xml:id` matching uses the XML ID whitespace rules.
@@ -107,7 +108,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | DOM builder | Complete |
 | Writer/serializer | Complete |
 | XPath 1.0 | Complete (all axes, core library, differential checks) |
-| XInclude 1.0 | Complete (XML/text, fallback, nesting, xml:base) |
+| XInclude 1.0 | Complete (XML/text, fallback, nesting, xml:base, XPointer) |
 | Canonical XML | Complete (C14N 1.0/1.1, exclusive; whole documents and node-sets) |
 | XML Base / xml:id | Complete (RFC 3986 resolution, base chains, ID normalization) |
 | XSLT 1.0 | Core engine (templates, modes, params, sorting, copy, AVTs) |
@@ -251,6 +252,7 @@ zig build xslt-diff     # XSLT differential checks vs libxslt (needs lxml)
 zig build xsd-diff      # XML Schema differential checks vs libxml2 (needs lxml)
 zig build rng-diff      # RELAX NG differential checks vs libxml2 (needs lxml)
 zig build rng-compact-diff # RELAX NG compact syntax checks vs XML twins (needs lxml)
+zig build xinclude-diff # XInclude checks vs libxml2 xmllint
 zig build test          # includes deterministic mutation/fuzz smoke tests
 ```
 

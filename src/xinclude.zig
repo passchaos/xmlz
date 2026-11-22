@@ -11,6 +11,7 @@ const dom_builder = @import("dom_builder.zig");
 const encoding = @import("encoding.zig");
 const namespace = @import("namespace.zig");
 const xmlbase = @import("xmlbase.zig");
+const xpath = @import("xpath/root.zig");
 
 pub const namespace_uri = "http://www.w3.org/2001/XInclude";
 
@@ -99,7 +100,7 @@ const Processor = struct {
     fn copyDocument(self: *Processor, source: *const dom.Document, base: []const u8) Error!void {
         var child = source.node(0).first_child;
         while (child != dom.null_node) : (child = source.node(child).next_sibling) {
-            try self.copyNode(source, base, child, self.builder.document(), null);
+            try self.copyNode(source, base, child, self.builder.document(), null, null);
         }
     }
 
@@ -110,6 +111,7 @@ const Processor = struct {
         id: dom.NodeId,
         parent: dom.NodeId,
         inherited_root: ?dom.NodeId,
+        extra_namespaces: ?[]const namespace.Binding,
     ) Error!void {
         const node = source.node(id);
         switch (node.kind) {
@@ -173,12 +175,34 @@ const Processor = struct {
                         }
                     }
                 }
+                if (extra_namespaces) |bindings| {
+                    for (bindings) |binding| {
+                        if (std.mem.eql(u8, binding.prefix, "xml")) continue;
+                        var name_buffer: [256]u8 = undefined;
+                        const name = if (binding.prefix.len == 0)
+                            "xmlns"
+                        else
+                            std.fmt.bufPrint(
+                                &name_buffer,
+                                "xmlns:{s}",
+                                .{binding.prefix},
+                            ) catch return error.InvalidInclude;
+                        if (findAttribute(source.attributesOf(id), name) != null) {
+                            continue;
+                        }
+                        self.builder.setAttribute(
+                            new_id,
+                            name,
+                            binding.uri,
+                        ) catch |err| return mapBuilderError(err);
+                    }
+                }
                 self.builder.appendChild(parent, new_id) catch |err|
                     return mapBuilderError(err);
 
                 var child = node.first_child;
                 while (child != dom.null_node) : (child = source.node(child).next_sibling) {
-                    try self.copyNode(source, current_base, child, new_id, null);
+                    try self.copyNode(source, current_base, child, new_id, null, null);
                 }
             },
             .text => {
@@ -204,7 +228,7 @@ const Processor = struct {
             .document => {
                 var child = node.first_child;
                 while (child != dom.null_node) : (child = source.node(child).next_sibling) {
-                    try self.copyNode(source, base, child, parent, null);
+                    try self.copyNode(source, base, child, parent, null, null);
                 }
             },
         }
@@ -258,14 +282,21 @@ const Processor = struct {
         parent: dom.NodeId,
     ) Error!void {
         const href = source.attribute(id, "href") orelse return error.MissingHref;
-        if (source.attribute(id, "xpointer") != null) {
-            return error.UnsupportedXPointer;
-        }
+        const xpointer = source.attribute(id, "xpointer");
         const mode = source.attribute(id, "parse") orelse "xml";
         if (!std.mem.eql(u8, mode, "xml") and
             !std.mem.eql(u8, mode, "text"))
         {
             return error.UnsupportedParseMode;
+        }
+        if (xpointer != null and !std.mem.eql(u8, mode, "xml")) {
+            return self.useFallback(
+                source,
+                base,
+                id,
+                parent,
+                error.UnsupportedXPointer,
+            );
         }
 
         const resolver = self.options.resolver orelse {
@@ -337,16 +368,163 @@ const Processor = struct {
             return error.OutOfMemory;
         defer _ = self.stack.pop();
 
-        var child = included.node(included_root).first_child;
-        while (child != dom.null_node) : (child = included.node(child).next_sibling) {
-            try self.copyNode(
-                &included,
-                included_base,
-                child,
-                parent,
-                included_root,
+        if (xpointer) |pointer| {
+            // XPointer evaluation failures are fatal errors, not resource
+            // errors, so fallback content is not used.
+            const selected = self.selectXPointer(&included, pointer) catch |err|
+                switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return err,
+                };
+            defer self.allocator.free(selected);
+            for (selected) |selected_id| {
+                var extra: ?[]namespace.Binding = null;
+                if (included.node(selected_id).kind == .element) {
+                    extra = included.inScopeNamespaces(
+                        self.allocator,
+                        selected_id,
+                    ) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                    };
+                }
+                defer if (extra) |bindings| self.allocator.free(bindings);
+                try self.copyNode(
+                    &included,
+                    included_base,
+                    selected_id,
+                    parent,
+                    null,
+                    extra,
+                );
+            }
+            return;
+        }
+
+        // The document element itself is the included content; its base URI
+        // and namespace declarations are preserved.
+        try self.copyNode(
+            &included,
+            included_base,
+            included_root,
+            parent,
+            null,
+            null,
+        );
+    }
+
+    fn selectXPointer(
+        self: *Processor,
+        included: *const dom.Document,
+        pointer: []const u8,
+    ) Error![]const dom.NodeId {
+        const trimmed = std.mem.trim(u8, pointer, " \t\r\n");
+        if (std.mem.startsWith(u8, trimmed, "element(") and
+            trimmed.len > "element()".len and
+            trimmed[trimmed.len - 1] == ')')
+        {
+            return self.selectElementScheme(
+                included,
+                trimmed["element(".len .. trimmed.len - 1],
             );
         }
+        if (std.mem.startsWith(u8, trimmed, "xpointer(") and
+            trimmed.len > "xpointer()".len and
+            trimmed[trimmed.len - 1] == ')')
+        {
+            return self.selectXPathPointer(
+                included,
+                trimmed["xpointer(".len .. trimmed.len - 1],
+            );
+        }
+        return error.UnsupportedXPointer;
+    }
+
+    /// The `element()` scheme selects a child sequence such as `/1/2`.
+    fn selectElementScheme(
+        self: *Processor,
+        included: *const dom.Document,
+        path: []const u8,
+    ) Error![]const dom.NodeId {
+        if (path.len == 0 or path[0] != '/') {
+            return error.UnsupportedXPointer;
+        }
+        var current = included.documentNode();
+        if (path.len == 1) {
+            const out = try self.allocator.alloc(dom.NodeId, 1);
+            out[0] = current;
+            return out;
+        }
+        var tokens = std.mem.tokenizeScalar(u8, path[1..], '/');
+        var steps: usize = 0;
+        while (tokens.next()) |token| {
+            const index = std.fmt.parseInt(usize, token, 10) catch
+                return error.UnsupportedXPointer;
+            if (index == 0) return error.UnsupportedXPointer;
+            var child = included.node(current).first_child;
+            var count: usize = 0;
+            var next: dom.NodeId = dom.null_node;
+            while (child != dom.null_node) : (child = included.node(child).next_sibling) {
+                if (included.node(child).kind != .element) continue;
+                count += 1;
+                if (count == index) {
+                    next = child;
+                    break;
+                }
+            }
+            if (next == dom.null_node) return error.UnsupportedXPointer;
+            current = next;
+            steps += 1;
+        }
+        if (steps == 0) return error.UnsupportedXPointer;
+        const out = try self.allocator.alloc(dom.NodeId, 1);
+        out[0] = current;
+        return out;
+    }
+
+    fn selectXPathPointer(
+        self: *Processor,
+        included: *const dom.Document,
+        source: []const u8,
+    ) Error![]const dom.NodeId {
+        var expression = xpath.Expression.parse(
+            self.allocator,
+            source,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.UnsupportedXPointer,
+        };
+        defer expression.deinit();
+        const context: xpath.Context = .{
+            .document = included,
+            .node = .{ .node = 0 },
+        };
+        var result = expression.evaluate(self.allocator, &context) catch |err|
+            switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.UnsupportedXPointer,
+            };
+        defer result.deinit();
+        const nodes = switch (result.value) {
+            .node_set => |nodes| nodes,
+            else => return error.UnsupportedXPointer,
+        };
+        var out: std.ArrayList(dom.NodeId) = .empty;
+        for (nodes) |node| {
+            switch (node) {
+                .node => |id| try out.append(self.allocator, id),
+                else => return error.UnsupportedXPointer,
+            }
+        }
+        std.mem.sort(dom.NodeId, out.items, {}, nodeIdLessThan);
+        var write: usize = 0;
+        for (out.items) |id| {
+            if (write == 0 or out.items[write - 1] != id) {
+                out.items[write] = id;
+                write += 1;
+            }
+        }
+        out.shrinkRetainingCapacity(write);
+        return out.toOwnedSlice(self.allocator);
     }
 
     fn useFallback(
@@ -371,6 +549,7 @@ const Processor = struct {
                         fallback_child,
                         parent,
                         null,
+                        null,
                     );
                 }
                 return;
@@ -379,6 +558,10 @@ const Processor = struct {
         return original;
     }
 };
+
+fn nodeIdLessThan(_: void, a: dom.NodeId, b: dom.NodeId) bool {
+    return a < b;
+}
 
 fn prefixOf(node: *const dom.Node) []const u8 {
     if (node.local.len == node.name.len or node.local.len >= node.name.len) {
@@ -474,7 +657,7 @@ fn parseSource(source: []const u8) !dom.Document {
     return dom.Document.parse(testing.allocator, source, .{});
 }
 
-test "XInclude replaces include with included root children" {
+test "XInclude includes the document element of the resource" {
     const resources = [_]TestResource{
         .{ .href = "inc.xml", .uri = "inc.xml", .data = "<inc><x/><y>text</y></inc>" },
     };
@@ -489,8 +672,11 @@ test "XInclude replaces include with included root children" {
 
     const root = document.root();
     try testing.expect(document.findChild(root, "a") != null);
-    try testing.expect(document.findChild(root, "x") != null);
-    const y = document.findChild(root, "y") orelse return error.TestUnexpectedResult;
+    const inc = document.findChild(root, "inc") orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(document.findChild(inc, "x") != null);
+    const y = document.findChild(inc, "y") orelse
+        return error.TestUnexpectedResult;
     const text = try document.textContentAlloc(testing.allocator, y);
     defer testing.allocator.free(text);
     try testing.expectEqualStrings("text", text);
@@ -604,8 +790,11 @@ test "XInclude handles nested includes and circularity" {
         .resolver = .{ .context = &resolver, .load = loadResource },
     });
     defer document.deinit();
-    const leaf = document.findChild(document.root(), "leaf");
-    try testing.expect(leaf != null);
+    const included_a = document.findChild(document.root(), "a") orelse
+        return error.TestUnexpectedResult;
+    const included_b = document.findChild(included_a, "b") orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(document.findChild(included_b, "leaf") != null);
 
     const circular = [_]TestResource{
         .{ .href = "self.xml", .uri = "self.xml", .data = "<self><xi:include xmlns:xi=\"http://www.w3.org/2001/XInclude\" href=\"self.xml\"/></self>" },
@@ -641,14 +830,17 @@ test "XInclude inherits namespace declarations from the included root" {
     });
     defer document.deinit();
     const root = document.root();
-    const child = document.findChild(root, "x") orelse
+    const inc = document.findChild(root, "inc") orelse
+        return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("urn:inc", document.node(inc).ns);
+    try testing.expectEqualStrings(
+        "urn:inc",
+        document.attribute(inc, "xmlns") orelse "",
+    );
+    const child = document.findChild(inc, "x") orelse
         return error.TestUnexpectedResult;
     try testing.expectEqualStrings("x", document.node(child).name);
     try testing.expectEqualStrings("urn:inc", document.node(child).ns);
-    try testing.expectEqualStrings(
-        "urn:inc",
-        document.attribute(child, "xmlns") orelse "",
-    );
 }
 
 test "XInclude applies xml:base to include resolution" {
@@ -670,7 +862,9 @@ test "XInclude applies xml:base to include resolution" {
     defer document.deinit();
     const wrap = document.findChild(document.root(), "wrap") orelse
         return error.TestUnexpectedResult;
-    try testing.expect(document.findChild(wrap, "leaf") != null);
+    const wrap_inc = document.findChild(wrap, "inc") orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(document.findChild(wrap_inc, "leaf") != null);
 
     const include_base =
         \\<root xmlns:xi="http://www.w3.org/2001/XInclude" xml:base="http://e/root/">
@@ -691,9 +885,11 @@ test "XInclude applies xml:base to include resolution" {
         },
     });
     defer include_document.deinit();
-    try testing.expect(
-        include_document.findChild(include_document.root(), "leaf") != null,
-    );
+    const included = include_document.findChild(
+        include_document.root(),
+        "inc",
+    ) orelse return error.TestUnexpectedResult;
+    try testing.expect(include_document.findChild(included, "leaf") != null);
 }
 
 test "XInclude applies included root xml:base to nested includes" {
@@ -717,7 +913,11 @@ test "XInclude applies included root xml:base to nested includes" {
     });
     defer document.deinit();
     try testing.expect(recorder.leaf_seen);
-    try testing.expect(document.findChild(document.root(), "leaf") != null);
+    const inc = document.findChild(document.root(), "inc") orelse
+        return error.TestUnexpectedResult;
+    const doc = document.findChild(inc, "doc") orelse
+        return error.TestUnexpectedResult;
+    try testing.expect(document.findChild(doc, "leaf") != null);
 }
 
 test "XInclude reports malformed include attributes" {
@@ -734,8 +934,82 @@ test "XInclude reports malformed include attributes" {
         "<root xmlns:xi=\"http://www.w3.org/2001/XInclude\"><xi:include href=\"a\" xpointer=\"x\"/></root>",
     );
     defer xpointer.deinit();
+    const resources = [_]TestResource{
+        .{ .href = "a", .uri = "a", .data = "<doc/>" },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
     try testing.expectError(
         error.UnsupportedXPointer,
-        process(testing.allocator, &xpointer, .{}),
+        process(testing.allocator, &xpointer, .{
+            .resolver = .{ .context = &resolver, .load = loadResource },
+        }),
+    );
+}
+
+test "XInclude supports element and xpointer schemes" {
+    const resources = [_]TestResource{
+        .{
+            .href = "inc.xml",
+            .uri = "inc.xml",
+            .data = "<doc><part id='p1'><a/><b/></part>" ++
+                "<part id='p2'><c/></part></doc>",
+        },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
+
+    var element_source = try parseSource(
+        "<root xmlns:xi='http://www.w3.org/2001/XInclude'>" ++
+            "<xi:include href='inc.xml' xpointer='element(/1/2)'/></root>",
+    );
+    defer element_source.deinit();
+    var element_document = try process(testing.allocator, &element_source, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+    });
+    defer element_document.deinit();
+    const element_text = try element_document.textContentAlloc(
+        testing.allocator,
+        element_document.root(),
+    );
+    defer testing.allocator.free(element_text);
+    try testing.expectEqualStrings("", element_text);
+    const element_root = element_document.root();
+    const part = element_document.findChild(element_root, "part") orelse
+        return error.TestUnexpectedResult;
+    try testing.expectEqualStrings(
+        "p2",
+        element_document.attribute(part, "id").?,
+    );
+    try testing.expect(element_document.findChild(part, "c") != null);
+
+    var xpath_source = try parseSource(
+        "<root xmlns:xi='http://www.w3.org/2001/XInclude'>" ++
+            "<xi:include href='inc.xml' xpointer='xpointer(/doc/part[1])'/></root>",
+    );
+    defer xpath_source.deinit();
+    var xpath_document = try process(testing.allocator, &xpath_source, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+    });
+    defer xpath_document.deinit();
+    const xpath_root = xpath_document.root();
+    const first = xpath_document.findChild(xpath_root, "part") orelse
+        return error.TestUnexpectedResult;
+    try testing.expectEqualStrings(
+        "p1",
+        xpath_document.attribute(first, "id").?,
+    );
+    try testing.expect(xpath_document.findChild(first, "a") != null);
+    try testing.expect(xpath_document.findChild(first, "b") != null);
+
+    var fallback_source = try parseSource(
+        "<root xmlns:xi='http://www.w3.org/2001/XInclude'>" ++
+            "<xi:include href='inc.xml' xpointer='element(/1/9)'>" ++
+            "<xi:fallback><fb/></xi:fallback></xi:include></root>",
+    );
+    defer fallback_source.deinit();
+    try testing.expectError(
+        error.UnsupportedXPointer,
+        process(testing.allocator, &fallback_source, .{
+            .resolver = .{ .context = &resolver, .load = loadResource },
+        }),
     );
 }
