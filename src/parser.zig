@@ -238,6 +238,8 @@ pub const Parser = struct {
     entity_table: entities.Table = .{},
     parameter_entities: entities.Table = .{},
     ns: namespace.Resolver = .{},
+    xml_version: chars.Version = .xml_1_0,
+    started: bool = false,
     tokenized_attrs: [128]struct {
         element: []const u8,
         name: []const u8,
@@ -304,6 +306,14 @@ pub const Parser = struct {
         self.scratch = null;
     }
 
+    pub fn xmlVersion(self: *const Parser) chars.Version {
+        return self.xml_version;
+    }
+
+    fn findInvalidLiteral(self: *const Parser, bytes: []const u8) ?usize {
+        return chars.findInvalidLiteralCharVersion(bytes, self.xml_version);
+    }
+
     /// Entity declarations collected from the DOCTYPE internal subset.
     pub fn entityTable(self: *const Parser) *const entities.Table {
         return &self.entity_table;
@@ -350,6 +360,10 @@ pub const Parser = struct {
             self.error_offset = 0;
             return error.NonUtf8Input;
         }
+        if (!self.started) {
+            self.started = true;
+            try self.normalizeXml11Input();
+        }
         while (true) {
             switch (self.state) {
                 .prolog => {
@@ -367,6 +381,56 @@ pub const Parser = struct {
                 .done => return null,
             }
         }
+    }
+
+    /// XML 1.1 adds NEL (U+0085) and LINE SEPARATOR (U+2028) to the line-end
+    /// set. Normalize them (and CR) before tokenization, matching XML's
+    /// required input normalization. This only allocates when an XML 1.1
+    /// document actually contains one of the new line ends.
+    fn normalizeXml11Input(self: *Parser) Error!void {
+        if (declaredVersion11(self.input, self.pos) != true) return;
+        if (!hasXml11LineEnds(self.input)) return;
+        const allocator = self.scratchAllocator() orelse {
+            return self.fail(error.OutOfMemory, 0);
+        };
+
+        var out: std.ArrayList(u8) = .empty;
+        var index: usize = 0;
+        while (index < self.input.len) {
+            const byte = self.input[index];
+            if (byte == '\r') {
+                try out.append(allocator, '\n');
+                if (index + 1 < self.input.len and self.input[index + 1] == '\n') {
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+                continue;
+            }
+            if (byte == 0xC2 and index + 1 < self.input.len and
+                self.input[index + 1] == 0x85)
+            {
+                try out.append(allocator, '\n');
+                index += 2;
+                continue;
+            }
+            if (byte == 0xE2 and index + 2 < self.input.len and
+                self.input[index + 1] == 0x80 and
+                self.input[index + 2] == 0xA8)
+            {
+                try out.append(allocator, '\n');
+                index += 3;
+                continue;
+            }
+            try out.append(allocator, byte);
+            index += 1;
+        }
+        const normalized = try out.toOwnedSlice(allocator);
+        self.input = normalized;
+        self.pos = if (std.mem.startsWith(u8, normalized, "\xEF\xBB\xBF"))
+            3
+        else
+            0;
     }
 
     fn nextProlog(self: *Parser) Error!?Event {
@@ -547,6 +611,7 @@ pub const Parser = struct {
                                 &self.entity_table,
                                 .{},
                                 .{
+                                    .version = self.xml_version,
                                     .preserve_undeclared = true,
                                     .preserve_external = true,
                                 },
@@ -698,7 +763,7 @@ pub const Parser = struct {
 
         const value = self.input[value_start..self.pos];
         if (has_non_ascii) {
-            if (chars.findInvalidXmlChar(value)) |bad| {
+            if (self.findInvalidLiteral(value)) |bad| {
                 return self.fail(error.InvalidCharacter, value_start + bad);
             }
         }
@@ -777,7 +842,7 @@ pub const Parser = struct {
                         if (index > start) {
                             self.pos = index;
                             const span = self.input[start..index];
-                            if (chars.findInvalidXmlChar(span)) |bad| {
+                            if (self.findInvalidLiteral(span)) |bad| {
                                 return self.fail(error.InvalidCharacter, start + bad);
                             }
                             return span;
@@ -805,7 +870,7 @@ pub const Parser = struct {
         }
         self.pos = index;
         const span = self.input[start..index];
-        if (chars.findInvalidXmlChar(span)) |bad| {
+        if (self.findInvalidLiteral(span)) |bad| {
             return self.fail(error.InvalidCharacter, start + bad);
         }
         return span;
@@ -945,7 +1010,7 @@ pub const Parser = struct {
             return self.fail(error.UnexpectedEndOfInput, self.input.len);
         };
         const content = self.input[content_start..end];
-        if (chars.findInvalidXmlChar(content)) |bad| {
+        if (self.findInvalidLiteral(content)) |bad| {
             return self.fail(error.InvalidCharacter, content_start + bad);
         }
         self.pos = end + 3;
@@ -965,7 +1030,7 @@ pub const Parser = struct {
         if (content.len != 0 and content[content.len - 1] == '-') {
             return self.fail(error.InvalidComment, end - 1);
         }
-        if (chars.findInvalidXmlChar(content)) |bad| {
+        if (self.findInvalidLiteral(content)) |bad| {
             return self.fail(error.InvalidCharacter, content_start + bad);
         }
         self.pos = end + 3;
@@ -1004,7 +1069,7 @@ pub const Parser = struct {
             return self.fail(error.UnexpectedEndOfInput, self.input.len);
         };
         const data = self.input[data_start..end];
-        if (chars.findInvalidXmlChar(data)) |bad| {
+        if (self.findInvalidLiteral(data)) |bad| {
             return self.fail(error.InvalidCharacter, data_start + bad);
         }
         self.pos = end + 2;
@@ -1021,6 +1086,13 @@ pub const Parser = struct {
         const version = try self.scanDeclarationValue("version");
         if (!validVersionNumber(version)) {
             return self.fail(error.UnsupportedXmlVersion, self.pos);
+        }
+        self.xml_version = if (std.mem.eql(u8, version, "1.1"))
+            .xml_1_1
+        else
+            .xml_1_0;
+        if (self.options.namespaces) {
+            self.ns.allow_undeclaration = self.xml_version == .xml_1_1;
         }
 
         var declared_encoding: ?[]const u8 = null;
@@ -1200,7 +1272,7 @@ pub const Parser = struct {
             return self.fail(error.UnexpectedEndOfInput, self.pos);
         }
         const value = self.input[value_start..self.pos];
-        if (chars.findInvalidXmlChar(value)) |bad| {
+        if (self.findInvalidLiteral(value)) |bad| {
             return self.fail(error.InvalidCharacter, value_start + bad);
         }
         self.pos += 1;
@@ -1905,14 +1977,14 @@ pub const Parser = struct {
         // Validate every replacement value's characters and references.
         for (self.entity_table.entries[0..self.entity_table.count]) |entity| {
             if (entity.external) continue;
-            if (chars.findInvalidXmlChar(entity.value)) |bad| {
+            if (self.findInvalidLiteral(entity.value)) |bad| {
                 return self.fail(error.InvalidCharacter, entity.offset + bad);
             }
         }
 
         for (self.parameter_entities.entries[0..self.parameter_entities.count]) |entity| {
             if (entity.external) continue;
-            if (chars.findInvalidXmlChar(entity.value)) |bad| {
+            if (self.findInvalidLiteral(entity.value)) |bad| {
                 return self.fail(error.InvalidCharacter, entity.offset + bad);
             }
             try self.validateEntityValueReferences(entity.value);
@@ -2072,9 +2144,9 @@ pub const Parser = struct {
         if (body[0] == '#') {
             const codepoint = if (body.len > 1 and
                 (body[1] == 'x' or body[1] == 'X'))
-                chars.parseHexCharRef(body[1..])
+                chars.parseHexCharRefVersion(body[1..], self.xml_version)
             else
-                chars.parseDecimalCharRef(body[1..]);
+                chars.parseDecimalCharRefVersion(body[1..], self.xml_version);
             if (codepoint == null) {
                 return self.fail(error.InvalidEntityReference, offset);
             }
@@ -2190,7 +2262,12 @@ pub const Parser = struct {
             return self.fail(error.InvalidXmlDeclaration, start);
         }
         if (version) |value| {
-            if (!std.mem.eql(u8, value, "1.0")) {
+            if (std.mem.eql(u8, value, "1.1")) {
+                // An entity may not declare a later version than its document.
+                if (self.xml_version != .xml_1_1) {
+                    return self.fail(error.UnsupportedXmlVersion, start);
+                }
+            } else if (!std.mem.eql(u8, value, "1.0")) {
                 return self.fail(error.UnsupportedXmlVersion, start);
             }
         }
@@ -2224,9 +2301,9 @@ pub const Parser = struct {
             if (body.len == 0) return false;
             if (body[0] == '#') {
                 const codepoint = if (body.len > 1 and body[1] == 'x')
-                    chars.parseHexCharRef(body[1..])
+                    chars.parseHexCharRefVersion(body[1..], self.xml_version)
                 else
-                    chars.parseDecimalCharRef(body[1..]);
+                    chars.parseDecimalCharRefVersion(body[1..], self.xml_version);
                 const cp = codepoint orelse return false;
                 if (cp == '<' or cp == '&') return false;
                 continue;
@@ -2261,9 +2338,9 @@ pub const Parser = struct {
             if (body.len == 0) continue;
             if (body[0] == '#') {
                 const codepoint = if (body.len > 1 and body[1] == 'x')
-                    chars.parseHexCharRef(body[1..])
+                    chars.parseHexCharRefVersion(body[1..], self.xml_version)
                 else
-                    chars.parseDecimalCharRef(body[1..]);
+                    chars.parseDecimalCharRefVersion(body[1..], self.xml_version);
                 if (codepoint) |cp| {
                     if (cp == '<') return true;
                 }
@@ -2501,7 +2578,7 @@ const DtdScanner = struct {
             return self.fail(error.UnexpectedEndOfInput);
         }
         const value = self.text[value_start..self.index];
-        if (chars.findInvalidXmlChar(value)) |bad| {
+        if (self.parser.findInvalidLiteral(value)) |bad| {
             return self.failAt(error.InvalidCharacter, value_start + bad);
         }
         self.index += 1;
@@ -2665,7 +2742,7 @@ fn scanDefaultDecl(scanner: *DtdScanner) Error!DefaultDecl {
         return scanner.fail(error.UnexpectedEndOfInput);
     }
     const value = scanner.text[value_start..scanner.index];
-    if (chars.findInvalidXmlChar(value)) |bad| {
+    if (scanner.parser.findInvalidLiteral(value)) |bad| {
         return scanner.failAt(error.InvalidCharacter, value_start + bad);
     }
     scanner.index += 1;
@@ -2695,14 +2772,21 @@ fn decodeCharacterReferences(
         const body = value[index + 1 .. semicolon];
         if (body.len > 0 and body[0] == '#') {
             const codepoint = if (body.len > 1 and body[1] == 'x')
-                chars.parseHexCharRef(body[1..])
+                chars.parseHexCharRefVersion(body[1..], parser.xml_version)
             else
-                chars.parseDecimalCharRef(body[1..]);
+                chars.parseDecimalCharRefVersion(body[1..], parser.xml_version);
             const cp = codepoint orelse {
                 return parser.fail(error.InvalidEntityReference, index);
             };
-            var buffer: [4]u8 = undefined;
-            try out.appendSlice(allocator, chars.encodeUtf8(&buffer, cp));
+            if (parser.xml_version == .xml_1_1 and chars.isRestrictedChar11(cp)) {
+                // Restricted characters may appear only through character
+                // references. Keep the reference in replacement text so the
+                // included content remains well-formed.
+                try out.appendSlice(allocator, value[index .. semicolon + 1]);
+            } else {
+                var buffer: [4]u8 = undefined;
+                try out.appendSlice(allocator, chars.encodeUtf8(&buffer, cp));
+            }
             index = semicolon + 1;
             continue;
         }
@@ -2733,14 +2817,21 @@ fn decodeParameterReplacement(
         if (body.len > 0 and body[0] == '#') {
             const codepoint = if (body.len > 1 and
                 (body[1] == 'x' or body[1] == 'X'))
-                chars.parseHexCharRef(body[1..])
+                chars.parseHexCharRefVersion(body[1..], parser.xml_version)
             else
-                chars.parseDecimalCharRef(body[1..]);
+                chars.parseDecimalCharRefVersion(body[1..], parser.xml_version);
             const cp = codepoint orelse {
                 return parser.fail(error.InvalidEntityReference, index);
             };
-            var buffer: [4]u8 = undefined;
-            try out.appendSlice(allocator, chars.encodeUtf8(&buffer, cp));
+            if (parser.xml_version == .xml_1_1 and chars.isRestrictedChar11(cp)) {
+                // Restricted characters may appear only through character
+                // references. Keep the reference in replacement text so the
+                // included content remains well-formed.
+                try out.appendSlice(allocator, value[index .. semicolon + 1]);
+            } else {
+                var buffer: [4]u8 = undefined;
+                try out.appendSlice(allocator, chars.encodeUtf8(&buffer, cp));
+            }
             index = semicolon + 1;
             continue;
         }
@@ -3068,6 +3159,50 @@ fn decodeExternalAlloc(
         error.OutOfMemory => error.OutOfMemory,
         else => error.InvalidCharacter,
     };
+}
+
+fn declaredVersion11(input: []const u8, start: usize) ?bool {
+    if (!std.mem.startsWith(u8, input[start..], "<?xml")) return null;
+    const end = std.mem.indexOfPos(u8, input, start + 5, "?>") orelse return null;
+    const declaration = input[start + 5 .. end];
+    const version_pos = std.mem.indexOf(u8, declaration, "version") orelse return null;
+    var index = version_pos + "version".len;
+    while (index < declaration.len and chars.isWhitespace(declaration[index])) {
+        index += 1;
+    }
+    if (index >= declaration.len or declaration[index] != '=') return null;
+    index += 1;
+    while (index < declaration.len and chars.isWhitespace(declaration[index])) {
+        index += 1;
+    }
+    if (index >= declaration.len or
+        (declaration[index] != '"' and declaration[index] != '\''))
+    {
+        return null;
+    }
+    const quote = declaration[index];
+    index += 1;
+    const value_start = index;
+    while (index < declaration.len and declaration[index] != quote) {
+        index += 1;
+    }
+    return std.mem.eql(u8, declaration[value_start..index], "1.1");
+}
+
+fn hasXml11LineEnds(input: []const u8) bool {
+    var index: usize = 0;
+    while (index < input.len) : (index += 1) {
+        const byte = input[index];
+        if (byte == 0xC2 and index + 1 < input.len and input[index + 1] == 0x85) {
+            return true;
+        }
+        if (byte == 0xE2 and index + 2 < input.len and
+            input[index + 1] == 0x80 and input[index + 2] == 0xA8)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 fn validVersionNumber(value: []const u8) bool {

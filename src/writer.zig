@@ -34,8 +34,24 @@ pub fn writeDocument(
     doc: *const dom.Document,
     options: Options,
 ) Error!void {
+    const version = documentVersion(doc);
     if (options.xml_declaration) {
-        try writer.writeAll("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+        try writer.writeAll("<?xml version=\"");
+        if (doc.declaration) |declaration| {
+            try writer.writeAll(declaration.version);
+        } else {
+            try writer.writeAll("1.0");
+        }
+        try writer.writeAll("\" encoding=\"UTF-8\"");
+        if (doc.declaration) |declaration| {
+            if (declaration.standalone) |standalone| {
+                try writer.writeAll(if (standalone)
+                    " standalone=\"yes\""
+                else
+                    " standalone=\"no\"");
+            }
+        }
+        try writer.writeAll("?>");
         try writer.writeByte('\n');
     }
     if (options.emit_doctype) {
@@ -46,8 +62,23 @@ pub fn writeDocument(
     }
     const root = doc.root();
     if (root != dom.null_node) {
-        try writeNode(writer, doc, root, 0, options, options.indent != null);
+        try writeNode(
+            writer,
+            doc,
+            root,
+            0,
+            options,
+            options.indent != null,
+            version,
+        );
     }
+}
+
+fn documentVersion(doc: *const dom.Document) chars.Version {
+    if (doc.declaration) |declaration| {
+        if (std.mem.eql(u8, declaration.version, "1.1")) return .xml_1_1;
+    }
+    return .xml_1_0;
 }
 
 fn writeNode(
@@ -57,11 +88,25 @@ fn writeNode(
     depth: usize,
     options: Options,
     pretty: bool,
+    version: chars.Version,
 ) Error!void {
     const node = doc.node(id);
     switch (node.kind) {
-        .element => try writeElement(writer, doc, id, depth, options, pretty),
-        .text => try escapeText(writer, node.value, options.escape_gt),
+        .element => try writeElement(
+            writer,
+            doc,
+            id,
+            depth,
+            options,
+            pretty,
+            version,
+        ),
+        .text => try escapeTextVersion(
+            writer,
+            node.value,
+            options.escape_gt,
+            version,
+        ),
         .comment => {
             if (pretty) try writeIndent(writer, depth, options.indent.?);
             try writeComment(writer, node.value);
@@ -83,6 +128,7 @@ fn writeElement(
     depth: usize,
     options: Options,
     pretty: bool,
+    version: chars.Version,
 ) Error!void {
     const node = doc.node(id);
     if (pretty) try writeIndent(writer, depth, options.indent.?);
@@ -93,7 +139,7 @@ fn writeElement(
         try writer.writeByte(' ');
         try writer.writeAll(attr.name);
         try writer.writeAll("=\"");
-        try escapeAttribute(writer, attr.value);
+        try escapeAttributeVersion(writer, attr.value, version);
         try writer.writeByte('"');
     }
 
@@ -115,7 +161,15 @@ fn writeElement(
         {
             continue;
         }
-        try writeNode(writer, doc, child, depth + 1, options, block);
+        try writeNode(
+            writer,
+            doc,
+            child,
+            depth + 1,
+            options,
+            block,
+            version,
+        );
         if (block and child_node.kind == .text) try writer.writeByte('\n');
     }
 
@@ -180,39 +234,157 @@ fn writePi(writer: *std.Io.Writer, target: []const u8, data: []const u8) Error!v
     try writer.writeAll("?>");
 }
 
-/// Escape character data.
+/// Escape XML 1.0 character data.
 pub fn escapeText(
     writer: *std.Io.Writer,
     text: []const u8,
     escape_gt: bool,
 ) Error!void {
-    if (chars.findInvalidXmlChar(text)) |_| return error.InvalidCharacter;
-    for (text) |byte| {
+    return escapeTextVersion(writer, text, escape_gt, .xml_1_0);
+}
+
+/// Escape character data for the given XML version.
+pub fn escapeTextVersion(
+    writer: *std.Io.Writer,
+    text: []const u8,
+    escape_gt: bool,
+    version: chars.Version,
+) Error!void {
+    if (chars.findInvalidLiteralCharVersion(text, version)) |bad| {
+        if (version == .xml_1_0) return error.InvalidCharacter;
+        // In XML 1.1 restricted characters are legal values but must be
+        // written as character references.
+        _ = bad;
+    }
+    var index: usize = 0;
+    while (index < text.len) {
+        const byte = text[index];
         switch (byte) {
-            '&' => try writer.writeAll("&amp;"),
-            '<' => try writer.writeAll("&lt;"),
-            '>' => if (escape_gt) try writer.writeAll("&gt;") else try writer.writeByte('>'),
-            '\r' => try writer.writeAll("&#13;"),
-            else => try writer.writeByte(byte),
+            '&' => {
+                try writer.writeAll("&amp;");
+                index += 1;
+            },
+            '<' => {
+                try writer.writeAll("&lt;");
+                index += 1;
+            },
+            '>' => {
+                try writer.writeAll(if (escape_gt) "&gt;" else ">");
+                index += 1;
+            },
+            '\r' => {
+                try writer.writeAll("&#13;");
+                index += 1;
+            },
+            '\n', '\t' => {
+                try writer.writeByte(byte);
+                index += 1;
+            },
+            else => {
+                if (byte < 0x80) {
+                    if (version == .xml_1_1 and chars.isRestrictedChar11(byte)) {
+                        try writer.print("&#x{X};", .{byte});
+                    } else {
+                        try writer.writeByte(byte);
+                    }
+                    index += 1;
+                    continue;
+                }
+                const length = std.unicode.utf8ByteSequenceLength(byte) catch
+                    return error.InvalidCharacter;
+                if (index + length > text.len) return error.InvalidCharacter;
+                const codepoint = std.unicode.utf8Decode(text[index..][0..length]) catch
+                    return error.InvalidCharacter;
+                if (!chars.isXmlCharVersion(codepoint, version)) {
+                    return error.InvalidCharacter;
+                }
+                if (version == .xml_1_1 and
+                    (chars.isRestrictedChar11(codepoint) or
+                        codepoint == 0x85 or codepoint == 0x2028))
+                {
+                    try writer.print("&#x{X};", .{codepoint});
+                } else {
+                    try writer.writeAll(text[index..][0..length]);
+                }
+                index += length;
+            },
         }
     }
 }
 
-/// Escape an attribute value using double quotes.
+/// Escape an XML 1.0 attribute value using double quotes.
 pub fn escapeAttribute(
     writer: *std.Io.Writer,
     value: []const u8,
 ) Error!void {
-    if (chars.findInvalidXmlChar(value)) |_| return error.InvalidCharacter;
-    for (value) |byte| {
+    return escapeAttributeVersion(writer, value, .xml_1_0);
+}
+
+/// Escape an attribute value for the given XML version.
+pub fn escapeAttributeVersion(
+    writer: *std.Io.Writer,
+    value: []const u8,
+    version: chars.Version,
+) Error!void {
+    if (version == .xml_1_0) {
+        if (chars.findInvalidXmlChar(value)) |_| return error.InvalidCharacter;
+    }
+    var index: usize = 0;
+    while (index < value.len) {
+        const byte = value[index];
         switch (byte) {
-            '&' => try writer.writeAll("&amp;"),
-            '<' => try writer.writeAll("&lt;"),
-            '"' => try writer.writeAll("&quot;"),
-            '\t' => try writer.writeAll("&#9;"),
-            '\n' => try writer.writeAll("&#10;"),
-            '\r' => try writer.writeAll("&#13;"),
-            else => try writer.writeByte(byte),
+            '&' => {
+                try writer.writeAll("&amp;");
+                index += 1;
+            },
+            '<' => {
+                try writer.writeAll("&lt;");
+                index += 1;
+            },
+            '"' => {
+                try writer.writeAll("&quot;");
+                index += 1;
+            },
+            '\t' => {
+                try writer.writeAll("&#9;");
+                index += 1;
+            },
+            '\n' => {
+                try writer.writeAll("&#10;");
+                index += 1;
+            },
+            '\r' => {
+                try writer.writeAll("&#13;");
+                index += 1;
+            },
+            else => {
+                if (byte < 0x80) {
+                    if (version == .xml_1_1 and chars.isRestrictedChar11(byte)) {
+                        try writer.print("&#x{X};", .{byte});
+                    } else {
+                        try writer.writeByte(byte);
+                    }
+                    index += 1;
+                    continue;
+                }
+                const length = std.unicode.utf8ByteSequenceLength(byte) catch
+                    return error.InvalidCharacter;
+                if (index + length > value.len) return error.InvalidCharacter;
+                const codepoint = std.unicode.utf8Decode(value[index..][0..length]) catch
+                    return error.InvalidCharacter;
+                if (!chars.isXmlCharVersion(codepoint, version)) {
+                    return error.InvalidCharacter;
+                }
+                if (version == .xml_1_1 and
+                    (chars.isRestrictedChar11(codepoint) or
+                        codepoint == 0x85 or codepoint == 0x2028))
+                {
+                    try writer.print("&#x{X};", .{codepoint});
+                } else {
+                    try writer.writeAll(value[index..][0..length]);
+                }
+                index += length;
+            },
         }
     }
 }
@@ -313,4 +485,29 @@ test "writer rejects invalid comment and PI payloads" {
         error.InvalidProcessingInstruction,
         writePi(&allocating.writer, "xml", "data"),
     );
+}
+
+test "writer preserves XML 1.1 restricted characters as references" {
+    const input = "<?xml version=\"1.1\"?><doc>&#x1;&#x85;</doc>";
+    var doc = try dom.Document.parse(testing.allocator, input, .{});
+    defer doc.deinit();
+
+    const output = try render(&doc, .{});
+    defer testing.allocator.free(output);
+    try testing.expect(std.mem.indexOf(u8, output, "version=\"1.1\"") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "&#x1;") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "&#x85;") != null);
+
+    var reparsed = try dom.Document.parse(testing.allocator, output, .{});
+    defer reparsed.deinit();
+    const original = try doc.textContentAlloc(testing.allocator, doc.root());
+    defer testing.allocator.free(original);
+    const round_tripped = try reparsed.textContentAlloc(
+        testing.allocator,
+        reparsed.root(),
+    );
+    defer testing.allocator.free(round_tripped);
+    try testing.expectEqualStrings(original, round_tripped);
+    try testing.expectEqual(@as(u8, 1), round_tripped[0]);
+    try testing.expectEqual(@as(u8, 0x85), round_tripped[round_tripped.len - 1]);
 }

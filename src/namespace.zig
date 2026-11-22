@@ -99,6 +99,8 @@ pub const Resolver = struct {
     marks: [max_depth]usize = undefined,
     default_marks: [max_depth][]const u8 = undefined,
     default_ns: []const u8 = "",
+    /// Namespaces 1.1 permits prefix undeclaration with an empty URI.
+    allow_undeclaration: bool = false,
     depth: usize = 0,
 
     pub fn reset(self: *Resolver) void {
@@ -136,13 +138,19 @@ pub const Resolver = struct {
                 };
                 if (std.mem.eql(u8, prefix, "xmlns")) return error.ReservedPrefix;
                 const uri = attr.value;
-                if (uri.len == 0) {
-                    // Namespaces in XML 1.0 does not allow prefix undeclaration.
-                    return error.InvalidNamespaceDeclaration;
-                }
                 if (std.mem.eql(u8, prefix, "xml")) {
                     if (!std.mem.eql(u8, uri, xml_uri)) return error.ReservedPrefix;
-                } else if (std.mem.eql(u8, uri, xml_uri) or
+                    try self.addBinding(prefix, uri);
+                    continue;
+                }
+                if (uri.len == 0) {
+                    if (!self.allow_undeclaration) {
+                        return error.InvalidNamespaceDeclaration;
+                    }
+                    try self.addBinding(prefix, "");
+                    continue;
+                }
+                if (std.mem.eql(u8, uri, xml_uri) or
                     std.mem.eql(u8, uri, xmlns_uri))
                 {
                     return error.ReservedPrefix;
@@ -166,6 +174,9 @@ pub const Resolver = struct {
         while (index > 0) {
             index -= 1;
             if (std.mem.eql(u8, self.bindings[index].prefix, prefix)) {
+                // Namespaces 1.1 prefix undeclaration leaves the prefix
+                // unbound rather than bound to the empty string.
+                if (self.bindings[index].uri.len == 0) return null;
                 return self.bindings[index].uri;
             }
         }

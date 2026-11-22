@@ -13,6 +13,8 @@ const Encoding = enum {
     utf32_le,
     utf32_be,
     windows_1251,
+    iso_8859_1,
+    windows_1252,
 };
 
 const Detection = struct {
@@ -34,6 +36,8 @@ pub fn decodeAlloc(
         .utf32_le => try decodeUtf32Alloc(allocator, payload, .little, max_output_bytes),
         .utf32_be => try decodeUtf32Alloc(allocator, payload, .big, max_output_bytes),
         .windows_1251 => try decodeWindows1251Alloc(allocator, payload, max_output_bytes),
+        .iso_8859_1 => try decodeLatin1Alloc(allocator, payload, max_output_bytes),
+        .windows_1252 => try decodeWindows1252Alloc(allocator, payload, max_output_bytes),
     };
     errdefer allocator.free(decoded);
     try validateDeclaredEncoding(decoded, detection.encoding);
@@ -120,6 +124,22 @@ fn detect(source: []const u8) !Detection {
         encodingNameEql(declared, "x-cp1251"))
     {
         return .{ .encoding = .windows_1251 };
+    }
+    if (encodingNameEql(declared, "iso-8859-1") or
+        encodingNameEql(declared, "iso_8859-1") or
+        encodingNameEql(declared, "latin1") or
+        encodingNameEql(declared, "latin-1") or
+        encodingNameEql(declared, "l1") or
+        encodingNameEql(declared, "cp819") or
+        encodingNameEql(declared, "ibm819"))
+    {
+        return .{ .encoding = .iso_8859_1 };
+    }
+    if (encodingNameEql(declared, "windows-1252") or
+        encodingNameEql(declared, "cp1252") or
+        encodingNameEql(declared, "x-cp1252"))
+    {
+        return .{ .encoding = .windows_1252 };
     }
     if (encodingNameEql(declared, "utf-16") or
         encodingNameEql(declared, "utf-16le") or
@@ -229,6 +249,16 @@ fn validateDeclaredEncoding(source: []const u8, actual: Encoding) !void {
         .windows_1251 => encodingNameEql(declared, "windows-1251") or
             encodingNameEql(declared, "cp1251") or
             encodingNameEql(declared, "x-cp1251"),
+        .iso_8859_1 => encodingNameEql(declared, "iso-8859-1") or
+            encodingNameEql(declared, "iso_8859-1") or
+            encodingNameEql(declared, "latin1") or
+            encodingNameEql(declared, "latin-1") or
+            encodingNameEql(declared, "l1") or
+            encodingNameEql(declared, "cp819") or
+            encodingNameEql(declared, "ibm819"),
+        .windows_1252 => encodingNameEql(declared, "windows-1252") or
+            encodingNameEql(declared, "cp1252") or
+            encodingNameEql(declared, "x-cp1252"),
     };
     if (!compatible) return error.InvalidXmlEncoding;
 }
@@ -332,6 +362,49 @@ fn decodeWindows1251Alloc(
     return output.toOwnedSlice(allocator);
 }
 
+fn decodeLatin1Alloc(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    max_output_bytes: usize,
+) ![]u8 {
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+    for (source) |byte| {
+        try appendCodepoint(
+            &output,
+            allocator,
+            @intCast(byte),
+            max_output_bytes,
+        );
+    }
+    return output.toOwnedSlice(allocator);
+}
+
+fn decodeWindows1252Alloc(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    max_output_bytes: usize,
+) ![]u8 {
+    var output: std.ArrayList(u8) = .empty;
+    errdefer output.deinit(allocator);
+    for (source) |byte| {
+        const codepoint: u21 = if (byte < 0x80 or byte >= 0xA0)
+            byte
+        else blk: {
+            const mapped = windows_1252[byte - 0x80];
+            if (mapped == 0) return error.InvalidXmlEncoding;
+            break :blk mapped;
+        };
+        try appendCodepoint(
+            &output,
+            allocator,
+            codepoint,
+            max_output_bytes,
+        );
+    }
+    return output.toOwnedSlice(allocator);
+}
+
 fn appendCodepoint(
     output: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -368,6 +441,13 @@ fn readU32(bytes: *const [4]u8, endian: std.builtin.Endian) u32 {
             @as(u32, bytes[3]),
     };
 }
+
+const windows_1252 = [32]u21{
+    0x20AC, 0x0000, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+    0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x0000, 0x017D, 0x0000,
+    0x0000, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x0000, 0x017E, 0x0178,
+};
 
 const windows_1251 = [128]u21{
     0x0402, 0x0403, 0x201A, 0x0453, 0x201E, 0x2026, 0x2020, 0x2021,
@@ -424,6 +504,26 @@ test "XML encoding decodes UTF-16 and UTF-32 byte orders" {
     );
     defer allocator.free(utf32_le);
     try std.testing.expectEqualStrings("<svg/>", utf32_le);
+}
+
+test "XML encoding decodes Latin-1 and Windows-1252 declarations" {
+    const allocator = std.testing.allocator;
+    const latin1 = try decodeAlloc(
+        allocator,
+        "<?xml version=\"1.1\" encoding=\"ISO-8859-1\"?><r>caf\xE9</r>",
+        1024,
+    );
+    defer allocator.free(latin1);
+    try std.testing.expect(std.mem.indexOf(u8, latin1, "café") != null);
+    try std.testing.expect(std.mem.indexOf(u8, latin1, "encoding=\"UTF-8\"") != null);
+
+    const cp1252 = try decodeAlloc(
+        allocator,
+        "<?xml version=\"1.0\" encoding=\"windows-1252\"?><r>\x80</r>",
+        1024,
+    );
+    defer allocator.free(cp1252);
+    try std.testing.expect(std.mem.indexOf(u8, cp1252, "€") != null);
 }
 
 test "XML encoding decodes Windows-1251 declarations" {

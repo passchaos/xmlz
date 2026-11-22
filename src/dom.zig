@@ -11,6 +11,7 @@
 //! are released by `deinit`.
 
 const std = @import("std");
+const chars = @import("chars.zig");
 const parser_mod = @import("parser.zig");
 const entities = @import("entities.zig");
 const namespace = @import("namespace.zig");
@@ -286,7 +287,11 @@ const Builder = struct {
                         self.currentParent(),
                         .{
                             .kind = .comment,
-                            .value = try normalizeLineEndings(self.allocator, data),
+                            .value = try normalizeLineEndings(
+                                self.allocator,
+                                data,
+                                self.parser.xmlVersion(),
+                            ),
                         },
                     );
                 },
@@ -297,7 +302,11 @@ const Builder = struct {
                         .{
                             .kind = .processing_instruction,
                             .name = pi.target,
-                            .value = try normalizeLineEndings(self.allocator, pi.data),
+                            .value = try normalizeLineEndings(
+                                self.allocator,
+                                pi.data,
+                                self.parser.xmlVersion(),
+                            ),
                         },
                     );
                 },
@@ -329,6 +338,7 @@ const Builder = struct {
                     self.parser.entityTable(),
                     .{},
                     .{
+                        .version = self.parser.xmlVersion(),
                         .preserve_undeclared = true,
                         .preserve_external = true,
                     },
@@ -377,7 +387,11 @@ const Builder = struct {
     ) Error!void {
         if (self.stack_len == 0) return;
         const decoded = if (literal)
-            try normalizeLineEndings(self.allocator, raw)
+            try normalizeLineEndings(
+                self.allocator,
+                raw,
+                self.parser.xmlVersion(),
+            )
         else
             try entities.decodeTextAlloc(
                 self.allocator,
@@ -385,6 +399,7 @@ const Builder = struct {
                 self.parser.entityTable(),
                 .{},
                 .{
+                    .version = self.parser.xmlVersion(),
                     .preserve_undeclared = true,
                     .preserve_external = true,
                 },
@@ -447,22 +462,45 @@ fn countStructural(input: []const u8) struct { lt: usize, eq: usize } {
 fn normalizeLineEndings(
     allocator: std.mem.Allocator,
     raw: []const u8,
+    version: chars.Version,
 ) Error![]const u8 {
-    if (std.mem.indexOfScalar(u8, raw, '\r') == null) return raw;
+    var needs_work = std.mem.indexOfScalar(u8, raw, '\r') != null;
+    if (!needs_work and version == .xml_1_1) {
+        needs_work = std.mem.indexOf(u8, raw, "\xC2\x85") != null or
+            std.mem.indexOf(u8, raw, "\xE2\x80\xA8") != null;
+    }
+    if (!needs_work) return raw;
+
     var out: std.ArrayList(u8) = .empty;
     var index: usize = 0;
     while (index < raw.len) {
-        if (raw[index] != '\r') {
-            try out.append(allocator, raw[index]);
-            index += 1;
+        const byte = raw[index];
+        if (byte == '\r') {
+            try out.append(allocator, '\n');
+            if (index + 1 < raw.len and raw[index + 1] == '\n') {
+                index += 2;
+            } else {
+                index += 1;
+            }
             continue;
         }
-        try out.append(allocator, '\n');
-        if (index + 1 < raw.len and raw[index + 1] == '\n') {
+        if (version == .xml_1_1 and byte == 0xC2 and
+            index + 1 < raw.len and raw[index + 1] == 0x85)
+        {
+            try out.append(allocator, '\n');
             index += 2;
-        } else {
-            index += 1;
+            continue;
         }
+        if (version == .xml_1_1 and byte == 0xE2 and
+            index + 2 < raw.len and raw[index + 1] == 0x80 and
+            raw[index + 2] == 0xA8)
+        {
+            try out.append(allocator, '\n');
+            index += 3;
+            continue;
+        }
+        try out.append(allocator, byte);
+        index += 1;
     }
     return out.toOwnedSlice(allocator);
 }

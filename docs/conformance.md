@@ -12,12 +12,12 @@ zig build conformance
 Expected summary:
 
 ```text
-W3C XML conformance: 2585 total, 1971 passed, 0 failed, 587 skipped (XML 1.1), 27 optional
-  entities=parameter: 169/169 passed (0 failed)
-  entities=unspecified: 516/516 passed (0 failed)
-  entities=both: 61/61 passed (0 failed)
-  entities=general: 17/17 passed (0 failed)
-  entities=none: 1208/1208 passed (0 failed)
+W3C XML conformance: 2585 total, 2240 passed, 0 failed, 313 skipped (edition 1-4 only), 32 optional
+  entities=parameter: 171/171 passed (0 failed)
+  entities=unspecified: 571/571 passed (0 failed)
+  entities=both: 62/62 passed (0 failed)
+  entities=general: 71/71 passed (0 failed)
+  entities=none: 1365/1365 passed (0 failed)
 ```
 
 ## Harness rules
@@ -31,13 +31,16 @@ W3C XML conformance: 2585 total, 1971 passed, 0 failed, 587 skipped (XML 1.1), 2
 
 Entries are skipped when any of the following applies:
 
-- the suite marks the test as XML 1.1 (`VERSION="1.1"` or an XML 1.1 profile),
 - the suite marks the test for XML 1.0 editions 1-4 only (`EDITION` without
-  `5`). xmlz implements the Fifth Edition character and name productions, so
+  `5`). xmlz implements the Fifth Edition productions, so those tests assert
+  the opposite verdict. xmlz implements the Fifth Edition character and name productions, so
   those tests assert the opposite verdict.
 
-Namespace tests run with `Parser.Options.namespaces = true`; all XML 1.0
-namespace tests pass. External subsets and external parsed entities are
+Namespace tests run with `Parser.Options.namespaces = true`. XML 1.1
+documents are detected from the declaration; the parser normalizes NEL/LS line
+ends, enforces restricted-character rules, and permits 1.0-version external
+entities inside 1.1 documents. All XML 1.0 (Fifth Edition), XML 1.1, and
+Namespaces 1.0/1.1 tests in the suite pass. External subsets and external parsed entities are
 resolved relative to the document under test. The harness supplies an allocator and a file resolver to
 the parser; the parser itself never touches the filesystem.
 

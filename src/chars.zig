@@ -29,12 +29,37 @@ pub inline fn isSpace(byte: u8) bool {
     return byte == ' ';
 }
 
+pub const Version = enum { xml_1_0, xml_1_1 };
+
 /// XML 1.0 `Char` production.
 pub inline fn isXmlChar(cp: u21) bool {
     return cp == 0x9 or cp == 0xA or cp == 0xD or
         (cp >= 0x20 and cp <= 0xD7FF) or
         (cp >= 0xE000 and cp <= 0xFFFD) or
         (cp >= 0x10000 and cp <= 0x10FFFF);
+}
+
+/// XML 1.1 `Char` production.
+pub inline fn isXmlChar11(cp: u21) bool {
+    return (cp >= 0x1 and cp <= 0xD7FF) or
+        (cp >= 0xE000 and cp <= 0xFFFD) or
+        (cp >= 0x10000 and cp <= 0x10FFFF);
+}
+
+pub inline fn isXmlCharVersion(cp: u21, version: Version) bool {
+    return switch (version) {
+        .xml_1_0 => isXmlChar(cp),
+        .xml_1_1 => isXmlChar11(cp),
+    };
+}
+
+/// XML 1.1 restricted characters. These are allowed in documents only as
+/// character references, not as literal characters.
+pub inline fn isRestrictedChar11(cp: u21) bool {
+    return switch (cp) {
+        0x1...0x8, 0xB, 0xC, 0xE...0x1F, 0x7F...0x84, 0x86...0x9F => true,
+        else => false,
+    };
 }
 
 /// XML 1.0 `NameStartChar` production.
@@ -295,14 +320,22 @@ pub fn scanNmtoken(bytes: []const u8) usize {
     return index;
 }
 
-/// Validate a run of character data: every byte sequence must decode to an
-/// XML `Char`. Returns the byte offset of the first violation.
-pub fn findInvalidXmlChar(bytes: []const u8) ?usize {
+/// Validate a run of literal character data. For XML 1.1 this rejects
+/// restricted characters, which are only permitted through character
+/// references.
+pub fn findInvalidLiteralCharVersion(
+    bytes: []const u8,
+    version: Version,
+) ?usize {
     var index: usize = 0;
     while (index < bytes.len) {
         const byte = bytes[index];
         if (byte < 0x80) {
-            if (byte == '\t' or byte == '\n' or byte == '\r' or byte >= 0x20) {
+            if (byte == '\t' or byte == '\n' or byte == '\r') {
+                index += 1;
+                continue;
+            }
+            if (byte >= 0x20 and !(version == .xml_1_1 and byte == 0x7F)) {
                 index += 1;
                 continue;
             }
@@ -311,15 +344,24 @@ pub fn findInvalidXmlChar(bytes: []const u8) ?usize {
         const len = codepointLength(bytes, index) catch return index;
         const cp = std.unicode.utf8Decode(bytes[index..][0..len]) catch
             return index;
-        if (!isXmlChar(cp)) return index;
+        if (!isXmlCharVersion(cp, version)) return index;
+        if (version == .xml_1_1 and isRestrictedChar11(cp)) return index;
         index += len;
     }
     return null;
 }
 
+/// Validate XML 1.0 literal character data.
+pub fn findInvalidXmlChar(bytes: []const u8) ?usize {
+    return findInvalidLiteralCharVersion(bytes, .xml_1_0);
+}
+
 /// Decode a decimal character reference body (`#123`). Returns null for an
 /// empty, malformed, or out-of-range value.
-pub fn parseDecimalCharRef(body: []const u8) ?u21 {
+pub fn parseDecimalCharRefVersion(
+    body: []const u8,
+    version: Version,
+) ?u21 {
     if (body.len == 0) return null;
     var value: u32 = 0;
     for (body) |byte| {
@@ -327,13 +369,20 @@ pub fn parseDecimalCharRef(body: []const u8) ?u21 {
         value = value * 10 + (byte - '0');
         if (value > 0x10FFFF) return null;
     }
-    if (!isXmlChar(@intCast(value))) return null;
+    if (!isXmlCharVersion(@intCast(value), version)) return null;
     return @intCast(value);
+}
+
+pub fn parseDecimalCharRef(body: []const u8) ?u21 {
+    return parseDecimalCharRefVersion(body, .xml_1_0);
 }
 
 /// Decode a hexadecimal character reference body (`#x1F600`). The `x` may be
 /// upper or lower case. Returns null for malformed or out-of-range values.
-pub fn parseHexCharRef(body: []const u8) ?u21 {
+pub fn parseHexCharRefVersion(
+    body: []const u8,
+    version: Version,
+) ?u21 {
     if (body.len < 2) return null;
     if (body[0] != 'x') return null;
     const digits = body[1..];
@@ -348,8 +397,12 @@ pub fn parseHexCharRef(body: []const u8) ?u21 {
         value = value * 16 + digit;
         if (value > 0x10FFFF) return null;
     }
-    if (!isXmlChar(@intCast(value))) return null;
+    if (!isXmlCharVersion(@intCast(value), version)) return null;
     return @intCast(value);
+}
+
+pub fn parseHexCharRef(body: []const u8) ?u21 {
+    return parseHexCharRefVersion(body, .xml_1_0);
 }
 
 /// Encode one code point into `buffer`, returning the used slice.
@@ -417,6 +470,20 @@ test "name scanner stops at the first invalid byte" {
     try std.testing.expectEqual(@as(usize, 6), scanName("a:b-c."));
     try std.testing.expectEqual(@as(usize, 3), scanName("é1"));
     try std.testing.expectEqual(@as(usize, 6), scanName("日本"));
+}
+
+test "XML 1.1 literal and reference character rules differ" {
+    try std.testing.expect(findInvalidLiteralCharVersion("a\x01b", .xml_1_0) != null);
+    try std.testing.expect(findInvalidLiteralCharVersion("a\x01b", .xml_1_1) != null);
+    try std.testing.expect(findInvalidLiteralCharVersion("a\x7Fb", .xml_1_0) == null);
+    try std.testing.expect(findInvalidLiteralCharVersion("a\x7Fb", .xml_1_1) != null);
+    // U+0085 is a line end in XML 1.1 and is not restricted.
+    try std.testing.expect(findInvalidLiteralCharVersion("\xC2\x85", .xml_1_1) == null);
+    // U+0086 is restricted.
+    try std.testing.expect(findInvalidLiteralCharVersion("\xC2\x86", .xml_1_1) != null);
+    try std.testing.expectEqual(@as(?u21, 1), parseDecimalCharRefVersion("1", .xml_1_1));
+    try std.testing.expect(parseDecimalCharRefVersion("1", .xml_1_0) == null);
+    try std.testing.expectEqual(@as(?u21, 0x85), parseHexCharRefVersion("x85", .xml_1_1));
 }
 
 test "character data validation rejects control and surrogate bytes" {

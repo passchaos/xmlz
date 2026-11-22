@@ -81,6 +81,8 @@ pub const Limits = struct {
 };
 
 pub const Options = struct {
+    /// Document character rules and line-ending set.
+    version: chars.Version = .xml_1_0,
     /// Preserve `&name;` literally when no declaration exists. Used by
     /// permissive parsing of real-world SVG exports.
     preserve_undeclared: bool = false,
@@ -128,34 +130,48 @@ const Expansion = struct {
         try self.out.append(self.allocator, byte);
     }
 
-    /// Append literal replacement text. In attribute context XML normalizes
-    /// whitespace characters in the literal text of the replacement.
+    /// Append literal replacement text, normalizing XML line endings and, in
+    /// attribute context, literal whitespace.
     fn appendLiteral(self: *Expansion, bytes: []const u8) DecodeError!void {
-        if (self.context == .text) {
-            var index: usize = 0;
-            var chunk_start: usize = 0;
-            while (index < bytes.len) : (index += 1) {
-                if (bytes[index] != '\r') continue;
-                if (index > chunk_start) try self.append(bytes[chunk_start..index]);
-                try self.appendByte('\n');
-                if (index + 1 < bytes.len and bytes[index + 1] == '\n') index += 1;
-                chunk_start = index + 1;
-            }
-            if (chunk_start < bytes.len) try self.append(bytes[chunk_start..]);
-            return;
-        }
-
+        const attribute = self.context == .attribute;
+        var index: usize = 0;
         var chunk_start: usize = 0;
-        for (bytes, 0..) |byte, index| {
-            const normalized: ?u8 = switch (byte) {
-                '\t', '\n', '\r' => ' ',
-                else => null,
-            };
-            if (normalized) |space| {
-                if (index > chunk_start) try self.append(bytes[chunk_start..index]);
-                try self.appendByte(space);
-                chunk_start = index + 1;
+        while (index < bytes.len) {
+            const byte = bytes[index];
+            var replacement: ?u8 = null;
+            var advance: usize = 1;
+
+            if (byte == '\r') {
+                replacement = if (attribute) ' ' else '\n';
+                if (index + 1 < bytes.len and bytes[index + 1] == '\n') {
+                    advance = 2;
+                }
+            } else if (byte == '\n' or byte == '\t') {
+                if (attribute) replacement = ' ';
+            } else if (self.options.version == .xml_1_1) {
+                if (byte == 0xC2 and index + 1 < bytes.len and
+                    bytes[index + 1] == 0x85)
+                {
+                    // U+0085 NEL is a line end in XML 1.1.
+                    replacement = if (attribute) ' ' else '\n';
+                    advance = 2;
+                } else if (byte == 0xE2 and index + 2 < bytes.len and
+                    bytes[index + 1] == 0x80 and bytes[index + 2] == 0xA8)
+                {
+                    // U+2028 LINE SEPARATOR is a line end in XML 1.1.
+                    replacement = if (attribute) ' ' else '\n';
+                    advance = 3;
+                }
             }
+
+            if (replacement) |value| {
+                if (index > chunk_start) try self.append(bytes[chunk_start..index]);
+                try self.appendByte(value);
+                index += advance;
+                chunk_start = index;
+                continue;
+            }
+            index += 1;
         }
         if (chunk_start < bytes.len) try self.append(bytes[chunk_start..]);
     }
@@ -180,10 +196,10 @@ const Expansion = struct {
     fn decodeReference(self: *Expansion, body: []const u8, depth: usize) DecodeError!void {
         if (body.len == 0) return error.InvalidEntityReference;
         if (body[0] == '#') {
-            const codepoint = if (body.len > 1 and (body[1] == 'x' or body[1] == 'X'))
-                chars.parseHexCharRef(body[1..])
+            const codepoint = if (body.len > 1 and body[1] == 'x')
+                chars.parseHexCharRefVersion(body[1..], self.options.version)
             else
-                chars.parseDecimalCharRef(body[1..]);
+                chars.parseDecimalCharRefVersion(body[1..], self.options.version);
             const cp = codepoint orelse return error.InvalidEntityReference;
             var buffer: [4]u8 = undefined;
             try self.append(chars.encodeUtf8(&buffer, cp));
@@ -230,6 +246,51 @@ const Expansion = struct {
     }
 };
 
+fn needsTextDecode(raw: []const u8, version: chars.Version) bool {
+    var index: usize = 0;
+    while (index < raw.len) : (index += 1) {
+        const byte = raw[index];
+        if (byte == '&' or byte == '\r') return true;
+        if (version == .xml_1_1) {
+            if (byte == 0xC2 and index + 1 < raw.len and raw[index + 1] == 0x85) {
+                return true;
+            }
+            if (byte == 0xE2 and index + 2 < raw.len and
+                raw[index + 1] == 0x80 and raw[index + 2] == 0xA8)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn needsAttributeDecode(raw: []const u8, version: chars.Version) bool {
+    var index: usize = 0;
+    while (index < raw.len) : (index += 1) {
+        const byte = raw[index];
+        switch (byte) {
+            '&', '\r', '\n', '\t' => return true,
+            0xC2 => {
+                if (version == .xml_1_1 and index + 1 < raw.len and
+                    raw[index + 1] == 0x85)
+                {
+                    return true;
+                }
+            },
+            0xE2 => {
+                if (version == .xml_1_1 and index + 2 < raw.len and
+                    raw[index + 1] == 0x80 and raw[index + 2] == 0xA8)
+                {
+                    return true;
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
 /// Decode character data: entity references are expanded and XML line endings
 /// are normalized to `\n`. Returns `raw` unchanged when no work is needed.
 pub fn decodeTextAlloc(
@@ -239,14 +300,7 @@ pub fn decodeTextAlloc(
     limits: Limits,
     options: Options,
 ) DecodeError![]const u8 {
-    var needs_work = false;
-    for (raw) |byte| {
-        if (byte == '&' or byte == '\r') {
-            needs_work = true;
-            break;
-        }
-    }
-    if (!needs_work) return raw;
+    if (!needsTextDecode(raw, options.version)) return raw;
     var expansion: Expansion = .{
         .allocator = allocator,
         .table = table,
@@ -269,17 +323,7 @@ pub fn decodeAttributeAlloc(
     limits: Limits,
     options: Options,
 ) DecodeError![]const u8 {
-    var needs_work = false;
-    for (raw) |byte| {
-        switch (byte) {
-            '&', '\r', '\n', '\t' => {
-                needs_work = true;
-                break;
-            },
-            else => {},
-        }
-    }
-    if (!needs_work) return raw;
+    if (!needsAttributeDecode(raw, options.version)) return raw;
     var expansion: Expansion = .{
         .allocator = allocator,
         .table = table,

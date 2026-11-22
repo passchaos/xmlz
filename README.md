@@ -22,15 +22,15 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **Entity expansion with limits.** Internal and external parsed entities are
   expanded inline as a content stream, with recursion detection, frame limits,
   and bounded output. Unparsed (`NDATA`) entities are rejected where required.
-- **Encoding normalization.** UTF-8, UTF-16 LE/BE, UTF-32 LE/BE, Windows-1251,
-  and BOM handling are provided before scanning. Declared encodings are
-  validated instead of silently ignored.
+- **Encoding normalization.** UTF-8, UTF-16 LE/BE, UTF-32 LE/BE, ISO-8859-1,
+  Windows-1251, Windows-1252, and BOM handling are provided before scanning.
+  Declared encodings are validated instead of silently ignored.
 - **Namespaces in XML 1.0.** QName validation, binding stacks, reserved
   prefixes, default-namespace rules, duplicate expanded attributes, and
   namespace-aware URI normalization are enforced at pull-parser level.
 - **W3C conformance evidence.** The repository ships the W3C XML conformance
-  suite and a harness. xmlz currently passes **1971/1971 applicable XML 1.0
-  and Namespaces 1.0 tests** (the remaining suite entries are XML 1.1; see
+  suite and a harness. xmlz passes **2240/2240 applicable tests** across
+  XML 1.0 (Fifth Edition), XML 1.1, and Namespaces 1.0/1.1 (see
   `docs/conformance.md`).
 - **DOM and writer.** The arena-backed DOM exposes resolved namespaces,
   decoded/normalized values, DTD attribute defaults, child traversal, and text
@@ -40,7 +40,7 @@ then exposes them through a pull parser and reusable lexical primitives.
   extracted from `zsvg` remain available and are used by the pull parser's
   fast paths.
 - **Measured performance.** On a 16 MiB SVG-like document the pull parser
-  reaches 751 MB/s (681 MB/s with namespaces), 4.9x faster than expat and 5.1x
+  reaches 738 MB/s (672 MB/s with namespaces), 4.8x faster than expat and 5.0x
   faster than libxml2's reader; see `docs/benchmarks.md`.
 
 ## Status
@@ -48,10 +48,10 @@ then exposes them through a pull parser and reusable lexical primitives.
 | Area | State |
 | --- | --- |
 | XML 1.0 core + DTD | Complete, W3C suite green |
-| Namespaces in XML | Complete, W3C suite green |
+| XML 1.1 | Complete, W3C suite green |
+| Namespaces 1.0 / 1.1 | Complete, W3C suite green |
 | DOM tree | Complete |
 | Writer/serializer | Complete |
-| XML 1.1 | Not implemented |
 | XPath / XSD / XSLT | Out of scope for the core engine |
 
 ## Quick start
@@ -97,6 +97,13 @@ defer parser.deinit();
 The resolver owns the returned bytes and must keep them valid for the parser's
 lifetime. Without a resolver, external references remain declared-but-opaque
 and external subsets are not read.
+
+## XML 1.1
+
+The parser detects `version="1.1"`, normalizes NEL and LINE SEPARATOR line
+ends, enforces XML 1.1 restricted-character rules, and allows earlier-version
+external entities inside a 1.1 document. The writer emits the document version
+and escapes restricted characters as numeric references.
 
 ## Security defaults
 

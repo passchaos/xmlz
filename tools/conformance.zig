@@ -150,9 +150,6 @@ fn runTest(
     entry: Entry,
     debug: bool,
 ) !Outcome {
-    if (entry.xml11 or std.mem.eql(u8, entry.version, "1.1")) {
-        return .{ .entry = entry, .result = .skipped };
-    }
     // The suite marks tests that only apply to XML 1.0 editions 1-4. xmlz
     // implements the Fifth Edition name/character productions.
     if (entry.edition.len != 0 and
@@ -317,7 +314,7 @@ fn report(gpa: std.mem.Allocator, outcomes: []const Outcome, verbose: bool) !voi
     }
 
     std.debug.print(
-        "\nW3C XML conformance: {d} total, {d} passed, {d} failed, {d} skipped (XML 1.1/namespace), {d} optional\n",
+        "\nW3C XML conformance: {d} total, {d} passed, {d} failed, {d} skipped (edition 1-4 only), {d} optional\n",
         .{ stats.total, stats.passed, stats.failed, stats.skipped, stats.optional },
     );
 

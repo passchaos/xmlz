@@ -18,23 +18,23 @@ libxml2.
 
 | Parser | Mode | MB/s | Peak RSS |
 | --- | --- | ---: | ---: |
-| xmlz | pull, no namespaces | 751.65 | 17 MiB |
-| xmlz | pull, namespaces | 681.38 | 17 MiB |
-| xmlz | DOM, namespaces | 268.05 | 107 MiB |
-| expat | SAX | 154.73 | 33 MiB |
-| libxml2 | reader | 132.67 | 340 MiB |
-| libxml2 | DOM | 70.21 | 340 MiB |
-| pugixml | DOM | 536.14 | 87 MiB |
+| xmlz | pull, no namespaces | 738.26 | 17 MiB |
+| xmlz | pull, namespaces | 672.49 | 17 MiB |
+| xmlz | DOM, namespaces | 271.42 | 108 MiB |
+| expat | SAX | 155.32 | 33 MiB |
+| libxml2 | reader | 134.09 | 340 MiB |
+| libxml2 | DOM | 95.01 | 340 MiB |
+| pugixml | DOM | 543.67 | 87 MiB |
 
 ## Interpretation
 
 - The pull parser is the apples-to-apples streaming comparison. xmlz is
-  **4.9x faster than expat** and **5.1x faster than libxml2's reader** while
-  performing full XML 1.0 and namespace well-formedness checking.
+  **4.8x faster than expat** and **5.0x faster than libxml2's reader** while
+  performing full XML 1.0/1.1 and namespace well-formedness checking.
 - The DOM is fully validating and namespace-aware. pugixml is faster but does
   not enforce every XML well-formedness and namespace constraint, and it uses
   in-situ mutation of the input buffer. xmlz's DOM still beats libxml2's DOM
-  by about **3.8x**.
+  by about **2.9x**.
 - xmlz's peak RSS includes the input buffer, the tree, decoded text, and
   namespace state. It is within roughly 25% of pugixml on this attribute-heavy
   document.
