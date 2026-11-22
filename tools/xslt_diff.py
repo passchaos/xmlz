@@ -630,6 +630,36 @@ STYLESHEETS = [
         {},
     ),
     (
+        "cdata-section-elements",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:p="urn:p">
+        <xsl:output method="xml" omit-xml-declaration="yes" cdata-section-elements="out p:a"/>
+        <xsl:template match="/"><out>a]]&gt;b<p:a>x&amp;y</p:a><b>plain</b></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "doctype-xml",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"
+          doctype-public="-//X//Y" doctype-system="urn:dtd"/>
+        <xsl:template match="/"><out><a/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "doctype-html",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"
+          doctype-public="-//W3C//DTD HTML 4.01//EN"
+          doctype-system="http://www.w3.org/TR/html4/strict.dtd"/>
+        <xsl:template match="/"><html><body><p>hi</p></body></html></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>
@@ -967,6 +997,15 @@ BUNDLES = [
 ]
 
 
+# Cases whose serialization is compared byte-for-byte instead of structurally:
+# CDATA sections and DOCTYPE declarations do not survive XML re-parsing.
+RAW_CASES = {
+    "cdata-section-elements",
+    "doctype-xml",
+    "doctype-html",
+}
+
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True)
 
@@ -1091,6 +1130,15 @@ def main():
                 encoding="unicode",
             )
             actual_text = actual.stdout.decode("utf-8", "replace")
+            if name in RAW_CASES:
+                if expected_xml != actual_text:
+                    failures += 1
+                    print(
+                        f"FAIL {name} (raw)\n"
+                        f"  libxslt: {expected_xml!r}\n"
+                        f"  xmlz:    {actual_text!r}"
+                    )
+                continue
             matched, reason = compare_xml(expected_xml, actual_text)
             if not matched:
                 failures += 1

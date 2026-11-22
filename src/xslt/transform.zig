@@ -43,7 +43,12 @@ pub const Result = struct {
             try writeTextNode(out, &self.document, self.document.documentNode());
             return;
         }
+        const doctype = self.outputDoctype();
         if (self.output.method == .html) {
+            if (doctype) |value| {
+                try writer_mod.writeDoctype(out, value);
+                try out.writeByte('\n');
+            }
             try writeHtmlNode(
                 out,
                 &self.document,
@@ -56,7 +61,24 @@ pub const Result = struct {
             .xml_declaration = self.output.method == .xml and
                 !self.output.omit_xml_declaration,
             .indent = if (self.output.indent) "  " else null,
+            .doctype = doctype,
+            .cdata_elements = self.output.cdata_elements,
         });
+    }
+
+    fn outputDoctype(self: *const Result) ?writer_mod.Doctype {
+        if (self.output.doctype_public == null and
+            self.output.doctype_system == null)
+        {
+            return null;
+        }
+        const root = self.document.root();
+        if (root == dom.null_node) return null;
+        return .{
+            .name = self.document.node(root).name,
+            .public_id = self.output.doctype_public,
+            .system_id = self.output.doctype_system,
+        };
     }
 
     pub fn toOwnedSlice(
@@ -268,6 +290,25 @@ const Runtime = struct {
             output.version = try self.allocator.dupe(u8, version);
         }
         output.encoding = try self.allocator.dupe(u8, output.encoding);
+        if (output.doctype_public) |value| {
+            output.doctype_public = try self.allocator.dupe(u8, value);
+        }
+        if (output.doctype_system) |value| {
+            output.doctype_system = try self.allocator.dupe(u8, value);
+        }
+        if (output.cdata_elements.len != 0) {
+            const names = try self.allocator.alloc(
+                writer_mod.ExpandedName,
+                output.cdata_elements.len,
+            );
+            for (output.cdata_elements, 0..) |name, index| {
+                names[index] = .{
+                    .uri = try self.allocator.dupe(u8, name.uri),
+                    .local = try self.allocator.dupe(u8, name.local),
+                };
+            }
+            output.cdata_elements = names;
+        }
         return output;
     }
 
@@ -1954,6 +1995,7 @@ const Runtime = struct {
         prefix: []const u8,
         uri: []const u8,
     ) Error!void {
+        if (self.namespaceDeclInScope(id, prefix, uri)) return;
         if (prefix.len == 0) {
             self.builder.setAttribute(id, "xmlns", uri) catch |err|
                 return mapBuilderError(err);
@@ -1966,6 +2008,33 @@ const Runtime = struct {
             self.builder.setAttribute(id, name, uri) catch |err|
                 return mapBuilderError(err);
         }
+    }
+
+    /// True when an ancestor already binds `prefix` to `uri`, so the result
+    /// element does not need to repeat the declaration.
+    fn namespaceDeclInScope(
+        self: *Runtime,
+        id: dom.NodeId,
+        prefix: []const u8,
+        uri: []const u8,
+    ) bool {
+        var current = self.builder.nodeAt(id).parent;
+        while (current != dom.null_node) {
+            const node = self.builder.nodeAt(current);
+            if (node.kind == .element) {
+                for (self.builder.attributesOf(current)) |attr| {
+                    const matches = if (prefix.len == 0)
+                        std.mem.eql(u8, attr.name, "xmlns")
+                    else
+                        attr.name.len == prefix.len + 6 and
+                            std.mem.startsWith(u8, attr.name, "xmlns:") and
+                            std.mem.eql(u8, attr.name[6..], prefix);
+                    if (matches) return std.mem.eql(u8, attr.value, uri);
+                }
+            }
+            current = node.parent;
+        }
+        return prefix.len == 0 and uri.len == 0;
     }
 
     fn copyFragment(

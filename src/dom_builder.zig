@@ -79,6 +79,11 @@ pub const Builder = struct {
         return &self.nodes.items[id];
     }
 
+    pub fn attributesOf(self: *const Builder, id: dom.NodeId) []const dom.Attribute {
+        if (id >= self.attr_lists.items.len) return &.{};
+        return self.attr_lists.items[id].items;
+    }
+
     pub fn createElement(self: *Builder, name: []const u8) Error!dom.NodeId {
         const owned = try self.dupe(name);
         const qname = namespace.splitQName(owned) catch return error.InvalidName;

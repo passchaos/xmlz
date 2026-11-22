@@ -76,9 +76,10 @@ defer result.deinit();
   `element-available()`, and `function-available()`. Generated ids are stable
   within a transformation and deterministic (`id1`, `id2`, ...).
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
-  `indent`, and `version`. HTML output uses HTML void elements, minimizes
-  common boolean attributes, and keeps `script`/`style` content raw. Result
-  serialization is always UTF-8.
+  `indent`, and `version`, `cdata-section-elements` (with `]]>` splitting),
+  and `doctype-public`/`doctype-system` for XML and HTML output. HTML output
+  uses HTML void elements, minimizes common boolean attributes, and keeps
+  `script`/`style` content raw. Result serialization is always UTF-8.
 - The XSLT `current()` function in expressions and predicates.
 
 Match patterns are translated into XPath selectors and evaluated once against
@@ -91,11 +92,9 @@ template priority its specified default behavior.
 - XPath node-set operations on result tree fragments (for example `$v/foo`
   or `count($v)`) are not supported; XSLT 1.0 requires an extension for those.
   Fragment markup is supported through `copy-of`.
-- `cdata-section-elements` and DOCTYPE output are not emitted, and
-  `xsl:output encoding` is recorded but not transcoded (the result is always
+- `xsl:output encoding` is recorded but not transcoded (the result is always
   UTF-8).
-- HTML output is compact, does not insert a Content-Type `meta` element, and
-  does not emit DOCTYPE declarations.
+- HTML output is compact and does not insert a Content-Type `meta` element.
 - `document()` and `unparsed-entity-uri()` are not available in expressions.
 - `function-available()` reports XSLT functions in the XSLT namespace as
   available, as required by XSLT 1.0; libxslt reports them as unavailable
@@ -113,5 +112,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-76/76 XSLT differential checks passed
+79/79 XSLT differential checks passed
 ```

@@ -12,6 +12,7 @@ const namespace = @import("../namespace.zig");
 const ast = @import("../xpath/ast.zig");
 const xpath_parser = @import("../xpath/parser.zig");
 const xpath_variable = @import("../xpath/value.zig");
+const writer_mod = @import("../writer.zig");
 
 pub const xsl_namespace = namespace.xsl_uri;
 
@@ -134,6 +135,9 @@ pub const Output = struct {
     indent: bool = false,
     version: ?[]const u8 = null,
     encoding: []const u8 = "UTF-8",
+    doctype_public: ?[]const u8 = null,
+    doctype_system: ?[]const u8 = null,
+    cdata_elements: []const writer_mod.ExpandedName = &.{},
 };
 
 pub const Stylesheet = struct {
@@ -914,6 +918,31 @@ const Compiler = struct {
         if (self.document.attribute(id, "encoding")) |value| {
             self.output.encoding = value;
         }
+        if (self.document.attribute(id, "doctype-public")) |value| {
+            self.output.doctype_public = value;
+        }
+        if (self.document.attribute(id, "doctype-system")) |value| {
+            self.output.doctype_system = value;
+        }
+        if (self.document.attribute(id, "cdata-section-elements")) |value| {
+            const bindings = try self.namespacesOf(id);
+            var names: std.ArrayList(writer_mod.ExpandedName) = .empty;
+            var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n");
+            while (tokens.next()) |token| {
+                const qname = namespace.splitQName(token) catch
+                    return error.InvalidStylesheet;
+                var uri: []const u8 = "";
+                if (qname.prefix.len != 0) {
+                    uri = resolvePrefixUri(bindings, qname.prefix) orelse
+                        return error.InvalidStylesheet;
+                }
+                try names.append(self.arena, .{
+                    .uri = uri,
+                    .local = qname.local,
+                });
+            }
+            self.output.cdata_elements = try names.toOwnedSlice(self.arena);
+        }
     }
 
     fn compileBody(
@@ -1552,6 +1581,17 @@ fn isWhitespaceOnly(value: []const u8) bool {
         }
     }
     return true;
+}
+
+fn resolvePrefixUri(
+    bindings: []const namespace.Binding,
+    prefix: []const u8,
+) ?[]const u8 {
+    if (std.mem.eql(u8, prefix, "xml")) return namespace.xml_uri;
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.prefix, prefix)) return binding.uri;
+    }
+    return null;
 }
 
 fn resolveAliasPrefix(

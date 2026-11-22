@@ -9,17 +9,34 @@ const std = @import("std");
 const chars = @import("chars.zig");
 const dom = @import("dom.zig");
 
+/// Explicit DOCTYPE declaration supplied by a caller such as the XSLT engine.
+pub const Doctype = struct {
+    name: []const u8,
+    public_id: ?[]const u8 = null,
+    system_id: ?[]const u8 = null,
+};
+
+/// Element expanded name used by `cdata_elements`.
+pub const ExpandedName = struct {
+    uri: []const u8,
+    local: []const u8,
+};
+
 pub const Options = struct {
     /// Emit an XML declaration at the start of the document.
     xml_declaration: bool = true,
     /// Emit the original DOCTYPE when one was parsed.
     emit_doctype: bool = false,
+    /// Emit an explicit DOCTYPE instead of the parsed one.
+    doctype: ?Doctype = null,
     /// Indentation unit. When non-null, block-structured elements are
     /// pretty-printed. Mixed-content elements stay inline to preserve text.
     indent: ?[]const u8 = null,
     /// Escape `>` as `&gt;` in character data. Escaping is always safe and
     /// avoids accidental `]]>` sequences.
     escape_gt: bool = true,
+    /// Elements whose text children are serialized as CDATA sections.
+    cdata_elements: []const ExpandedName = &.{},
 };
 
 pub const Error = std.Io.Writer.Error || error{
@@ -54,7 +71,10 @@ pub fn writeDocument(
         try writer.writeAll("?>");
         try writer.writeByte('\n');
     }
-    if (options.emit_doctype) {
+    if (options.doctype) |doctype| {
+        try writeDoctype(writer, doctype);
+        try writer.writeByte('\n');
+    } else if (options.emit_doctype) {
         if (doc.doctype) |doctype| {
             try writer.writeAll(doctype.raw);
             try writer.writeByte('\n');
@@ -79,6 +99,60 @@ fn documentVersion(doc: *const dom.Document) chars.Version {
         if (std.mem.eql(u8, declaration.version, "1.1")) return .xml_1_1;
     }
     return .xml_1_0;
+}
+
+/// Write an explicit DOCTYPE declaration.
+pub fn writeDoctype(writer: *std.Io.Writer, doctype: Doctype) Error!void {
+    try writer.writeAll("<!DOCTYPE ");
+    try writer.writeAll(doctype.name);
+    if (doctype.public_id) |public_id| {
+        try writer.writeAll(" PUBLIC \"");
+        try writer.writeAll(public_id);
+        try writer.writeByte('"');
+        if (doctype.system_id) |system_id| {
+            try writer.writeAll(" \"");
+            try writer.writeAll(system_id);
+            try writer.writeByte('"');
+        }
+    } else if (doctype.system_id) |system_id| {
+        try writer.writeAll(" SYSTEM \"");
+        try writer.writeAll(system_id);
+        try writer.writeByte('"');
+    }
+    try writer.writeByte('>');
+}
+
+fn isCdataElement(options: Options, node: *const dom.Node) bool {
+    for (options.cdata_elements) |name| {
+        if (std.mem.eql(u8, name.uri, node.ns) and
+            std.mem.eql(u8, name.local, node.local))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn writeCdata(
+    writer: *std.Io.Writer,
+    text: []const u8,
+    version: chars.Version,
+) Error!void {
+    if (chars.findInvalidLiteralCharVersion(text, version)) |_| {
+        if (version == .xml_1_0) return error.InvalidCharacter;
+        // Restricted characters cannot appear literally inside a CDATA
+        // section, so fall back to escaped character data.
+        return escapeTextVersion(writer, text, true, version);
+    }
+    try writer.writeAll("<![CDATA[");
+    var index: usize = 0;
+    while (std.mem.indexOfPos(u8, text, index, "]]>")) |match| {
+        try writer.writeAll(text[index .. match + 2]);
+        try writer.writeAll("]]><![CDATA[");
+        index = match + 2;
+    }
+    try writer.writeAll(text[index..]);
+    try writer.writeAll("]]>");
 }
 
 fn writeNode(
@@ -160,22 +234,29 @@ fn writeElement(
     if (block) try writer.writeByte('\n');
 
     var child = node.first_child;
+    const cdata = isCdataElement(options, node);
     while (child != dom.null_node) : (child = doc.node(child).next_sibling) {
         const child_node = doc.node(child);
+        const child_cdata = cdata and child_node.kind == .text and
+            !child_node.raw_text;
         if (block and child_node.kind == .text and
-            isWhitespaceOnly(child_node.value))
+            isWhitespaceOnly(child_node.value) and !child_cdata)
         {
             continue;
         }
-        try writeNode(
-            writer,
-            doc,
-            child,
-            depth + 1,
-            options,
-            block,
-            version,
-        );
+        if (child_cdata) {
+            try writeCdata(writer, child_node.value, version);
+        } else {
+            try writeNode(
+                writer,
+                doc,
+                child,
+                depth + 1,
+                options,
+                block,
+                version,
+            );
+        }
         if (block and child_node.kind == .text) try writer.writeByte('\n');
     }
 

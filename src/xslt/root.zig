@@ -1112,7 +1112,7 @@ test "XSLT namespace aliases rewrite literal elements and attributes" {
     defer testing.allocator.free(output);
     try testing.expectEqualStrings(
         "<out><xsl:template xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\" match=\"x\">" ++
-            "<xsl:text xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">hi</xsl:text>" ++
+            "<xsl:text>hi</xsl:text>" ++
             "</xsl:template></out>",
         output,
     );
@@ -1255,5 +1255,99 @@ test "XSLT system-property rejects an unbound prefix" {
     try testing.expectError(
         error.UndefinedPrefix,
         transformToString(stylesheet, "<root/>", .{}),
+    );
+}
+
+test "XSLT cdata-section-elements wraps text and splits terminators" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:p="urn:p">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"
+        \\    cdata-section-elements="out p:a"/>
+        \\  <xsl:template match="/"><out>a]]&gt;b<p:a>x&amp;y</p:a><b>plain</b></out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out xmlns:p=\"urn:p\"><![CDATA[a]]]]><![CDATA[>b]]>" ++
+            "<p:a><![CDATA[x&y]]></p:a><b>plain</b></out>",
+        output,
+    );
+}
+
+test "XSLT emits doctype-system and doctype-public" {
+    const system =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"
+        \\    doctype-system="urn:dtd"/>
+        \\  <xsl:template match="/"><out/></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const system_output = try transformToString(system, "<root/>", .{});
+    defer testing.allocator.free(system_output);
+    try testing.expectEqualStrings(
+        "<!DOCTYPE out SYSTEM \"urn:dtd\">\n<out/>",
+        system_output,
+    );
+
+    const public_system =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"
+        \\    doctype-public="-//X//Y" doctype-system="urn:dtd"/>
+        \\  <xsl:template match="/"><out/></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const public_system_output = try transformToString(
+        public_system,
+        "<root/>",
+        .{},
+    );
+    defer testing.allocator.free(public_system_output);
+    try testing.expectEqualStrings(
+        "<!DOCTYPE out PUBLIC \"-//X//Y\" \"urn:dtd\">\n<out/>",
+        public_system_output,
+    );
+
+    const public_only =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"
+        \\    doctype-public="-//X//Y"/>
+        \\  <xsl:template match="/"><out/></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const public_only_output = try transformToString(
+        public_only,
+        "<root/>",
+        .{},
+    );
+    defer testing.allocator.free(public_only_output);
+    try testing.expectEqualStrings(
+        "<!DOCTYPE out PUBLIC \"-//X//Y\">\n<out/>",
+        public_only_output,
+    );
+}
+
+test "XSLT emits an HTML doctype" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="html"
+        \\    doctype-public="-//W3C//DTD HTML 4.01//EN"
+        \\    doctype-system="http://www.w3.org/TR/html4/strict.dtd"/>
+        \\  <xsl:template match="/"><html><body><p>hi</p></body></html></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<!DOCTYPE html PUBLIC \"-//W3C//DTD HTML 4.01//EN\" " ++
+            "\"http://www.w3.org/TR/html4/strict.dtd\">\n" ++
+            "<html><body><p>hi</p></body></html>",
+        output,
     );
 }
