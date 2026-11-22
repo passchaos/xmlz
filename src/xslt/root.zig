@@ -1095,3 +1095,61 @@ test "XSLT result tree fragments support multiple nodes and globals" {
         output,
     );
 }
+
+test "XSLT namespace aliases rewrite literal elements and attributes" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:axsl="urn:alias">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:namespace-alias stylesheet-prefix="axsl" result-prefix="xsl"/>
+        \\  <xsl:template match="/"><out xsl:exclude-result-prefixes="axsl">
+        \\    <axsl:template match="x"><axsl:text>hi</axsl:text></axsl:template>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><xsl:template xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\" match=\"x\">" ++
+            "<xsl:text xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">hi</xsl:text>" ++
+            "</xsl:template></out>",
+        output,
+    );
+}
+
+test "XSLT namespace aliases rewrite attributes and custom namespaces" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:axsl="urn:alias" xmlns:res="urn:result">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:namespace-alias stylesheet-prefix="axsl" result-prefix="res"/>
+        \\  <xsl:template match="/"><out xsl:exclude-result-prefixes="axsl res">
+        \\    <axsl:item axsl:a="v"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><res:item xmlns:res=\"urn:result\" res:a=\"v\"/></out>",
+        output,
+    );
+}
+
+test "XSLT rejects duplicate namespace aliases" {
+    const stylesheet =
+        "<xsl:stylesheet version='1.0' " ++
+        "xmlns:xsl='http://www.w3.org/1999/XSL/Transform' " ++
+        "xmlns:a='urn:a' xmlns:b='urn:b'>" ++
+        "<xsl:namespace-alias stylesheet-prefix='a' result-prefix='b'/>" ++
+        "<xsl:namespace-alias stylesheet-prefix='a' result-prefix='b'/>" ++
+        "</xsl:stylesheet>";
+    var document = try parseDocument(stylesheet);
+    defer document.deinit();
+    try testing.expectError(
+        error.InvalidStylesheet,
+        parse(testing.allocator, &document),
+    );
+}

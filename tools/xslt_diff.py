@@ -549,6 +549,30 @@ STYLESHEETS = [
         {},
     ),
     (
+        "namespace-alias-basic",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:axsl="urn:alias">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:namespace-alias stylesheet-prefix="axsl" result-prefix="xsl"/>
+        <xsl:template match="/"><out xsl:exclude-result-prefixes="axsl">
+          <axsl:template match="x"><axsl:text>hi</axsl:text></axsl:template>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "namespace-alias-custom",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:axsl="urn:alias" xmlns:res="urn:result">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:namespace-alias stylesheet-prefix="axsl" result-prefix="res"/>
+        <xsl:template match="/"><out xsl:exclude-result-prefixes="axsl res">
+          <axsl:item axsl:a="v"/>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>

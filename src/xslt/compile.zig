@@ -84,6 +84,12 @@ pub const DecimalFormat = struct {
     pattern_separator: u21 = ';',
 };
 
+pub const NamespaceAlias = struct {
+    stylesheet_uri: []const u8,
+    result_uri: []const u8,
+    result_prefix: []const u8,
+};
+
 pub const SortKey = struct {
     select: ?CompiledExpr = null,
     data_type: enum { text, number } = .text,
@@ -138,6 +144,7 @@ pub const Stylesheet = struct {
     attribute_sets: []const AttributeSet = &.{},
     space_rules: []const SpaceRule = &.{},
     decimal_formats: []const DecimalFormat = &.{},
+    aliases: []const NamespaceAlias = &.{},
     output: Output = .{},
     documents: []const *dom.Document = &.{},
 
@@ -351,6 +358,7 @@ pub fn compileWithOptions(
         .decimal_formats = try compiler.decimal_formats.toOwnedSlice(
             compiler.arena,
         ),
+        .aliases = try compiler.aliases.toOwnedSlice(compiler.arena),
         .output = compiler.output,
         .documents = try compiler.included_documents.toOwnedSlice(
             compiler.arena,
@@ -369,6 +377,7 @@ const Compiler = struct {
     attribute_sets: std.ArrayList(AttributeSet) = .empty,
     space_rules: std.ArrayList(SpaceRule) = .empty,
     decimal_formats: std.ArrayList(DecimalFormat) = .empty,
+    aliases: std.ArrayList(NamespaceAlias) = .empty,
     output: Output = .{},
     order: usize = 0,
     next_precedence: usize = 0,
@@ -482,7 +491,7 @@ const Compiler = struct {
             } else if (std.mem.eql(u8, local, "decimal-format")) {
                 try self.compileDecimalFormat(child);
             } else if (std.mem.eql(u8, local, "namespace-alias")) {
-                return error.InvalidStylesheet;
+                try self.compileNamespaceAlias(child);
             }
         }
     }
@@ -720,6 +729,40 @@ const Compiler = struct {
             .namespace_uri = "",
             .local = token,
         };
+    }
+
+    fn compileNamespaceAlias(
+        self: *Compiler,
+        id: dom.NodeId,
+    ) Error!void {
+        const stylesheet_value = self.document.attribute(
+            id,
+            "stylesheet-prefix",
+        ) orelse return error.InvalidStylesheet;
+        const result_value = self.document.attribute(
+            id,
+            "result-prefix",
+        ) orelse return error.InvalidStylesheet;
+        const bindings = try self.namespacesOf(id);
+        const stylesheet = try resolveAliasPrefix(bindings, stylesheet_value);
+        const result = try resolveAliasPrefix(bindings, result_value);
+        for (self.aliases.items) |existing| {
+            if (std.mem.eql(u8, existing.stylesheet_uri, stylesheet.uri)) {
+                return error.InvalidStylesheet;
+            }
+        }
+        try self.aliases.append(self.arena, .{
+            .stylesheet_uri = stylesheet.uri,
+            .result_uri = result.uri,
+            .result_prefix = result.prefix,
+        });
+    }
+
+    fn findAlias(self: *Compiler, uri: []const u8) ?*const NamespaceAlias {
+        for (self.aliases.items) |*alias| {
+            if (std.mem.eql(u8, alias.stylesheet_uri, uri)) return alias;
+        }
+        return null;
     }
 
     fn compileDecimalFormat(self: *Compiler, id: dom.NodeId) Error!void {
@@ -1190,10 +1233,19 @@ const Compiler = struct {
         preserve: bool,
     ) Error!LiteralElement {
         const node = self.document.node(id);
+        const element_alias = self.findAlias(node.ns);
+        const element_prefix = if (element_alias) |alias|
+            alias.result_prefix
+        else
+            prefixOf(node);
+        const element_ns = if (element_alias) |alias|
+            alias.result_uri
+        else
+            node.ns;
         var element: LiteralElement = .{
-            .prefix = prefixOf(node),
+            .prefix = element_prefix,
             .local = node.local,
-            .ns = node.ns,
+            .ns = element_ns,
             .namespaces = &.{},
             .attributes = &.{},
             .body = &.{},
@@ -1204,33 +1256,62 @@ const Compiler = struct {
         const in_scope = try self.document.inScopeNamespaces(self.arena, id);
         for (in_scope) |binding| {
             if (std.mem.eql(u8, binding.prefix, "xml")) continue;
-            if (std.mem.eql(u8, binding.uri, xsl_namespace)) continue;
+            const alias = self.findAlias(binding.uri);
+            if (alias == null and
+                std.mem.eql(u8, binding.uri, xsl_namespace))
+            {
+                continue;
+            }
             if (isPrefixExcluded(excluded, binding.prefix)) continue;
-            try namespaces.append(self.arena, .{
-                .prefix = binding.prefix,
-                .uri = binding.uri,
-            });
+            if (alias) |found| {
+                try setNamespaceDecl(
+                    &namespaces,
+                    found.result_prefix,
+                    found.result_uri,
+                    self.arena,
+                );
+            } else {
+                try setNamespaceDecl(
+                    &namespaces,
+                    binding.prefix,
+                    binding.uri,
+                    self.arena,
+                );
+            }
         }
         // Prefixes used by the element name or its attributes must stay
         // declared even when excluded, or the result is not namespace
         // well-formed.
-        if (element.prefix.len != 0) {
-            try appendScopeNamespace(&namespaces, in_scope, element.prefix, self.arena);
-        } else if (element.ns.len != 0) {
-            try appendScopeNamespace(&namespaces, in_scope, "", self.arena);
+        if (element.ns.len != 0) {
+            try setNamespaceDecl(
+                &namespaces,
+                element.prefix,
+                element.ns,
+                self.arena,
+            );
         }
         for (self.document.attributesOf(id)) |attr| {
             if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
             if (attr.ns.len != 0 and std.mem.eql(u8, attr.ns, xsl_namespace)) {
                 continue;
             }
-            const attr_prefix = attr.prefixName();
-            if (attr_prefix.len == 0 or
+            const alias = self.findAlias(attr.ns);
+            const attr_ns = if (alias) |found| found.result_uri else attr.ns;
+            const attr_prefix = if (alias) |found|
+                found.result_prefix
+            else
+                attr.prefixName();
+            if (attr_ns.len == 0 or attr_prefix.len == 0 or
                 std.mem.eql(u8, attr_prefix, "xml"))
             {
                 continue;
             }
-            try appendScopeNamespace(&namespaces, in_scope, attr_prefix, self.arena);
+            try setNamespaceDecl(
+                &namespaces,
+                attr_prefix,
+                attr_ns,
+                self.arena,
+            );
         }
         element.namespaces = try namespaces.toOwnedSlice(self.arena);
 
@@ -1238,11 +1319,27 @@ const Compiler = struct {
         for (self.document.attributesOf(id)) |attr| {
             if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
             if (attr.ns.len != 0 and std.mem.eql(u8, attr.ns, xsl_namespace)) continue;
+            const alias = self.findAlias(attr.ns);
+            var attr_name = attr.name;
+            var attr_prefix = attr.prefixName();
+            var attr_ns = attr.ns;
+            if (alias) |found| {
+                attr_prefix = found.result_prefix;
+                attr_ns = found.result_uri;
+                attr_name = if (attr_prefix.len == 0)
+                    attr.localName()
+                else
+                    try std.fmt.allocPrint(
+                        self.arena,
+                        "{s}:{s}",
+                        .{ attr_prefix, attr.localName() },
+                    );
+            }
             try attributes.append(self.arena, .{
-                .name = attr.name,
-                .prefix = attr.prefixName(),
+                .name = attr_name,
+                .prefix = attr_prefix,
                 .local = attr.localName(),
-                .ns = attr.ns,
+                .ns = attr_ns,
                 .value = try self.compileAvt(id, attr.value),
             });
         }
@@ -1262,10 +1359,15 @@ const Compiler = struct {
         var out: std.ArrayList([]const u8) = .empty;
         var current = id;
         while (true) {
+            const current_is_xsl = std.mem.eql(
+                u8,
+                self.document.node(current).ns,
+                xsl_namespace,
+            );
             for (self.document.attributesOf(current)) |attr| {
-                if (attr.ns.len == 0 or
-                    !std.mem.eql(u8, attr.ns, xsl_namespace))
-                {
+                const namespaced = attr.ns.len != 0 and
+                    std.mem.eql(u8, attr.ns, xsl_namespace);
+                if (!namespaced and !(current_is_xsl and attr.ns.len == 0)) {
                     continue;
                 }
                 if (!std.mem.eql(u8, attr.localName(), "exclude-result-prefixes") and
@@ -1450,6 +1552,41 @@ fn isWhitespaceOnly(value: []const u8) bool {
         }
     }
     return true;
+}
+
+fn resolveAliasPrefix(
+    bindings: []const namespace.Binding,
+    value: []const u8,
+) Error!struct { uri: []const u8, prefix: []const u8 } {
+    if (std.mem.eql(u8, value, "#default")) {
+        for (bindings) |binding| {
+            if (binding.prefix.len == 0) {
+                return .{ .uri = binding.uri, .prefix = "" };
+            }
+        }
+        return .{ .uri = "", .prefix = "" };
+    }
+    for (bindings) |binding| {
+        if (std.mem.eql(u8, binding.prefix, value)) {
+            return .{ .uri = binding.uri, .prefix = value };
+        }
+    }
+    return error.InvalidStylesheet;
+}
+
+fn setNamespaceDecl(
+    namespaces: *std.ArrayList(NamespaceDecl),
+    prefix: []const u8,
+    uri: []const u8,
+    allocator: std.mem.Allocator,
+) Error!void {
+    for (namespaces.items) |*decl| {
+        if (std.mem.eql(u8, decl.prefix, prefix)) {
+            decl.uri = uri;
+            return;
+        }
+    }
+    try namespaces.append(allocator, .{ .prefix = prefix, .uri = uri });
 }
 
 fn singleCodepoint(value: []const u8) Error!u21 {

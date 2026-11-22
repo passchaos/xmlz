@@ -70,6 +70,8 @@ defer result.deinit();
 - Result tree fragments from `xsl:variable`/`xsl:param` bodies: `copy-of`
   copies fragment markup, and string/number/boolean conversions use the
   fragment text.
+- `xsl:namespace-alias` for literal result elements and attributes, including
+  result-prefix rewriting and namespace declarations.
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
   `indent`, and `version`. HTML output uses HTML void elements, minimizes
   common boolean attributes, and keeps `script`/`style` content raw. Result
@@ -83,7 +85,6 @@ template priority its specified default behavior.
 
 ## Limitations
 
-- `xsl:decimal-format` and `xsl:namespace-alias` are not implemented.
 - XPath node-set operations on result tree fragments (for example `$v/foo`
   or `count($v)`) are not supported; XSLT 1.0 requires an extension for those.
   Fragment markup is supported through `copy-of`.
@@ -108,5 +109,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-71/71 XSLT differential checks passed
+73/73 XSLT differential checks passed
 ```
