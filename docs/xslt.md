@@ -224,10 +224,11 @@ tree: about 10.8 ms per transform against 11.0 ms for libxslt through lxml
 The real-world DocBook HTML transform (`tests/docbook` from libxslt,
 `html/docbook.xsl` over `test/gdp-handbook.xml`, with the full 440 KiB
 DocBook 4.1.2 DTD loaded) produces output identical to the libxslt
-reference. A full single run takes about 47 ms, including parsing the
-source document with its 440 KiB DTD and compiling the 40-file stylesheet;
-a repeated in-process transform takes about 20 ms against 23.5 ms for
-libxslt through lxml (median of 30 runs on the same machine).
+reference. A full single run takes about 39 ms, including parsing the
+source document with its 440 KiB DTD and compiling the 40-file stylesheet
+(libxslt's parse+compile+transform is about 44 ms); a repeated in-process
+transform takes about 19 ms against 23.5 ms for libxslt through lxml
+(median of 30 runs on the same machine).
 
 The hot paths are designed for repeated transforms:
 
@@ -256,8 +257,8 @@ The hot paths are designed for repeated transforms:
 - DTD element and attribute declarations are indexed for duplicate checks,
   attribute defaults, and external entity expansion. Conditional-section
   and parameter-entity processing copies whole runs of bytes instead of
-  working byte by byte, and skips the per-byte boundary-id array when no
-  boundary markers are present.
+  working byte by byte, and tracks parameter-entity boundaries as compact
+  spans instead of a per-byte id array.
 - Documents that declare external parsed entities reserve node and
   attribute storage up front, so a tiny document that expands to tens of
   thousands of nodes does not regrow its DOM arrays repeatedly.
