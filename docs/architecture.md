@@ -128,6 +128,14 @@ computations are guarded for recursive grammars. Data and value patterns use
 the XML Schema datatype library with facet parameters; the empty datatype
 library exposes `string` and `token`.
 
+## Schematron
+
+`schematron` compiles ISO Schematron rules into XPath context patterns and
+assertion tests. Validation evaluates each active pattern's rules against the
+instance, binds schema/pattern/rule-level `let` variables, renders failure
+messages from text and `name`/`value-of` parts, and records failed assertions
+and successful reports separately. Phases select the active patterns.
+
 ## Trusted mode
 
 `Parser.Options.trusted = true` skips character, name, duplicate-attribute, and
@@ -154,5 +162,7 @@ by the conformance harness.
   `lxml`.
 - `zig build rng-compact-diff` validates compact-syntax schemas against
   equivalent XML-syntax twins using libxml2.
+- `zig build schematron-diff` compares Schematron validity with the ISO
+  Schematron skeleton through lxml.
 - `zig build bench` compares pull/DOM throughput against expat, pugixml, and
   libxml2 with reproducible generated input.

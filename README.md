@@ -74,6 +74,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   identity constraints, includes/imports/redefines, notation declarations,
   built-in datatypes, facets, abstract types, `block`/`final`, and
   `xsi:type` / `xsi:nil`, with 248/248 differential checks against libxml2.
+- **ISO Schematron.** `schematron.parse` compiles schemas and
+  `schematron.validate` evaluates rule contexts, assertions, reports, lets,
+  namespaces, and phases with the XPath engine, with 25/25 differential
+  checks against the ISO skeleton through lxml.
 - **RELAX NG.** `rng.parse` compiles XML-syntax grammars, `rng.parseCompact`
   parses the compact syntax (including `include`/`external`), and
   `rng.validate` checks instances against
@@ -115,6 +119,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | XSLT 1.0 | Core engine (templates, modes, params, sorting, copy, AVTs) |
 | XML Schema 1.0 | Core validation (structures, datatypes, facets, groups, identity) |
 | RELAX NG | XML and compact syntax (patterns, datatypes, includes, external refs) |
+| ISO Schematron | Core rules, assertions/reports, lets, namespaces, phases |
 
 ## Quick start
 
@@ -227,6 +232,7 @@ src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
 src/xslt/               XSLT 1.0 stylesheet compiler and transformer
 src/xsd/                XML Schema datatypes, regex, compiler, validator
 src/rng/                RELAX NG schema parser and validator
+src/schematron/         ISO Schematron compiler and validator
 src/namespace.zig       Namespaces in XML 1.0 resolver
 src/root.zig            public API surface
 tools/conformance.zig   W3C suite harness
@@ -254,6 +260,7 @@ zig build xsd-diff      # XML Schema differential checks vs libxml2 (needs lxml)
 zig build rng-diff      # RELAX NG differential checks vs libxml2 (needs lxml)
 zig build rng-compact-diff # RELAX NG compact syntax checks vs XML twins (needs lxml)
 zig build xinclude-diff # XInclude checks vs libxml2 xmllint
+zig build schematron-diff # ISO Schematron checks vs the ISO skeleton (needs lxml)
 zig build test          # includes deterministic mutation/fuzz smoke tests
 ```
 
