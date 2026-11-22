@@ -302,11 +302,19 @@ const Evaluator = struct {
         step: ast.Step,
     ) Error![]const value.NodeRef {
         var result: std.ArrayList(value.NodeRef) = .empty;
+        var axis_buffer: std.ArrayList(value.NodeRef) = .empty;
+        var matched: std.ArrayList(value.NodeRef) = .empty;
         const prefix_uri = try resolveNameTestPrefix(context, step.node_test);
         for (input) |node| {
-            const axis_nodes = try self.axisNodes(context, node, step.axis);
-            var matched: std.ArrayList(value.NodeRef) = .empty;
-            for (axis_nodes) |candidate| {
+            axis_buffer.clearRetainingCapacity();
+            try self.appendAxisNodes(
+                context,
+                node,
+                step.axis,
+                &axis_buffer,
+            );
+            matched.clearRetainingCapacity();
+            for (axis_buffer.items) |candidate| {
                 if (try self.matchesTest(
                     context,
                     candidate,
@@ -364,17 +372,17 @@ const Evaluator = struct {
         return current;
     }
 
-    fn axisNodes(
+    fn appendAxisNodes(
         self: *Evaluator,
         context: *const value.Context,
         node: value.NodeRef,
         axis: ast.Axis,
-    ) Error![]const value.NodeRef {
-        var out: std.ArrayList(value.NodeRef) = .empty;
+        out: *std.ArrayList(value.NodeRef),
+    ) Error!void {
         switch (axis) {
             .self_axis => try out.append(self.allocator, node),
-            .child => try self.appendChildren(context, node, &out),
-            .attribute => try self.appendAttributes(context, node, &out),
+            .child => try self.appendChildren(context, node, out),
+            .attribute => try self.appendAttributes(context, node, out),
             .parent => {
                 if (self.parentOf(context, node)) |parent| {
                     try out.append(self.allocator, parent);
@@ -395,26 +403,25 @@ const Evaluator = struct {
                     current = self.parentOf(context, parent);
                 }
             },
-            .descendant => try self.appendDescendants(context, node, &out),
+            .descendant => try self.appendDescendants(context, node, out),
             .descendant_or_self => {
                 try out.append(self.allocator, node);
-                try self.appendDescendants(context, node, &out);
+                try self.appendDescendants(context, node, out);
             },
             .following_sibling => try self.appendFollowingSiblings(
                 context,
                 node,
-                &out,
+                out,
             ),
             .preceding_sibling => try self.appendPrecedingSiblings(
                 context,
                 node,
-                &out,
+                out,
             ),
-            .following => try self.appendFollowing(context, node, &out),
-            .preceding => try self.appendPreceding(context, node, &out),
-            .namespace_axis => try self.appendNamespaces(context, node, &out),
+            .following => try self.appendFollowing(context, node, out),
+            .preceding => try self.appendPreceding(context, node, out),
+            .namespace_axis => try self.appendNamespaces(context, node, out),
         }
-        return out.toOwnedSlice(self.allocator);
     }
 
     fn appendChildren(
