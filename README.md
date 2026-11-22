@@ -73,9 +73,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,
   identity constraints, includes/imports/redefines, notation declarations,
-  built-in datatypes, facets, abstract types, `block`/`final`, and
-  `xsi:type` / `xsi:nil`, with 251/251 differential checks against libxml2
-  (including catalog-aware includes/imports).
+  built-in datatypes, facets, Unicode 15.0 regex categories and blocks,
+  abstract types, `block`/`final`, and `xsi:type` / `xsi:nil`, with 298/298
+  differential checks against libxml2 (including catalog-aware
+  includes/imports).
 - **OASIS XML Catalogs.** `catalog.parse` resolves system/public identifiers
   and URIs through exact entries, rewrites, suffixes, delegates,
   `nextCatalog`, `prefer`, and `xml:base`, with 17/17 differential checks

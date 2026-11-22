@@ -14,6 +14,15 @@ except ImportError:  # pragma: no cover
 
 XS = "http://www.w3.org/2001/XMLSchema"
 
+
+def pattern_schema(pattern):
+    return f"""<xs:schema xmlns:xs="{XS}">
+      <xs:element name="v"><xs:simpleType><xs:restriction base="xs:string">
+        <xs:pattern value="{pattern}"/>
+      </xs:restriction></xs:simpleType></xs:element>
+    </xs:schema>"""
+
+
 CASES = [
     (
         "sequence-attributes",
@@ -1309,6 +1318,137 @@ CASES = [
             "<root><group><key>A</key><ref>A</ref></group><group><key>B</key><ref>B</ref></group></root>",
             "<root><group><key>A</key><ref>A</ref></group><group><key>B</key><ref>A</ref></group></root>",
             "<root><group><key>A</key><ref>B</ref></group><group><key>B</key><ref>A</ref></group></root>",
+        ],
+    ),
+    (
+        "pattern-unicode-letters",
+        pattern_schema(r"\p{L}+"),
+        [
+            "<v>\u00e9</v>",
+            "<v>\u03b1</v>",
+            "<v>\u0416</v>",
+            "<v>\u05d0</v>",
+            "<v>\u0e01</v>",
+            "<v>\u3042</v>",
+            "<v>\U00010400</v>",
+            "<v>1</v>",
+            "<v>\u0661</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-case",
+        pattern_schema(r"\p{Lu}+"),
+        [
+            "<v>\u00c9</v>",
+            "<v>\u0391</v>",
+            "<v>\u00e9</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-lowercase",
+        pattern_schema(r"\p{Ll}+"),
+        [
+            "<v>\u00e9</v>",
+            "<v>\u00c9</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-numbers",
+        pattern_schema(r"\p{Nd}+"),
+        [
+            "<v>\u0661\u0662\u0663</v>",
+            "<v>123</v>",
+            "<v>\u2163</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-number-others",
+        pattern_schema(r"\p{N}+"),
+        [
+            "<v>\u2163</v>",
+            "<v>\u00bd</v>",
+            "<v>a</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-marks",
+        pattern_schema(r"\p{M}+"),
+        [
+            "<v>\u0301</v>",
+            "<v>\u20d0</v>",
+            "<v>a</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-punctuation",
+        pattern_schema(r"\p{P}+"),
+        [
+            "<v>\u2014</v>",
+            "<v>!</v>",
+            "<v>\u2026</v>",
+            "<v>a</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-separators",
+        pattern_schema(r"\p{Zs}+"),
+        [
+            "<v>\u00a0</v>",
+            "<v> </v>",
+            "<v>\u3000</v>",
+            "<v>a</v>",
+        ],
+    ),
+    (
+        "pattern-space-shorthand",
+        pattern_schema(r"\s+"),
+        [
+            "<v> </v>",
+            "<v>\t</v>",
+            "<v>\u00a0</v>",
+            "<v>\u2003</v>",
+        ],
+    ),
+    (
+        "pattern-word-shorthand",
+        pattern_schema(r"\w+"),
+        [
+            "<v>a\u00e9</v>",
+            "<v>a-b</v>",
+            "<v>a b</v>",
+            "<v>a\u00a0b</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-blocks",
+        pattern_schema(r"\p{IsBasicLatin}+"),
+        [
+            "<v>abc</v>",
+            "<v>\u00e9</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-greek-block",
+        pattern_schema(r"\p{IsGreek}+"),
+        [
+            "<v>\u03b1</v>",
+            "<v>a</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-hiragana-block",
+        pattern_schema(r"\p{IsHiragana}+"),
+        [
+            "<v>\u3042</v>",
+            "<v>a</v>",
+        ],
+    ),
+    (
+        "pattern-unicode-cjk-block",
+        pattern_schema(r"\p{IsCJKUnifiedIdeographs}+"),
+        [
+            "<v>\u4e2d</v>",
+            "<v>a</v>",
         ],
     ),
 ]

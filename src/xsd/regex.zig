@@ -2,14 +2,15 @@
 //!
 //! Implements the XSD pattern-facet syntax: branches, groups, character
 //! classes, ranges, `.`, the `\d \s \w \i \c` shorthand classes, `\p{...}`
-//! categories, and the `? * + {m,n}` quantifiers. Matching is a Thompson NFA
-//! simulation over Unicode code points and requires the whole value to match,
-//! as the pattern facet specifies. Unicode category coverage is approximate:
-//! common scripts and ranges are recognized rather than the complete Unicode
-//! general-category tables.
+//! categories and `\p{Is...}` blocks, and the `? * + {m,n}` quantifiers.
+//! Matching is a Thompson NFA simulation over Unicode code points and
+//! requires the whole value to match, as the pattern facet specifies.
+//! General categories and block ranges come from generated Unicode 15.0
+//! tables in `unicode_categories.zig`.
 
 const std = @import("std");
 const chars = @import("../chars.zig");
+const unicode = @import("unicode_categories.zig");
 
 pub const Error = error{ OutOfMemory, InvalidPattern };
 
@@ -427,7 +428,7 @@ const Parser = struct {
         if (self.index >= self.pattern.len) return error.InvalidPattern;
         const name = self.pattern[start..self.index];
         self.index += 1;
-        if (name.len == 0) return error.InvalidPattern;
+        if (!isKnownCategory(name)) return error.InvalidPattern;
         return .{
             .kind = .category,
             .category = try self.allocator.dupe(u8, name),
@@ -627,138 +628,133 @@ fn classItemMatches(item: ClassItem, codepoint: u21) bool {
     return if (item.negated) !positive else positive;
 }
 
+/// XSD `\d` is exactly `\p{Nd}`.
 fn isDigit(codepoint: u21) bool {
-    if (codepoint >= '0' and codepoint <= '9') return true;
-    return (codepoint >= 0x0660 and codepoint <= 0x0669) or
-        (codepoint >= 0x06F0 and codepoint <= 0x06F9) or
-        (codepoint >= 0x0966 and codepoint <= 0x096F) or
-        (codepoint >= 0xFF10 and codepoint <= 0xFF19);
+    return categoryOf(codepoint) == .nd;
 }
 
+/// XSD `\s` is exactly `[#x20\t\n\r]`, not the Unicode separator categories.
 fn isSpace(codepoint: u21) bool {
-    return codepoint == 0x09 or codepoint == 0x0A or codepoint == 0x0D or
-        codepoint == 0x20 or codepoint == 0x85 or codepoint == 0xA0 or
-        codepoint == 0x1680 or
-        (codepoint >= 0x2000 and codepoint <= 0x200A) or
-        codepoint == 0x2028 or codepoint == 0x2029 or
-        codepoint == 0x202F or codepoint == 0x205F or
-        codepoint == 0x3000;
+    return codepoint == 0x20 or codepoint == 0x09 or
+        codepoint == 0x0A or codepoint == 0x0D;
 }
 
-fn isLetter(codepoint: u21) bool {
-    if (codepoint < 0x80) return std.ascii.isAlphabetic(@intCast(codepoint));
-    return (codepoint >= 0x00C0 and codepoint <= 0x00FF and
-        codepoint != 0x00D7 and codepoint != 0x00F7) or
-        (codepoint >= 0x0100 and codepoint <= 0x024F) or
-        (codepoint >= 0x0370 and codepoint <= 0x03FF) or
-        (codepoint >= 0x0400 and codepoint <= 0x052F) or
-        (codepoint >= 0x0590 and codepoint <= 0x05FF) or
-        (codepoint >= 0x0600 and codepoint <= 0x06FF) or
-        (codepoint >= 0x0900 and codepoint <= 0x097F) or
-        (codepoint >= 0x3040 and codepoint <= 0x309F) or
-        (codepoint >= 0x30A0 and codepoint <= 0x30FF) or
-        (codepoint >= 0x4E00 and codepoint <= 0x9FFF) or
-        (codepoint >= 0xAC00 and codepoint <= 0xD7AF) or
-        (codepoint >= 0xF900 and codepoint <= 0xFAFF);
-}
-
-fn isPunctuation(codepoint: u21) bool {
-    if (codepoint < 0x80) {
-        return switch (codepoint) {
-            '!',
-            '"',
-            '#',
-            '%',
-            '&',
-            '\'',
-            '(',
-            ')',
-            '*',
-            ',',
-            '-',
-            '.',
-            '/',
-            ':',
-            ';',
-            '?',
-            '@',
-            '[',
-            '\\',
-            ']',
-            '_',
-            '{',
-            '}',
-            => true,
-            else => false,
-        };
-    }
-    return (codepoint >= 0x2000 and codepoint <= 0x206F) or
-        (codepoint >= 0x3001 and codepoint <= 0x303F) or
-        codepoint == 0x00A1 or codepoint == 0x00BF;
-}
-
-fn isSymbol(codepoint: u21) bool {
-    if (codepoint < 0x80) {
-        return switch (codepoint) {
-            '$', '+', '<', '=', '>', '^', '`', '|', '~' => true,
-            else => false,
-        };
-    }
-    return (codepoint >= 0x20A0 and codepoint <= 0x20CF) or
-        (codepoint >= 0x2100 and codepoint <= 0x214F) or
-        (codepoint >= 0x2190 and codepoint <= 0x2BFF);
-}
-
-fn isControl(codepoint: u21) bool {
-    return codepoint < 0x20 or
-        (codepoint >= 0x7F and codepoint <= 0x9F) or
-        (codepoint >= 0xE000 and codepoint <= 0xF8FF);
-}
-
-fn isMark(codepoint: u21) bool {
-    return (codepoint >= 0x0300 and codepoint <= 0x036F) or
-        (codepoint >= 0x1AB0 and codepoint <= 0x1AFF) or
-        (codepoint >= 0x1DC0 and codepoint <= 0x1DFF) or
-        (codepoint >= 0x20D0 and codepoint <= 0x20FF) or
-        (codepoint >= 0xFE20 and codepoint <= 0xFE2F);
-}
-
+/// XSD `\w` is `[#x0-#x10FFFF]-[\p{P}\p{Z}\p{C}]`.
 fn isWord(codepoint: u21) bool {
-    return !isPunctuation(codepoint) and !isSpace(codepoint) and
-        !isControl(codepoint);
+    return switch (categoryOf(codepoint)) {
+        .pc, .pd, .ps, .pe, .pi, .pf, .po => false,
+        .zs, .zl, .zp => false,
+        .cc, .cf, .co, .cs, .cn => false,
+        else => true,
+    };
+}
+
+fn categoryOf(codepoint: u21) unicode.Category {
+    var low: usize = 0;
+    var high: usize = unicode.ranges.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        const range = unicode.ranges[mid];
+        if (codepoint < range.start) {
+            high = mid;
+        } else if (codepoint > range.end) {
+            low = mid + 1;
+        } else {
+            return range.category;
+        }
+    }
+    return .cn;
+}
+
+const BlockRange = struct {
+    start: u21,
+    end: u21,
+};
+
+fn blockRange(name: []const u8) ?BlockRange {
+    var low: usize = 0;
+    var high: usize = unicode.blocks.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        const block = unicode.blocks[mid];
+        switch (std.mem.order(u8, block.name, name)) {
+            .lt => low = mid + 1,
+            .gt => high = mid,
+            .eq => return .{ .start = block.start, .end = block.end },
+        }
+    }
+    return null;
+}
+
+fn categoryCode(name: []const u8) ?unicode.Category {
+    const codes = std.StaticStringMap(unicode.Category).initComptime(.{
+        .{ "Lu", .lu }, .{ "Ll", .ll }, .{ "Lt", .lt },
+        .{ "Lm", .lm }, .{ "Lo", .lo }, .{ "Mn", .mn },
+        .{ "Mc", .mc }, .{ "Me", .me }, .{ "Nd", .nd },
+        .{ "Nl", .nl }, .{ "No", .no }, .{ "Pc", .pc },
+        .{ "Pd", .pd }, .{ "Ps", .ps }, .{ "Pe", .pe },
+        .{ "Pi", .pi }, .{ "Pf", .pf }, .{ "Po", .po },
+        .{ "Sm", .sm }, .{ "Sc", .sc }, .{ "Sk", .sk },
+        .{ "So", .so }, .{ "Zs", .zs }, .{ "Zl", .zl },
+        .{ "Zp", .zp }, .{ "Cc", .cc }, .{ "Cf", .cf },
+        .{ "Co", .co }, .{ "Cs", .cs }, .{ "Cn", .cn },
+    });
+    return codes.get(name);
+}
+
+fn groupMatches(name: []const u8, codepoint: u21) bool {
+    const category = categoryOf(codepoint);
+    return switch (name[0]) {
+        'L' => switch (category) {
+            .lu, .ll, .lt, .lm, .lo => true,
+            else => false,
+        },
+        'M' => switch (category) {
+            .mn, .mc, .me => true,
+            else => false,
+        },
+        'N' => switch (category) {
+            .nd, .nl, .no => true,
+            else => false,
+        },
+        'P' => switch (category) {
+            .pc, .pd, .ps, .pe, .pi, .pf, .po => true,
+            else => false,
+        },
+        'Z' => switch (category) {
+            .zs, .zl, .zp => true,
+            else => false,
+        },
+        'S' => switch (category) {
+            .sm, .sc, .sk, .so => true,
+            else => false,
+        },
+        'C' => switch (category) {
+            .cc, .cf, .co, .cs, .cn => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+fn isKnownCategory(name: []const u8) bool {
+    if (std.mem.startsWith(u8, name, "Is")) {
+        return blockRange(name["Is".len..]) != null;
+    }
+    if (name.len == 1) {
+        return std.mem.indexOfScalar(u8, "LMNPZSC", name[0]) != null;
+    }
+    return categoryCode(name) != null;
 }
 
 fn categoryMatches(name: []const u8, codepoint: u21) bool {
-    if (std.mem.eql(u8, name, "L") or
-        std.mem.eql(u8, name, "Lu") or
-        std.mem.eql(u8, name, "Ll") or
-        std.mem.eql(u8, name, "Lt") or
-        std.mem.eql(u8, name, "Lm") or
-        std.mem.eql(u8, name, "Lo"))
-    {
-        return isLetter(codepoint);
+    if (std.mem.startsWith(u8, name, "Is")) {
+        const range = blockRange(name["Is".len..]) orelse return false;
+        return codepoint >= range.start and codepoint <= range.end;
     }
-    if (std.mem.eql(u8, name, "N") or
-        std.mem.eql(u8, name, "Nd") or
-        std.mem.eql(u8, name, "Nl") or
-        std.mem.eql(u8, name, "No"))
-    {
-        return isDigit(codepoint);
-    }
-    if (std.mem.eql(u8, name, "Z") or
-        std.mem.eql(u8, name, "Zs") or
-        std.mem.eql(u8, name, "Zl") or
-        std.mem.eql(u8, name, "Zp"))
-    {
-        return isSpace(codepoint);
-    }
-    if (std.mem.eql(u8, name, "P")) return isPunctuation(codepoint);
-    if (std.mem.eql(u8, name, "S")) return isSymbol(codepoint);
-    if (std.mem.eql(u8, name, "C") or std.mem.eql(u8, name, "Cc")) {
-        return isControl(codepoint);
-    }
-    if (std.mem.eql(u8, name, "M")) return isMark(codepoint);
-    return false;
+    if (name.len == 1) return groupMatches(name, codepoint);
+    const code = categoryCode(name) orelse return false;
+    return categoryOf(codepoint) == code;
 }
 
 const testing = std.testing;
@@ -808,4 +804,49 @@ test "XSD regex rejects malformed patterns" {
     try testing.expectError(error.InvalidPattern, compile(testing.allocator, "[a"));
     try testing.expectError(error.InvalidPattern, compile(testing.allocator, "a{3,2}"));
     try testing.expectError(error.InvalidPattern, compile(testing.allocator, "a**"));
+}
+
+test "XSD regex Unicode general categories" {
+    try expectMatch("\\p{L}+", "\u{4E2D}", true);
+    try expectMatch("\\p{Lo}+", "\u{D55C}", true);
+    try expectMatch("\\p{L}+", "\u{03B1}\u{0416}\u{05D0}", true);
+    try expectMatch("\\p{Lu}+", "\u{00C9}", true);
+    try expectMatch("\\p{Lu}+", "\u{00E9}", false);
+    try expectMatch("\\p{Ll}+", "\u{00E9}", true);
+    try expectMatch("\\p{Nd}+", "\u{0661}\u{0662}\u{0663}", true);
+    try expectMatch("\\p{Nd}+", "\u{0967}\u{0968}", true);
+    try expectMatch("\\p{N}+", "\u{2163}", true);
+    try expectMatch("\\p{No}+", "\u{00BD}", true);
+    try expectMatch("\\p{Zs}+", "\u{00A0}", true);
+    try expectMatch("\\p{P}+", "\u{2014}", true);
+    try expectMatch("\\p{Sm}+", "\u{2211}", true);
+    try expectMatch("\\P{L}+", "\u{4E2D}", false);
+}
+
+test "XSD regex Unicode blocks" {
+    try expectMatch("\\p{IsBasicLatin}+", "abc", true);
+    try expectMatch("\\p{IsBasicLatin}+", "\u{00E9}", false);
+    try expectMatch("\\p{IsGreekandCoptic}+", "\u{03B1}", true);
+    try expectMatch("\\p{IsGreek}+", "\u{03B1}", true);
+    try expectMatch("\\p{IsHiragana}+", "\u{3042}", true);
+    try expectMatch("\\p{IsCJKUnifiedIdeographs}+", "\u{4E2D}", true);
+    try expectMatch("\\p{IsCJKUnifiedIdeographs}+", "a", false);
+}
+
+test "XSD regex shorthand classes follow the specification" {
+    try expectMatch("\\s+", " \t\n\r", true);
+    try expectMatch("\\s+", "\u{00A0}", false);
+    try expectMatch("\\d+", "\u{0661}\u{0662}", true);
+    try expectMatch("\\d+", "\u{2163}", false);
+    try expectMatch("\\w+", "a1", true);
+    try expectMatch("\\w+", "a-b", false);
+    try expectMatch("\\w+", "a\u{00A0}b", false);
+    try expectMatch("\\w+", "\u{4E2D}\u{6587}", true);
+}
+
+test "XSD regex rejects unknown categories and blocks" {
+    try testing.expectError(error.InvalidPattern, compile(testing.allocator, "\\p{Foo}"));
+    try testing.expectError(error.InvalidPattern, compile(testing.allocator, "\\p{lu}"));
+    try testing.expectError(error.InvalidPattern, compile(testing.allocator, "\\p{IsFoo}"));
+    try testing.expectError(error.InvalidPattern, compile(testing.allocator, "\\p{}"));
 }

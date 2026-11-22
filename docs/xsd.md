@@ -62,13 +62,20 @@ for (result.errors) |validation_error| {
 - Instance `xsi:type` (type substitution) with derivation validity and
   `block` enforcement, abstract type rejection, and `xsi:nil`.
 - XML Schema regular expressions: branches, groups, classes, ranges,
-  `\d \s \w \i \c`, `\p{...}` categories, and quantifiers.
+  `\d \s \w \i \c`, `\p{...}` categories and `\p{Is...}` blocks, and
+  quantifiers. Categories and blocks come from generated Unicode 15.0 tables;
+  unknown names are rejected at schema compile time. `\s` is exactly
+  `[#x20\t\n\r]`, `\d` is `\p{Nd}`, and `\w` is everything outside
+  `\p{P}`, `\p{Z}`, and `\p{C}`.
 - Duration facets use the XML Schema partial order; incomparable values (such
   as `P1M` and `P30D`) fail relational facets.
 
 ## Limitations
 
-- Unicode category coverage in `\p{...}` is approximate for non-ASCII scripts.
+- libxml2 2.9.14's `\p{...}` category lookup only recognizes the first
+  codepoint of large CJK and Hangul ranges; xmlz follows the Unicode data.
+  Differential regex cases therefore cover scripts where libxml2 agrees, and
+  CJK/Hangul categories are covered by unit tests.
 - Validation does not inject default attribute values into the instance.
 - Schema component validity checking is intentionally partial; malformed
   schemas are rejected, but not every XSD constraint on schema documents is
@@ -83,11 +90,11 @@ zig build xsd-diff
 The step compiles schemas and validates valid/invalid instances with both xmlz
 and libxml2 through Python `lxml`, covering particles, occurrence ranges,
 attributes, simple content, extension/restriction, namespaces, wildcards,
-`xsi:type`, `xsi:nil`, built-in datatypes, facets, and catalog-resolved
-includes/imports. Expected output:
+`xsi:type`, `xsi:nil`, built-in datatypes, facets, Unicode categories and
+blocks, and catalog-resolved includes/imports. Expected output:
 
 ```text
-251/251 XSD differential checks passed
+298/298 XSD differential checks passed
 ```
 
 The `xsd` command accepts `--catalog=FILE`; `xs:include`, `xs:import`, and
