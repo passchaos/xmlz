@@ -108,7 +108,7 @@ const Validator = struct {
             try self.addError(id, "abstract element must be substituted");
         }
         try self.recorded.append(self.allocator, .{ .id = id, .decl = decl });
-        const effective = try self.effectiveType(id, decl.type_info);
+        const effective = try self.effectiveType(id, decl);
         const nil = try self.nilValue(id);
         if (nil) {
             if (!decl.nillable) {
@@ -356,41 +356,70 @@ const Validator = struct {
     fn effectiveType(
         self: *Validator,
         id: dom.NodeId,
-        declared: schema.TypeInfo,
+        decl: *const schema.ElementDecl,
     ) Error!schema.TypeInfo {
+        const declared = decl.type_info;
         const raw = self.document.attributeNs(
             id,
             schema.xsi_namespace,
             "type",
-        ) orelse return declared;
+        ) orelse {
+            if (schema.typeAbstract(declared)) {
+                try self.addError(id, "element uses an abstract type");
+            }
+            return declared;
+        };
         const qname = (try self.resolveInstanceQName(id, raw)) orelse {
             try self.addError(id, "xsi:type is not a valid QName");
             return declared;
         };
+        var named: schema.TypeInfo = undefined;
         if (std.mem.eql(u8, qname.namespace_uri, schema.xsd_namespace)) {
-            if (std.mem.eql(u8, qname.local, "anyType")) return .any_type;
-            if (std.mem.eql(u8, qname.local, "anySimpleType")) {
-                return .any_simple;
-            }
-            if (datatypes.builtin(qname.local)) |builtin| {
+            if (std.mem.eql(u8, qname.local, "anyType")) {
+                named = .any_type;
+            } else if (std.mem.eql(u8, qname.local, "anySimpleType")) {
+                named = .any_simple;
+            } else if (datatypes.builtin(qname.local)) |builtin| {
                 const info = try self.allocator.create(schema.SimpleInfo);
                 info.* = .{ .kind = builtin.kind };
-                return .{ .simple = info };
+                named = .{ .simple = info };
+            } else {
+                try self.addError(id, "unknown built-in type in xsi:type");
+                return declared;
             }
-            try self.addError(id, "unknown built-in type in xsi:type");
+        } else {
+            const type_decl = self.schema.findType(
+                qname.namespace_uri,
+                qname.local,
+            ) orelse {
+                try self.addError(id, "xsi:type does not name a declared type");
+                return declared;
+            };
+            named = type_decl.info orelse {
+                try self.addError(id, "xsi:type names an unresolved type");
+                return declared;
+            };
+        }
+        if (schema.typeAbstract(named)) {
+            try self.addError(id, "xsi:type names an abstract type");
             return declared;
         }
-        const type_decl = self.schema.findType(
-            qname.namespace_uri,
-            qname.local,
-        ) orelse {
-            try self.addError(id, "xsi:type does not name a declared type");
+        if (!schema.isDerivedFrom(named, declared)) {
+            try self.addError(
+                id,
+                "xsi:type is not derived from the declared type",
+            );
             return declared;
-        };
-        return type_decl.info orelse {
-            try self.addError(id, "xsi:type names an unresolved type");
+        }
+        const methods = schema.derivationMethods(named, declared);
+        const blocked = decl.block.merge(schema.typeBlock(declared));
+        if (methods.extension and blocked.extension or
+            methods.restriction and blocked.restriction)
+        {
+            try self.addError(id, "xsi:type uses a blocked derivation");
             return declared;
-        };
+        }
+        return named;
     }
 
     fn resolveInstanceQName(
@@ -900,6 +929,10 @@ const Matcher = struct {
                     std.mem.eql(u8, child.ns, element.decl.namespace_uri);
                 if (!direct_match) {
                     if (!element.decl.global) return null;
+                    const blocked = element.decl.block.merge(
+                        schema.typeBlock(element.decl.type_info),
+                    );
+                    if (blocked.substitution) return null;
                     const candidate = self.validator.schema.findElement(
                         child.ns,
                         child.local,
@@ -908,6 +941,23 @@ const Matcher = struct {
                         candidate,
                         element.decl,
                     )) {
+                        return null;
+                    }
+                    if (!schema.isDerivedFrom(
+                        candidate.type_info,
+                        element.decl.type_info,
+                    )) {
+                        return null;
+                    }
+                    const methods = schema.derivationMethods(
+                        candidate.type_info,
+                        element.decl.type_info,
+                    );
+                    if (methods.extension and
+                        (blocked.extension or element.decl.final.extension) or
+                        methods.restriction and
+                            (blocked.restriction or element.decl.final.restriction))
+                    {
                         return null;
                     }
                     actual = candidate;

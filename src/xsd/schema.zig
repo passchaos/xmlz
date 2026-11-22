@@ -43,6 +43,10 @@ pub const SimpleInfo = struct {
     facets: datatypes.Facets = .{},
     item: ?*const SimpleInfo = null,
     members: []const *const SimpleInfo = &.{},
+    /// Type declaration this info was compiled from, when named or anonymous.
+    decl: ?*const TypeDecl = null,
+    /// Immediate base type for restrictions.
+    base: ?TypeInfo = null,
 };
 
 pub const ComplexInfo = struct {
@@ -51,6 +55,36 @@ pub const ComplexInfo = struct {
     particle: ?*const Particle = null,
     attributes: []const AttributeUse = &.{},
     any_attribute: ?Wildcard = null,
+    /// Type declaration this info was compiled from, when named or anonymous.
+    decl: ?*const TypeDecl = null,
+    /// Immediate base type for extension or restriction.
+    base: ?TypeInfo = null,
+    derivation: enum { none, extension, restriction } = .none,
+    abstract: bool = false,
+};
+
+pub const DerivationMethod = enum { extension, restriction, substitution };
+
+pub const DerivationSet = struct {
+    extension: bool = false,
+    restriction: bool = false,
+    substitution: bool = false,
+
+    pub fn has(self: DerivationSet, method: DerivationMethod) bool {
+        return switch (method) {
+            .extension => self.extension,
+            .restriction => self.restriction,
+            .substitution => self.substitution,
+        };
+    }
+
+    pub fn merge(self: DerivationSet, other: DerivationSet) DerivationSet {
+        return .{
+            .extension = self.extension or other.extension,
+            .restriction = self.restriction or other.restriction,
+            .substitution = self.substitution or other.substitution,
+        };
+    }
 };
 
 pub const NamespaceRule = enum { any, other, target_namespace, local };
@@ -113,6 +147,10 @@ pub const ElementDecl = struct {
     global: bool = false,
     substitution_qname: ?QName = null,
     substitution_group: ?*const ElementDecl = null,
+    /// Disallowed substitutions for this element declaration.
+    block: DerivationSet = .{},
+    /// Substitution group exclusions for this element declaration.
+    final: DerivationSet = .{},
     identity: []const *const IdentityConstraint = &.{},
     doc: ?*const SchemaDocument = null,
     node: dom.NodeId = dom.null_node,
@@ -218,6 +256,12 @@ pub const TypeDecl = struct {
     name: []const u8 = "",
     namespace_uri: []const u8 = "",
     global: bool = false,
+    /// Complex types marked abstract require an `xsi:type` substitution.
+    abstract: bool = false,
+    /// Disallowed derivations for elements using this type.
+    block: DerivationSet = .{},
+    /// Derivations prohibited from this type.
+    final: DerivationSet = .{},
     body: union(enum) {
         simple: SimpleDecl,
         complex: ComplexDecl,
@@ -351,6 +395,152 @@ pub const Schema = struct {
         return false;
     }
 };
+
+pub fn typeInfoEqual(a: TypeInfo, b: TypeInfo) bool {
+    return switch (a) {
+        .any_type => switch (b) {
+            .any_type => true,
+            else => false,
+        },
+        .any_simple => switch (b) {
+            .any_simple => true,
+            else => false,
+        },
+        .simple => |sa| switch (b) {
+            .simple => |sb| blk: {
+                if (sa == sb) break :blk true;
+                if (sa.decl != null or sb.decl != null) {
+                    break :blk sa.decl != null and sb.decl != null and
+                        sa.decl == sb.decl;
+                }
+                break :blk sa.variety == sb.variety and sa.kind == sb.kind and
+                    sa.item == sb.item and
+                    sa.members.len == sb.members.len;
+            },
+            else => false,
+        },
+        .complex => |ca| switch (b) {
+            .complex => |cb| blk: {
+                if (ca == cb) break :blk true;
+                break :blk ca.decl != null and cb.decl != null and
+                    ca.decl == cb.decl;
+            },
+            else => false,
+        },
+    };
+}
+
+fn builtinDerivesFrom(derived: datatypes.Kind, base: datatypes.Kind) bool {
+    var kind = derived;
+    var steps: usize = 0;
+    while (datatypes.baseKind(kind)) |parent| {
+        if (parent == base) return true;
+        kind = parent;
+        steps += 1;
+        if (steps > 64) break;
+    }
+    return false;
+}
+
+/// True when `derived` is the same type as `base` or validly derived from it.
+pub fn isDerivedFrom(derived: TypeInfo, base: TypeInfo) bool {
+    if (typeInfoEqual(derived, base)) return true;
+    return switch (base) {
+        .any_type => true,
+        .any_simple => switch (derived) {
+            .simple, .any_simple => true,
+            else => false,
+        },
+        .simple => |base_simple| switch (derived) {
+            .simple => |simple| blk: {
+                if (simple.base) |parent| {
+                    break :blk isDerivedFrom(parent, base);
+                }
+                if (simple.decl == null and base_simple.decl == null) {
+                    break :blk builtinDerivesFrom(simple.kind, base_simple.kind);
+                }
+                break :blk false;
+            },
+            else => false,
+        },
+        .complex => |base_complex| switch (derived) {
+            .complex => |complex| blk: {
+                if (complex.base) |parent| {
+                    break :blk isDerivedFrom(parent, base);
+                }
+                break :blk complex == base_complex;
+            },
+            else => false,
+        },
+    };
+}
+
+/// Derivation methods used along the chain from `derived` up to `base`.
+pub fn derivationMethods(derived: TypeInfo, base: TypeInfo) DerivationSet {
+    var methods: DerivationSet = .{};
+    var current = derived;
+    var steps: usize = 0;
+    while (steps < 1024) : (steps += 1) {
+        if (typeInfoEqual(current, base)) return methods;
+        switch (current) {
+            .simple => |simple| {
+                if (simple.base) |parent| {
+                    methods.restriction = true;
+                    current = parent;
+                    continue;
+                }
+                if (base == .simple) {
+                    if (simple.decl == null and base.simple.decl == null) {
+                        var kind = simple.kind;
+                        while (datatypes.baseKind(kind)) |parent_kind| {
+                            methods.restriction = true;
+                            if (parent_kind == base.simple.kind) return methods;
+                            kind = parent_kind;
+                        }
+                    }
+                }
+                return methods;
+            },
+            .complex => |complex| {
+                if (complex.base) |parent| {
+                    switch (complex.derivation) {
+                        .extension => methods.extension = true,
+                        .restriction => methods.restriction = true,
+                        .none => {},
+                    }
+                    current = parent;
+                    continue;
+                }
+                return methods;
+            },
+            .any_type, .any_simple => return methods,
+        }
+    }
+    return methods;
+}
+
+pub fn typeFinal(info: TypeInfo) DerivationSet {
+    return switch (info) {
+        .simple => |simple| if (simple.decl) |decl| decl.final else .{},
+        .complex => |complex| if (complex.decl) |decl| decl.final else .{},
+        else => .{},
+    };
+}
+
+pub fn typeBlock(info: TypeInfo) DerivationSet {
+    return switch (info) {
+        .simple => |simple| if (simple.decl) |decl| decl.block else .{},
+        .complex => |complex| if (complex.decl) |decl| decl.block else .{},
+        else => .{},
+    };
+}
+
+pub fn typeAbstract(info: TypeInfo) bool {
+    return switch (info) {
+        .complex => |complex| complex.abstract,
+        else => false,
+    };
+}
 
 pub const Resource = struct {
     /// Resolved URI used as the base for nested schema references.
@@ -522,6 +712,7 @@ const Compiler = struct {
         try self.resolveIdentityReferences();
         try self.resolveAllTypes();
         try self.resolveAllDeclarations();
+        try self.checkSubstitutionTypes();
     }
 
     fn formDefault(
@@ -751,6 +942,8 @@ const Compiler = struct {
             .node = id,
             .nillable = try self.booleanAttribute(id, "nillable"),
             .abstract = try self.booleanAttribute(id, "abstract"),
+            .block = try self.derivationSet(id, "block", true, false),
+            .final = try self.derivationSet(id, "final", false, false),
             .default_value = self.document.attribute(id, "default"),
             .fixed_value = self.document.attribute(id, "fixed"),
             .substitution_qname = substitution_qname,
@@ -786,10 +979,24 @@ const Compiler = struct {
         const name = self.document.attribute(id, "name") orelse
             return error.InvalidSchema;
         const decl = try self.arena.create(TypeDecl);
+        const complex = std.mem.eql(
+            u8,
+            self.document.node(id).local,
+            "complexType",
+        );
         decl.* = .{
             .name = name,
             .namespace_uri = self.target_namespace,
             .global = true,
+            .abstract = if (complex)
+                try self.booleanAttribute(id, "abstract")
+            else
+                false,
+            .block = if (complex)
+                try self.derivationSet(id, "block", false, false)
+            else
+                .{},
+            .final = try self.derivationSet(id, "final", false, !complex),
             .node = id,
             .doc = self.current_schema,
         };
@@ -1226,6 +1433,7 @@ const Compiler = struct {
         decl.* = .{
             .node = id,
             .doc = self.current_schema,
+            .final = try self.derivationSet(id, "final", false, true),
             .body = .{ .simple = try self.parseSimpleType(id) },
         };
         try self.types.append(self.arena, decl);
@@ -1237,6 +1445,9 @@ const Compiler = struct {
         decl.* = .{
             .node = id,
             .doc = self.current_schema,
+            .abstract = try self.booleanAttribute(id, "abstract"),
+            .block = try self.derivationSet(id, "block", false, false),
+            .final = try self.derivationSet(id, "final", false, false),
             .body = .{ .complex = try self.parseComplexType(id) },
         };
         try self.types.append(self.arena, decl);
@@ -1704,6 +1915,8 @@ const Compiler = struct {
             .namespace_uri = if (qualified) self.target_namespace else "",
             .node = id,
             .nillable = try self.booleanAttribute(id, "nillable"),
+            .block = try self.derivationSet(id, "block", true, false),
+            .final = try self.derivationSet(id, "final", false, false),
             .default_value = self.document.attribute(id, "default"),
             .fixed_value = self.document.attribute(id, "fixed"),
             .doc = self.current_schema,
@@ -1922,6 +2135,53 @@ const Compiler = struct {
         return error.InvalidSchema;
     }
 
+    fn derivationSet(
+        self: *Compiler,
+        id: dom.NodeId,
+        attribute: []const u8,
+        allow_substitution: bool,
+        allow_list_union: bool,
+    ) Error!DerivationSet {
+        const value = self.document.attribute(id, attribute) orelse return .{};
+        var out: DerivationSet = .{};
+        var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n");
+        var any = false;
+        while (tokens.next()) |token| {
+            any = true;
+            if (std.mem.eql(u8, token, "#all")) {
+                out = .{
+                    .extension = true,
+                    .restriction = true,
+                    .substitution = allow_substitution,
+                };
+                continue;
+            }
+            if (std.mem.eql(u8, token, "extension")) {
+                out.extension = true;
+                continue;
+            }
+            if (std.mem.eql(u8, token, "restriction")) {
+                out.restriction = true;
+                continue;
+            }
+            if (allow_substitution and
+                std.mem.eql(u8, token, "substitution"))
+            {
+                out.substitution = true;
+                continue;
+            }
+            if (allow_list_union and
+                (std.mem.eql(u8, token, "list") or
+                    std.mem.eql(u8, token, "union")))
+            {
+                continue;
+            }
+            return error.InvalidSchema;
+        }
+        if (!any) return error.InvalidSchema;
+        return out;
+    }
+
     fn resolveAllTypes(self: *Compiler) Error!void {
         for (self.types.items) |decl| {
             _ = try self.resolveTypeDecl(decl);
@@ -1943,6 +2203,14 @@ const Compiler = struct {
             },
             .unresolved => return error.InvalidSchema,
         };
+        switch (info) {
+            .simple => |simple| @constCast(simple).decl = decl,
+            .complex => |complex| {
+                @constCast(complex).decl = decl;
+                @constCast(complex).abstract = decl.abstract;
+            },
+            else => {},
+        }
         mutable.info = info;
         return info;
     }
@@ -1954,8 +2222,12 @@ const Compiler = struct {
         switch (decl) {
             .restriction => |restriction| {
                 const base = try self.resolveTypeUseToSimple(restriction.base);
+                if (typeFinal(.{ .simple = base }).restriction) {
+                    return error.InvalidSchema;
+                }
                 const info = try self.arena.create(SimpleInfo);
                 info.* = base.*;
+                info.base = .{ .simple = base };
                 info.facets = mergeFacets(base.facets, restriction.facets);
                 return info;
             },
@@ -2031,6 +2303,16 @@ const Compiler = struct {
             .particle => |particle| info.particle = particle,
             .simple_content => |content| {
                 const base_info = try self.resolveTypeUse(content.base);
+                const method: DerivationSet = if (content.restriction)
+                    .{ .restriction = true }
+                else
+                    .{ .extension = true };
+                const prohibited = typeFinal(base_info);
+                if (method.has(.restriction) and prohibited.restriction or
+                    method.has(.extension) and prohibited.extension)
+                {
+                    return error.InvalidSchema;
+                }
                 var base_simple: *const SimpleInfo = undefined;
                 var base_attributes: []const AttributeUse = &.{};
                 var base_any_attribute: ?Wildcard = null;
@@ -2053,6 +2335,7 @@ const Compiler = struct {
                 }
                 const merged = try self.arena.create(SimpleInfo);
                 merged.* = base_simple.*;
+                merged.base = .{ .simple = base_simple };
                 merged.facets = mergeFacets(
                     base_simple.facets,
                     content.facets,
@@ -2064,23 +2347,47 @@ const Compiler = struct {
                 );
                 info.any_attribute = decl.any_attribute orelse
                     base_any_attribute;
+                info.base = base_info;
+                info.derivation = if (content.restriction)
+                    .restriction
+                else
+                    .extension;
             },
             .complex_content => |content| {
-                const base_info = try self.resolveTypeUseToComplex(content.base);
+                const base_info = try self.resolveTypeUse(content.base);
+                const method: DerivationSet = if (content.restriction)
+                    .{ .restriction = true }
+                else
+                    .{ .extension = true };
+                const prohibited = typeFinal(base_info);
+                if (method.has(.restriction) and prohibited.restriction or
+                    method.has(.extension) and prohibited.extension)
+                {
+                    return error.InvalidSchema;
+                }
+                const base_complex = switch (base_info) {
+                    .complex => |complex| complex,
+                    .any_type => blk: {
+                        const empty = try self.arena.create(ComplexInfo);
+                        empty.* = .{};
+                        break :blk empty;
+                    },
+                    else => return error.InvalidSchema,
+                };
                 info.mixed = if (content.restriction)
                     decl.mixed
                 else
-                    base_info.mixed or decl.mixed;
+                    base_complex.mixed or decl.mixed;
                 info.attributes = try self.mergeAttributes(
-                    base_info.attributes,
+                    base_complex.attributes,
                     decl.attributes,
                 );
                 info.any_attribute = decl.any_attribute orelse
-                    base_info.any_attribute;
+                    base_complex.any_attribute;
                 if (content.particle) |particle| {
                     if (content.restriction) {
                         info.particle = particle;
-                    } else if (base_info.particle) |base_particle| {
+                    } else if (base_complex.particle) |base_particle| {
                         info.particle = try self.sequenceOf(
                             base_particle,
                             particle,
@@ -2092,8 +2399,13 @@ const Compiler = struct {
                     info.particle = if (content.restriction)
                         null
                     else
-                        base_info.particle;
+                        base_complex.particle;
                 }
+                info.base = base_info;
+                info.derivation = if (content.restriction)
+                    .restriction
+                else
+                    .extension;
             },
         }
         return info;
@@ -2178,6 +2490,24 @@ const Compiler = struct {
         }
         for (self.local_attributes.items) |decl| {
             @constCast(decl).type_info = try self.resolveTypeUse(decl.type_use);
+        }
+    }
+
+    /// Validate substitution group affiliations once all type information has
+    /// been resolved. Members must have types validly derived from the head,
+    /// and the head's `final` exclusions must not prohibit that derivation.
+    fn checkSubstitutionTypes(self: *Compiler) Error!void {
+        for (self.elements.items) |decl| {
+            const head = decl.substitution_group orelse continue;
+            if (!isDerivedFrom(decl.type_info, head.type_info)) {
+                return error.InvalidSchema;
+            }
+            const methods = derivationMethods(decl.type_info, head.type_info);
+            if (methods.extension and head.final.extension or
+                methods.restriction and head.final.restriction)
+            {
+                return error.InvalidSchema;
+            }
         }
     }
 };

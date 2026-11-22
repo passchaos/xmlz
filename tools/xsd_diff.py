@@ -1108,6 +1108,92 @@ CASES = [
             "<root><a/><b/></root>",
         ],
     ),
+    (
+        "abstract-types",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t" xmlns:t="urn:t"
+          elementFormDefault="qualified">
+          <xs:complexType name="base" abstract="true">
+            <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+          </xs:complexType>
+          <xs:complexType name="concrete">
+            <xs:complexContent><xs:extension base="t:base">
+              <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+            </xs:extension></xs:complexContent>
+          </xs:complexType>
+          <xs:element name="root" type="t:base"/>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t'><a>x</a></root>",
+            "<root xmlns='urn:t' xmlns:t='urn:t' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' xsi:type='t:base'><a>x</a></root>",
+            "<root xmlns='urn:t' xmlns:t='urn:t' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' xsi:type='t:concrete'><a>x</a><b>y</b></root>",
+        ],
+    ),
+    (
+        "xsi-type-derivation",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t" xmlns:t="urn:t"
+          elementFormDefault="qualified">
+          <xs:element name="root" type="xs:string"/>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t' xmlns:xs='http://www.w3.org/2001/XMLSchema' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' xsi:type='xs:token'>x</root>",
+            "<root xmlns='urn:t' xmlns:xs='http://www.w3.org/2001/XMLSchema' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' xsi:type='xs:int'>1</root>",
+        ],
+    ),
+    (
+        "block-extension",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t" xmlns:t="urn:t"
+          elementFormDefault="qualified">
+          <xs:complexType name="base">
+            <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+          </xs:complexType>
+          <xs:complexType name="derived">
+            <xs:complexContent><xs:extension base="t:base">
+              <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+            </xs:extension></xs:complexContent>
+          </xs:complexType>
+          <xs:element name="root" type="t:base" block="extension"/>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t'><a>x</a></root>",
+            "<root xmlns='urn:t' xmlns:t='urn:t' xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' xsi:type='t:derived'><a>x</a><b>y</b></root>",
+        ],
+    ),
+    (
+        "block-substitution",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t" xmlns:t="urn:t"
+          elementFormDefault="qualified">
+          <xs:element name="head" type="xs:string" block="substitution"/>
+          <xs:element name="member" substitutionGroup="t:head" type="xs:string"/>
+          <xs:element name="root"><xs:complexType><xs:sequence>
+            <xs:element ref="t:head"/></xs:sequence></xs:complexType></xs:element>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t'><head>x</head></root>",
+            "<root xmlns='urn:t'><member>x</member></root>",
+        ],
+    ),
+    (
+        "type-block-substitution",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t" xmlns:t="urn:t"
+          elementFormDefault="qualified">
+          <xs:complexType name="base" block="extension">
+            <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+          </xs:complexType>
+          <xs:complexType name="derived">
+            <xs:complexContent><xs:extension base="t:base">
+              <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+            </xs:extension></xs:complexContent>
+          </xs:complexType>
+          <xs:element name="head" type="t:base"/>
+          <xs:element name="member" substitutionGroup="t:head" type="t:derived"/>
+          <xs:element name="root"><xs:complexType><xs:sequence>
+            <xs:element ref="t:head"/></xs:sequence></xs:complexType></xs:element>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t'><head><a>x</a></head></root>",
+            "<root xmlns='urn:t'><member><a>x</a><b>y</b></member></root>",
+        ],
+    ),
 ]
 
 

@@ -796,3 +796,166 @@ test "XSD rejects circular and missing schema includes" {
         }),
     );
 }
+
+const abstract_type_schema =
+    \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    \\  targetNamespace="urn:t" xmlns:t="urn:t"
+    \\  elementFormDefault="qualified">
+    \\  <xs:complexType name="base" abstract="true">
+    \\    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+    \\  </xs:complexType>
+    \\  <xs:complexType name="concrete">
+    \\    <xs:complexContent><xs:extension base="t:base">
+    \\      <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+    \\    </xs:extension></xs:complexContent>
+    \\  </xs:complexType>
+    \\  <xs:element name="root" type="t:base"/>
+    \\</xs:schema>
+;
+
+test "XSD rejects abstract types without substitution" {
+    try expectInvalid(
+        abstract_type_schema,
+        "<root xmlns='urn:t'><a>x</a></root>",
+    );
+    try expectInvalid(
+        abstract_type_schema,
+        "<root xmlns='urn:t' xmlns:t='urn:t'" ++
+            " xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance'" ++
+            " xsi:type='t:base'><a>x</a></root>",
+    );
+    try expectValid(
+        abstract_type_schema,
+        "<root xmlns='urn:t' xmlns:t='urn:t'" ++
+            " xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance'" ++
+            " xsi:type='t:concrete'><a>x</a><b>y</b></root>",
+    );
+}
+
+test "XSD checks xsi:type derivation validity" {
+    const schema_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+        "targetNamespace='urn:t' xmlns:t='urn:t' " ++
+        "elementFormDefault='qualified'>" ++
+        "<xs:element name='root' type='xs:string'/>" ++
+        "</xs:schema>";
+    try expectValid(
+        schema_source,
+        "<root xmlns='urn:t' xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+            "xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' " ++
+            "xsi:type='xs:token'>x</root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root xmlns='urn:t' xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+            "xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance' " ++
+            "xsi:type='xs:int'>1</root>",
+    );
+}
+
+const block_schema =
+    \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    \\  targetNamespace="urn:t" xmlns:t="urn:t"
+    \\  elementFormDefault="qualified">
+    \\  <xs:complexType name="base">
+    \\    <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+    \\  </xs:complexType>
+    \\  <xs:complexType name="derived">
+    \\    <xs:complexContent><xs:extension base="t:base">
+    \\      <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+    \\    </xs:extension></xs:complexContent>
+    \\  </xs:complexType>
+    \\  <xs:element name="root" type="t:base" block="extension"/>
+    \\</xs:schema>
+;
+
+test "XSD enforces element block on xsi:type" {
+    try expectInvalid(
+        block_schema,
+        "<root xmlns='urn:t' xmlns:t='urn:t'" ++
+            " xmlns:xsi='http://www.w3.org/2001/XMLSchema-instance'" ++
+            " xsi:type='t:derived'><a>x</a><b>y</b></root>",
+    );
+    try expectValid(
+        block_schema,
+        "<root xmlns='urn:t'><a>x</a></root>",
+    );
+}
+
+test "XSD rejects substitution members with underived types" {
+    const schema_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+        "targetNamespace='urn:t' xmlns:t='urn:t' " ++
+        "elementFormDefault='qualified'>" ++
+        "<xs:element name='head' type='xs:string'/>" ++
+        "<xs:element name='member' substitutionGroup='t:head' " ++
+        "type='xs:int'/>" ++
+        "<xs:element name='root'><xs:complexType><xs:sequence>" ++
+        "<xs:element ref='t:head'/></xs:sequence></xs:complexType>" ++
+        "</xs:element></xs:schema>";
+    try expectSchemaError(schema_source);
+}
+
+test "XSD rejects substitution excluded by final" {
+    const schema_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+        "targetNamespace='urn:t' xmlns:t='urn:t' " ++
+        "elementFormDefault='qualified'>" ++
+        "<xs:complexType name='base'><xs:sequence>" ++
+        "<xs:element name='a' type='xs:string'/>" ++
+        "</xs:sequence></xs:complexType>" ++
+        "<xs:complexType name='derived'><xs:complexContent>" ++
+        "<xs:restriction base='t:base'><xs:sequence>" ++
+        "<xs:element name='a' type='xs:string'/>" ++
+        "</xs:sequence></xs:restriction></xs:complexContent>" ++
+        "</xs:complexType>" ++
+        "<xs:element name='head' type='t:base' final='restriction'/>" ++
+        "<xs:element name='member' substitutionGroup='t:head' " ++
+        "type='t:derived'/>" ++
+        "<xs:element name='root'><xs:complexType><xs:sequence>" ++
+        "<xs:element ref='t:head'/></xs:sequence></xs:complexType>" ++
+        "</xs:element></xs:schema>";
+    try expectSchemaError(schema_source);
+}
+
+test "XSD rejects derivations from final types" {
+    const complex_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+        "targetNamespace='urn:t' xmlns:t='urn:t'>" ++
+        "<xs:complexType name='base' final='extension'/>" ++
+        "<xs:complexType name='derived'><xs:complexContent>" ++
+        "<xs:extension base='t:base'/></xs:complexContent>" ++
+        "</xs:complexType></xs:schema>";
+    try expectSchemaError(complex_source);
+
+    const simple_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+        "targetNamespace='urn:t' xmlns:t='urn:t'>" ++
+        "<xs:simpleType name='base' final='restriction'>" ++
+        "<xs:restriction base='xs:string'/></xs:simpleType>" ++
+        "<xs:simpleType name='derived'>" ++
+        "<xs:restriction base='t:base'/></xs:simpleType></xs:schema>";
+    try expectSchemaError(simple_source);
+}
+
+test "XSD enforces block substitution" {
+    const schema_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+        "targetNamespace='urn:t' xmlns:t='urn:t' " ++
+        "elementFormDefault='qualified'>" ++
+        "<xs:element name='head' type='xs:string' " ++
+        "block='substitution'/>" ++
+        "<xs:element name='member' substitutionGroup='t:head' " ++
+        "type='xs:string'/>" ++
+        "<xs:element name='root'><xs:complexType><xs:sequence>" ++
+        "<xs:element ref='t:head'/></xs:sequence></xs:complexType>" ++
+        "</xs:element></xs:schema>";
+    try expectValid(
+        schema_source,
+        "<root xmlns='urn:t'><head>x</head></root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root xmlns='urn:t'><member>x</member></root>",
+    );
+}

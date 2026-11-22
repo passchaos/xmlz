@@ -46,26 +46,22 @@ for (result.errors) |validation_error| {
   attribute groups, and circular group detection.
 - `xs:include` (including chameleon includes) and `xs:import` through a
   resolver, with per-document namespaces/forms and circular-include detection.
-- Substitution groups, including transitive members and abstract head
-  elements.
+- Substitution groups, including transitive members, abstract head elements,
+  member type derivation checks, and `block`/`final` exclusion enforcement.
 - Identity constraints: `xs:key`, `xs:unique`, and `xs:keyref`, including
   composite fields, nested selectors, and `refer` resolution.
 - `xs:simpleContent` and `xs:complexContent` extension and restriction,
   including attribute inheritance from base types.
 - `targetNamespace`, `elementFormDefault`, `attributeFormDefault`, and local
   `form` overrides.
-- Instance `xsi:type` (type substitution) and `xsi:nil`.
+- Instance `xsi:type` (type substitution) with derivation validity and
+  `block` enforcement, abstract type rejection, and `xsi:nil`.
 - XML Schema regular expressions: branches, groups, classes, ranges,
   `\d \s \w \i \c`, `\p{...}` categories, and quantifiers.
 
 ## Limitations
 
 - `xs:redefine` and `xs:notation` are not implemented.
-- Abstract types and `block`/`final` enforcement are not implemented.
-- Substitution group members are not checked for valid type derivation from
-  the head.
-- `xsi:type` is used without checking that the named type is validly derived
-  from the declared type.
 - Wildcard namespace lists (as opposed to the `##` tokens) are not supported.
 - Unicode category coverage in `\p{...}` is approximate for non-ASCII scripts.
 - Duration ordering is a partial order; facets on durations use a simplified
@@ -89,5 +85,5 @@ attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
 
 ```text
-206/206 XSD differential checks passed
+217/217 XSD differential checks passed
 ```

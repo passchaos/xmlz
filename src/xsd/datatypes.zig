@@ -58,6 +58,54 @@ pub const Builtin = struct {
     whitespace: Whitespace,
 };
 
+/// Built-in type from which `kind` is derived by restriction. Returns null
+/// for `anySimpleType`-level types.
+pub fn baseKind(kind: Kind) ?Kind {
+    return switch (kind) {
+        .string,
+        .any_uri,
+        .qname,
+        .notation,
+        .boolean,
+        .decimal,
+        .float,
+        .double,
+        .duration,
+        .date_time,
+        .time,
+        .date,
+        .g_year_month,
+        .g_year,
+        .g_month_day,
+        .g_day,
+        .g_month,
+        .hex_binary,
+        .base64_binary,
+        => null,
+        .normalized_string => .string,
+        .token => .normalized_string,
+        .language, .name, .nmtoken => .token,
+        .ncname => .name,
+        .nmtokens => .nmtoken,
+        .id, .idref, .entity => .ncname,
+        .idrefs => .idref,
+        .entities => .entity,
+        .integer => .decimal,
+        .non_positive_integer => .integer,
+        .negative_integer => .non_positive_integer,
+        .long => .integer,
+        .int => .long,
+        .short => .int,
+        .byte => .short,
+        .non_negative_integer => .integer,
+        .unsigned_long => .non_negative_integer,
+        .unsigned_int => .unsigned_long,
+        .unsigned_short => .unsigned_int,
+        .unsigned_byte => .unsigned_short,
+        .positive_integer => .non_negative_integer,
+    };
+}
+
 pub const Facets = struct {
     enumeration: []const []const u8 = &.{},
     patterns: []const *const regex.Regex = &.{},
