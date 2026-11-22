@@ -1815,18 +1815,34 @@ pub const Parser = struct {
             var quote: u8 = 0;
             while (scan < bytes.len and depth > 0) {
                 if (quote != 0) {
-                    if (bytes[scan] == quote) quote = 0;
+                    const close = std.mem.indexOfScalarPos(
+                        u8,
+                        bytes,
+                        scan,
+                        quote,
+                    ) orelse bytes.len;
+                    scan = close + 1;
+                    quote = 0;
+                    continue;
+                }
+                const special = findSectionSpecial(bytes, scan);
+                if (special > scan) {
+                    scan = special;
+                    if (scan >= bytes.len) break;
+                }
+                const section_byte = bytes[scan];
+                if (section_byte == '"' or section_byte == '\'') {
+                    quote = section_byte;
                     scan += 1;
                     continue;
                 }
-                if (bytes[scan] == '"' or bytes[scan] == '\'') {
-                    quote = bytes[scan];
+                if (section_byte == '<') {
+                    if (std.mem.startsWith(u8, bytes[scan..], "<![")) {
+                        depth += 1;
+                        scan += 3;
+                        continue;
+                    }
                     scan += 1;
-                    continue;
-                }
-                if (std.mem.startsWith(u8, bytes[scan..], "<![")) {
-                    depth += 1;
-                    scan += 3;
                     continue;
                 }
                 if (std.mem.startsWith(u8, bytes[scan..], "]]>")) {
@@ -2053,13 +2069,27 @@ pub const Parser = struct {
         var pos: usize = 0;
         var quote: u8 = 0;
         while (pos < raw.len) {
-            const byte = raw[pos];
             if (quote != 0) {
-                try out.append(allocator, byte);
-                if (byte == quote) quote = 0;
-                pos += 1;
+                const close = std.mem.indexOfScalarPos(
+                    u8,
+                    raw,
+                    pos,
+                    quote,
+                ) orelse raw.len;
+                try out.appendSlice(allocator, raw[pos..close]);
+                if (close >= raw.len) return;
+                try out.append(allocator, quote);
+                quote = 0;
+                pos = close + 1;
                 continue;
             }
+            const special = findExpansionSpecial(raw, pos);
+            if (special > pos) {
+                try out.appendSlice(allocator, raw[pos..special]);
+                pos = special;
+                if (pos >= raw.len) break;
+            }
+            const byte = raw[pos];
             switch (byte) {
                 '"', '\'' => {
                     quote = byte;
@@ -2118,10 +2148,7 @@ pub const Parser = struct {
                     try out.append(allocator, byte);
                     pos += 1;
                 },
-                else => {
-                    try out.append(allocator, byte);
-                    pos += 1;
-                },
+                else => unreachable,
             }
         }
     }
@@ -3703,6 +3730,54 @@ fn internalSubsetNeedsExpansion(raw: []const u8) bool {
 }
 
 /// Resolve external conditional sections after parameter-entity expansion.
+fn findSectionSpecial(input: []const u8, start: usize) usize {
+    const Vec = @Vector(16, u8);
+    const lt: Vec = @splat('<');
+    const rb: Vec = @splat(']');
+    const dq: Vec = @splat('"');
+    const sq: Vec = @splat('\'');
+    var index = start;
+    while (index + 16 <= input.len) : (index += 16) {
+        const chunk: Vec = input[index..][0..16].*;
+        const mask: u16 = @bitCast(
+            (chunk == lt) | (chunk == rb) |
+                (chunk == dq) | (chunk == sq),
+        );
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < input.len) : (index += 1) {
+        switch (input[index]) {
+            '<', ']', '"', '\'' => return index,
+            else => {},
+        }
+    }
+    return input.len;
+}
+
+fn findExpansionSpecial(input: []const u8, start: usize) usize {
+    const Vec = @Vector(16, u8);
+    const percent: Vec = @splat('%');
+    const lt: Vec = @splat('<');
+    const dq: Vec = @splat('"');
+    const sq: Vec = @splat('\'');
+    var index = start;
+    while (index + 16 <= input.len) : (index += 16) {
+        const chunk: Vec = input[index..][0..16].*;
+        const mask: u16 = @bitCast(
+            (chunk == percent) | (chunk == lt) |
+                (chunk == dq) | (chunk == sq),
+        );
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < input.len) : (index += 1) {
+        switch (input[index]) {
+            '%', '<', '"', '\'' => return index,
+            else => {},
+        }
+    }
+    return input.len;
+}
+
 fn findBoundaryByte(input: []const u8, start: usize) usize {
     const Vec = @Vector(16, u8);
     const start_marker: Vec = @splat(0x01);
@@ -3926,26 +4001,47 @@ fn evaluateConditionals(
         var section_quote: u8 = 0;
         while (scan < input.len and depth > 0) {
             if (section_quote != 0) {
-                if (input[scan] == section_quote) section_quote = 0;
+                const close = std.mem.indexOfScalarPos(
+                    u8,
+                    input,
+                    scan,
+                    section_quote,
+                ) orelse input.len;
+                scan = close + 1;
+                section_quote = 0;
+                continue;
+            }
+            const section_special = findSectionSpecial(input, scan);
+            if (section_special > scan) {
+                scan = section_special;
+                if (scan >= input.len) break;
+            }
+            const section_byte = input[scan];
+            if (section_byte == '"' or section_byte == '\'') {
+                section_quote = section_byte;
                 scan += 1;
                 continue;
             }
-            if (input[scan] == '"' or input[scan] == '\'') {
-                section_quote = input[scan];
+            if (section_byte == '<') {
+                if (std.mem.startsWith(u8, input[scan..], "<!--")) {
+                    const end = std.mem.indexOfPos(
+                        u8,
+                        input,
+                        scan + 4,
+                        "-->",
+                    ) orelse return error.UnexpectedEndOfInput;
+                    scan = end + 3;
+                    continue;
+                }
+                if (std.mem.startsWith(u8, input[scan..], "<![")) {
+                    depth += 1;
+                    scan += 3;
+                    continue;
+                }
                 scan += 1;
                 continue;
             }
-            if (std.mem.startsWith(u8, input[scan..], "<!--")) {
-                const end = std.mem.indexOfPos(u8, input, scan + 4, "-->") orelse
-                    return error.UnexpectedEndOfInput;
-                scan = end + 3;
-                continue;
-            }
-            if (std.mem.startsWith(u8, input[scan..], "<![")) {
-                depth += 1;
-                scan += 3;
-                continue;
-            }
+            // ']'
             if (std.mem.startsWith(u8, input[scan..], "]]>")) {
                 depth -= 1;
                 scan += 3;
