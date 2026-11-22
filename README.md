@@ -74,7 +74,8 @@ then exposes them through a pull parser and reusable lexical primitives.
   75 passed with one Saxon-module test tracked), the libxslt REC corpus
   (`zig build xslt-rec-suite`, 79 passed with one locale-collation test
   tracked), and libxslt's feature corpora (`zig build xslt-misc-suite`,
-  27 passed with one debug-dump test tracked). EXSLT `func:function`
+  27 passed with one debug-dump test tracked), and the real-world xmlspec
+  transform. EXSLT `func:function`
   user-defined functions, `libxslt:node-set`, the `set:*` node-set
   functions, `str:replace`, `str:tokenize`, `str:split`, `str:concat`,
   `str:padding`, `str:align`, `str:encode-uri`, `str:decode-uri`, `date:add`,
@@ -296,6 +297,7 @@ zig build xslt-suite    # libxslt general regression suite (needs lxml)
 zig build xslt-exslt-suite # libxslt EXSLT regression suite (needs lxml)
 zig build xslt-rec-suite   # libxslt REC (XSLT specification) suite (needs lxml)
 zig build xslt-misc-suite  # libxslt documents/keys/namespaces/numbers suite (needs lxml)
+zig build xslt-xmlspec-suite # real-world XML 1.0 spec to HTML transform
 zig build -Doptimize=ReleaseFast xslt-bench # XSLT throughput vs libxslt (needs lxml)
 zig build xsd-diff      # XML Schema differential checks vs libxml2 (needs lxml)
 zig build rng-diff      # RELAX NG differential checks vs libxml2 (needs lxml)

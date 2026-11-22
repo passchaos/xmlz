@@ -106,7 +106,11 @@ pub const Document = struct {
         errdefer arena.deinit();
         const arena_allocator = arena.allocator();
 
-        var builder = Builder.init(arena_allocator, input, options);
+        // DTD expansion scratch storage must live in the document arena so
+        // the DTD view stays valid and is released with the document.
+        var effective = options;
+        effective.parser.allocator = arena_allocator;
+        var builder = Builder.init(arena_allocator, input, effective);
         try builder.run();
 
         return .{
@@ -130,9 +134,12 @@ pub const Document = struct {
         options: Options,
     ) Error!Document {
         _ = arena.reset(.retain_capacity);
+        // See `parse`: keep DTD scratch storage in the document arena.
+        var effective = options;
+        effective.parser.allocator = arena.allocator();
         const arena_allocator = arena.allocator();
 
-        var builder = Builder.init(arena_allocator, input, options);
+        var builder = Builder.init(arena_allocator, input, effective);
         try builder.run();
 
         return .{
@@ -840,4 +847,48 @@ test "DOM parses into a reusable arena" {
     try testing.expectEqualStrings("other", second.node(second_root).local);
     const entry = second.findChild(second_root, "entry").?;
     try testing.expectEqualStrings("two", second.node(second.node(entry).first_child).value);
+}
+
+fn testDtdResolver(
+    _: ?*anyopaque,
+    system_id: []const u8,
+    _: ?[]const u8,
+    _: ?[]const u8,
+) ?[]const u8 {
+    if (!std.mem.eql(u8, system_id, "t.dtd")) return null;
+    return "<!ELEMENT doc ANY>" ++
+        "<!ELEMENT term EMPTY>" ++
+        "<!ATTLIST doc xmlns:p CDATA #FIXED \"urn:p\" p:kind CDATA \"k\">" ++
+        "<!ATTLIST term id ID #IMPLIED term CDATA #IMPLIED>";
+}
+
+test "parser applies DTD namespace and ID declarations" {
+    const input = "<!DOCTYPE doc SYSTEM 't.dtd'>" ++
+        "<doc><term id='x' term='T'/></doc>";
+    var doc = try Document.parse(testing.allocator, input, .{
+        .parser = .{
+            .namespaces = true,
+            .allocator = testing.allocator,
+            .resolver = .{ .context = null, .resolve = testDtdResolver },
+        },
+    });
+    defer doc.deinit();
+    const root = doc.root();
+    try testing.expectEqualStrings("urn:p", doc.attribute(root, "xmlns:p").?);
+    try testing.expectEqualStrings("k", doc.attribute(root, "p:kind").?);
+    for (doc.attributesOf(root)) |attr| {
+        if (std.mem.eql(u8, attr.name, "p:kind")) {
+            try testing.expectEqualStrings("urn:p", attr.ns);
+        }
+    }
+    var saw_id = false;
+    for (doc.dtd.?.attributes) |decl| {
+        if (std.mem.eql(u8, decl.element, "term") and
+            std.mem.eql(u8, decl.name, "id") and
+            decl.attr_type == .id)
+        {
+            saw_id = true;
+        }
+    }
+    try testing.expect(saw_id);
 }

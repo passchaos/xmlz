@@ -535,11 +535,16 @@ const Runtime = struct {
             self.source.documentNode(),
             builder.document(),
         );
-        const document = builder.finish() catch |err| switch (err) {
+        var document = builder.finish() catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidStylesheet,
         };
         finished = true;
+        // The filtered tree still describes the same document, so keep the
+        // DTD view: id() needs DTD-declared ID attributes.
+        document.dtd = self.source.dtd;
+        document.declaration = self.source.declaration;
+        document.doctype = self.source.doctype;
         const pointer = try self.allocator.create(dom.Document);
         pointer.* = document;
         self.filtered_source = pointer;
@@ -1890,6 +1895,8 @@ const Runtime = struct {
         )) |template| {
             try self.executeTemplate(template, node, position, size, params);
         } else {
+            // libxslt falls back to the built-in rules when no lower
+            // precedence template matches.
             try self.builtinTemplate(node, self.current_mode, params);
         }
     }

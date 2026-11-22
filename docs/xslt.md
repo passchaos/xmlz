@@ -64,6 +64,12 @@ defer result.deinit();
   tokens, and `grouping-separator`/`grouping-size`.
 - `document()` with resolver caching, percent-decoded local URIs, and
   XPointer `xpointer()`/`element()`/xml:id fragments.
+- DTD-aware parsing: the `xslt` CLI parses stylesheets and sources with
+  external DTD loading and entity substitution like libxslt, so
+  DTD-declared ID attributes, default attribute values, and default
+  namespace declarations are visible to `id()` and to templates.
+  `document()`-loaded documents use the configured resolver for their
+  external subsets.
 - `disable-output-escaping` on `xsl:value-of` and `xsl:text`, carried as raw
   text nodes and honored by the XML and HTML serializers.
 - `xsl:decimal-format` declarations and `format-number()` patterns: grouping,
@@ -166,6 +172,23 @@ libxslt misc suite: 27 passed, 1 failed, 0 skipped
 The tracked difference (`namespaces/extra2.xsl`) asserts xsltproc's
 `--debug` template/variable dump, which is not a diagnostic the library
 reproduces.
+
+The real-world xmlspec test (transforming the XML 1.0 Second Edition
+specification into HTML) is vendored under `testdata/libxslt-xmlspec`:
+
+```sh
+zig build xslt-xmlspec-suite
+```
+
+Expected summary:
+
+```text
+libxslt xmlspec suite: 1 passed, 0 failed
+```
+
+Generated `idN` values are normalized before the comparison. The test
+exercises external DTD loading, DTD-declared ID and default attributes,
+`xsl:strip-space`, imports, `apply-imports`, modes, `id()`, and HTML output.
 
 ## Limitations
 

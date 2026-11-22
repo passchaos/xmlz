@@ -65,11 +65,6 @@ pub fn main(init: std.process.Init) !void {
         return error.MissingStylesheet;
     const source_file_path = source_path orelse return error.MissingSource;
 
-    var stylesheet = try loadFile(init, stylesheet_file_path);
-    defer stylesheet.deinit(init.gpa);
-    var source = try loadFile(init, source_file_path);
-    defer source.deinit(init.gpa);
-
     var loader: file_loader.Loader = .{ .allocator = init.gpa, .io = init.io };
     defer loader.deinit();
     var catalog: ?xmlz.catalog.Catalog = null;
@@ -81,6 +76,10 @@ pub fn main(init: std.process.Init) !void {
         };
         loader.catalog = &catalog.?;
     }
+    var stylesheet = try loadFile(init, &loader, stylesheet_file_path);
+    defer stylesheet.deinit(init.gpa);
+    var source = try loadFile(init, &loader, source_file_path);
+    defer source.deinit(init.gpa);
     const timestamp = std.Io.Clock.real.now(init.io);
     const now = xmlz.xpath.exslt_date.formatUnixSeconds(
         init.gpa,
@@ -144,7 +143,29 @@ pub fn main(init: std.process.Init) !void {
     try std.Io.File.stdout().writeStreamingAll(init.io, output);
 }
 
-fn loadFile(init: std.process.Init, path: []const u8) !Loaded {
+const ParseResolver = struct {
+    loader: *file_loader.Loader,
+    base: []const u8,
+};
+
+fn resolveExternal(
+    context: ?*anyopaque,
+    system_id: []const u8,
+    public_id: ?[]const u8,
+    base_system_id: ?[]const u8,
+) ?[]const u8 {
+    _ = public_id;
+    const resolver: *ParseResolver = @ptrCast(@alignCast(context.?));
+    const base = base_system_id orelse resolver.base;
+    const loaded = resolver.loader.load(system_id, base) orelse return null;
+    return loaded.data;
+}
+
+fn loadFile(
+    init: std.process.Init,
+    loader: *file_loader.Loader,
+    path: []const u8,
+) !Loaded {
     const source = try std.Io.Dir.cwd().readFileAlloc(
         init.io,
         path,
@@ -158,9 +179,21 @@ fn loadFile(init: std.process.Init, path: []const u8) !Loaded {
         64 * 1024 * 1024,
     );
     errdefer init.gpa.free(decoded);
+    var resolver: ParseResolver = .{ .loader = loader, .base = path };
+    // libxslt parses with DTD loading and entity substitution enabled, which
+    // makes DTD-declared ID attributes and default attribute values visible
+    // to id() and to templates.
     const document = try xmlz.dom.Document.parse(init.gpa, decoded, .{
         .keep_comments = true,
         .keep_pis = true,
+        .parser = .{
+            .namespaces = true,
+            .allocator = init.gpa,
+            .resolver = .{
+                .context = &resolver,
+                .resolve = resolveExternal,
+            },
+        },
     });
     return .{ .document = document, .decoded = decoded };
 }

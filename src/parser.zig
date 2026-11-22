@@ -711,6 +711,12 @@ pub const Parser = struct {
         try self.applyAttributeDefaults(name, &attr_count);
         for (self.attrs[0..attr_count]) |*attr| {
             attr.tokenized = self.isTokenizedAttribute(name, attr.name);
+            if (self.options.namespaces and
+                namespace.Resolver.isNamespaceDeclaration(attr.name))
+            {
+                // DTD defaults may introduce namespace declarations.
+                has_namespace_decls = true;
+            }
         }
 
         var element_namespace: []const u8 = "";
@@ -2989,7 +2995,9 @@ pub const Parser = struct {
                     .start = @intCast(decl.value_offset),
                     .end = @intCast(decl.value_offset + value.len),
                 },
-                .namespace_uri = "",
+                .namespace_uri = if (namespace.Resolver.isNamespaceDeclaration(
+                    decl.name,
+                )) namespace.xmlns_uri else "",
                 .colon = name_info.colon,
                 .name_key = attributeNameKey(decl.name),
                 .needs_decode = true,
@@ -3025,7 +3033,9 @@ pub const Parser = struct {
                     .start = @intCast(decl.value_offset),
                     .end = @intCast(decl.value_offset + value.len),
                 },
-                .namespace_uri = "",
+                .namespace_uri = if (namespace.Resolver.isNamespaceDeclaration(
+                    decl.name,
+                )) namespace.xmlns_uri else "",
                 .colon = name_info.colon,
                 .name_key = attributeNameKey(decl.name),
                 .needs_decode = true,

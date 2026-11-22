@@ -995,7 +995,8 @@ const Compiler = struct {
     }
 
     fn compileOutput(self: *Compiler, id: dom.NodeId) Error!void {
-        if (!self.principal) return;
+        // Imported and included stylesheets contribute output settings;
+        // compilation visits them first so higher precedence wins.
         if (self.document.attribute(id, "method")) |method| {
             self.output.method_specified = true;
             if (std.mem.eql(u8, method, "xml")) {

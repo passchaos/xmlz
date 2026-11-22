@@ -1930,3 +1930,63 @@ test "XSLT identity pattern matches namespaced elements" {
         output,
     );
 }
+
+fn loadDtdResource(
+    _: ?*anyopaque,
+    href: []const u8,
+    _: []const u8,
+) ?Resource {
+    if (!std.mem.eql(u8, href, "t.dtd")) return null;
+    return .{
+        .uri = "t.dtd",
+        .data = "<!ELEMENT doc ANY><!ELEMENT term EMPTY>" ++
+            "<!ATTLIST term id ID #IMPLIED term CDATA #IMPLIED>",
+    };
+}
+
+fn loadDtdExternal(
+    _: ?*anyopaque,
+    system_id: []const u8,
+    _: ?[]const u8,
+    _: ?[]const u8,
+) ?[]const u8 {
+    if (!std.mem.eql(u8, system_id, "t.dtd")) return null;
+    return "<!ELEMENT doc ANY><!ELEMENT term EMPTY>" ++
+        "<!ATTLIST term id ID #IMPLIED term CDATA #IMPLIED>";
+}
+
+test "XSLT id() honors DTD-declared ID attributes" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out><xsl:value-of select="count(id('x'))"/>|<xsl:value-of select="id('x')/@term"/></out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    var stylesheet_document = try parseDocument(stylesheet);
+    defer stylesheet_document.deinit();
+    var source_document = try dom.Document.parse(
+        testing.allocator,
+        "<!DOCTYPE doc SYSTEM 't.dtd'><doc><term id='x' term='T'/></doc>",
+        .{
+            .parser = .{
+                .namespaces = true,
+                .allocator = testing.allocator,
+                .resolver = .{ .context = null, .resolve = loadDtdExternal },
+            },
+        },
+    );
+    defer source_document.deinit();
+    var result = try transform(
+        testing.allocator,
+        &stylesheet_document,
+        &source_document,
+        .{
+            .resolver = .{ .context = null, .load = loadDtdResource },
+        },
+    );
+    defer result.deinit();
+    const output = try result.toOwnedSlice(testing.allocator);
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>1|T</out>", output);
+}
