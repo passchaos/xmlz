@@ -220,7 +220,7 @@ The real-world DocBook HTML transform (`tests/docbook` from libxslt,
 DocBook 4.1.2 DTD loaded) produces output identical to the libxslt
 reference. A full single run takes about 94 ms, of which roughly half is
 parsing the source document and its DTD and its stylesheet; a repeated
-in-process transform takes about 27 ms against 21 ms for libxslt through
+in-process transform takes about 24 ms against 21 ms for libxslt through
 lxml.
 
 The hot paths are designed for repeated transforms:

@@ -1207,12 +1207,21 @@ const Evaluator = struct {
         call: ast.FunctionCall,
         context: *const value.Context,
     ) Error!value.Value {
-        var args: std.ArrayList(value.Value) = .empty;
-        for (call.args) |arg| {
-            try args.append(self.allocator, try self.eval(arg, context));
-        }
+        // Most calls take a handful of arguments; keep them on the stack.
+        var stack_args: [4]value.Value = undefined;
+        var heap_args: std.ArrayList(value.Value) = .empty;
+        const items: []const value.Value = if (call.args.len <= stack_args.len) blk: {
+            for (call.args, 0..) |arg, index| {
+                stack_args[index] = try self.eval(arg, context);
+            }
+            break :blk stack_args[0..call.args.len];
+        } else blk: {
+            for (call.args) |arg| {
+                try heap_args.append(self.allocator, try self.eval(arg, context));
+            }
+            break :blk heap_args.items;
+        };
         const name = call.name;
-        const items = args.items;
 
         if (std.mem.eql(u8, name, "last")) {
             if (items.len != 0) return error.InvalidArgument;
