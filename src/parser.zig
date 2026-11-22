@@ -1690,9 +1690,10 @@ pub const Parser = struct {
         const saved_input = self.input;
         self.input = stripped.bytes;
         self.pos = 0;
+        var boundary: BoundaryMap = .{ .spans = stripped.spans };
         try self.parseSubsetDeclarations(
             false,
-            if (stripped.has_markers) stripped.ids else null,
+            if (stripped.has_markers) &boundary else null,
         );
         self.input = saved_input;
         self.pos = end + 1;
@@ -1701,7 +1702,7 @@ pub const Parser = struct {
     fn parseSubsetDeclarations(
         self: *Parser,
         stop_at_bracket: bool,
-        boundary_ids: ?[]const u32,
+        boundary_map: ?*BoundaryMap,
     ) Error!void {
         while (true) {
             self.skipSubsetSpace();
@@ -1715,35 +1716,33 @@ pub const Parser = struct {
 
             const declaration_start = self.pos;
             const declaration_end = try self.subsetDeclarationEnd();
-            if (boundary_ids) |ids| {
-                if (declaration_end < ids.len) {
-                    const first = ids[declaration_start];
-                    const last = ids[declaration_end];
-                    // A declaration may not begin inside a parameter-entity
-                    // replacement and continue outside it (WFC: PE Between
-                    // Declarations). Other boundary mismatches are validity
-                    // errors in the Fifth Edition errata.
-                    if (first != 0 and last == 0) {
-                        return self.fail(error.InvalidDoctype, declaration_start);
+            if (boundary_map) |map| {
+                const first = map.idAt(declaration_start);
+                const last = map.idAt(declaration_end);
+                // A declaration may not begin inside a parameter-entity
+                // replacement and continue outside it (WFC: PE Between
+                // Declarations). Other boundary mismatches are validity
+                // errors in the Fifth Edition errata.
+                if (first != 0 and last == 0) {
+                    return self.fail(error.InvalidDoctype, declaration_start);
+                }
+                if (first != last) {
+                    if (self.scratchAllocator()) |allocator| {
+                        try self.pe_issues.append(allocator, .{
+                            .offset = declaration_start,
+                        });
                     }
-                    if (first != last) {
-                        if (self.scratchAllocator()) |allocator| {
-                            try self.pe_issues.append(allocator, .{
-                                .offset = declaration_start,
-                            });
-                        }
-                    }
-                    if (std.mem.startsWith(
-                        u8,
-                        self.input[declaration_start..],
-                        "<!ELEMENT",
-                    )) {
-                        try self.checkElementGroupNesting(
-                            self.input[declaration_start .. declaration_end + 1],
-                            ids,
-                            declaration_start,
-                        );
-                    }
+                }
+                if (std.mem.startsWith(
+                    u8,
+                    self.input[declaration_start..],
+                    "<!ELEMENT",
+                )) {
+                    try self.checkElementGroupNesting(
+                        self.input[declaration_start .. declaration_end + 1],
+                        map,
+                        declaration_start,
+                    );
                 }
             }
 
@@ -1766,7 +1765,7 @@ pub const Parser = struct {
     fn checkElementGroupNesting(
         self: *Parser,
         declaration: []const u8,
-        ids: []const u32,
+        boundary: *BoundaryMap,
         base: usize,
     ) Error!void {
         var stack: [128]struct { offset: usize, id: u32 } = undefined;
@@ -1774,10 +1773,10 @@ pub const Parser = struct {
         for (declaration, 0..) |byte, index| {
             switch (byte) {
                 '(' => {
-                    if (depth < stack.len and base + index < ids.len) {
+                    if (depth < stack.len) {
                         stack[depth] = .{
                             .offset = index,
-                            .id = ids[base + index],
+                            .id = boundary.idAt(base + index),
                         };
                         depth += 1;
                     }
@@ -1786,10 +1785,7 @@ pub const Parser = struct {
                     if (depth == 0) continue;
                     depth -= 1;
                     const open = stack[depth];
-                    const close_id = if (base + index < ids.len)
-                        ids[base + index]
-                    else
-                        0;
+                    const close_id = boundary.idAt(base + index);
                     if (open.id != close_id) {
                         if (self.scratchAllocator()) |allocator| {
                             try self.pe_issues.append(allocator, .{
@@ -1806,7 +1802,7 @@ pub const Parser = struct {
     fn checkConditionalSectionNesting(
         self: *Parser,
         bytes: []const u8,
-        ids: []const u32,
+        boundary: *BoundaryMap,
     ) Error!void {
         var position: usize = 0;
         while (std.mem.indexOfPos(u8, bytes, position, "<![")) |start| {
@@ -1860,12 +1856,9 @@ pub const Parser = struct {
             {
                 keyword_start += 1;
             }
-            const start_id = if (start < ids.len) ids[start] else 0;
-            const keyword_id = if (keyword_start < ids.len)
-                ids[keyword_start]
-            else
-                0;
-            const end_id = if (end < ids.len) ids[end] else 0;
+            const start_id = boundary.idAt(start);
+            const keyword_id = boundary.idAt(keyword_start);
+            const end_id = boundary.idAt(end);
             if (start_id != keyword_id or start_id != end_id) {
                 if (self.scratchAllocator()) |allocator| {
                     try self.pe_issues.append(allocator, .{ .offset = start });
@@ -1908,22 +1901,23 @@ pub const Parser = struct {
         self: *Parser,
         input: []const u8,
         allocator: std.mem.Allocator,
-    ) Error!struct { bytes: []u8, ids: []u32, has_markers: bool } {
+    ) Error!struct {
+        bytes: []u8,
+        spans: []BoundarySpan,
+        has_markers: bool,
+    } {
         var bytes: std.ArrayList(u8) = .empty;
-        var ids: std.ArrayList(u32) = .empty;
+        var spans: std.ArrayList(BoundarySpan) = .empty;
         var stack: [max_entity_frames]u32 = undefined;
         var stack_len: usize = 0;
         var current: u32 = 0;
         var next_id: u32 = 1;
-        var ids_enabled = false;
+        var has_markers = false;
         var pos: usize = 0;
         while (pos < input.len) {
             const special = findBoundaryByte(input, pos);
             if (special > pos) {
                 try bytes.appendSlice(allocator, input[pos..special]);
-                if (ids_enabled) {
-                    try ids.appendNTimes(allocator, current, special - pos);
-                }
                 pos = special;
                 if (pos >= input.len) break;
             }
@@ -1932,11 +1926,12 @@ pub const Parser = struct {
                     if (stack_len == stack.len) {
                         return self.fail(error.EntityRecursion, 0);
                     }
-                    if (!ids_enabled) {
-                        // Bytes before the first marker all belong to the
-                        // top-level entity (id zero).
-                        ids_enabled = true;
-                        try ids.appendNTimes(allocator, 0, bytes.items.len);
+                    if (!has_markers) {
+                        has_markers = true;
+                        try spans.append(allocator, .{
+                            .start = 0,
+                            .id = 0,
+                        });
                     }
                     stack[stack_len] = current;
                     stack_len += 1;
@@ -1953,12 +1948,20 @@ pub const Parser = struct {
                 else => unreachable,
             }
             pos += 1;
+            if (has_markers and
+                spans.items[spans.items.len - 1].id != current)
+            {
+                try spans.append(allocator, .{
+                    .start = bytes.items.len,
+                    .id = current,
+                });
+            }
         }
         if (stack_len != 0) return self.fail(error.InvalidDoctype, 0);
         return .{
             .bytes = try bytes.toOwnedSlice(allocator),
-            .ids = try ids.toOwnedSlice(allocator),
-            .has_markers = ids_enabled,
+            .spans = try spans.toOwnedSlice(allocator),
+            .has_markers = has_markers,
         };
     }
 
@@ -2009,31 +2012,34 @@ pub const Parser = struct {
         var expanded: std.ArrayList(u8) = .empty;
         try self.expandSubset(body, true, &expanded, allocator, 0, true);
         const stripped = try self.stripBoundaries(expanded.items, allocator);
-        try self.checkConditionalSectionNesting(stripped.bytes, stripped.ids);
+        var stripped_boundary: BoundaryMap = .{ .spans = stripped.spans };
+        try self.checkConditionalSectionNesting(
+            stripped.bytes,
+            &stripped_boundary,
+        );
         var filtered: std.ArrayList(u8) = .empty;
-        var filtered_ids: std.ArrayList(u32) = .empty;
+        var filtered_spans: std.ArrayList(BoundarySpan) = .empty;
         if (stripped.has_markers) {
             try evaluateConditionals(
                 allocator,
                 stripped.bytes,
-                stripped.ids,
+                stripped.spans,
+                0,
                 &filtered,
-                &filtered_ids,
+                &filtered_spans,
             );
         } else {
             try evaluateConditionals(
                 allocator,
                 stripped.bytes,
                 null,
+                0,
                 &filtered,
                 null,
             );
         }
         const buffer = try filtered.toOwnedSlice(allocator);
-        const ids: ?[]const u32 = if (stripped.has_markers)
-            try filtered_ids.toOwnedSlice(allocator)
-        else
-            null;
+        var boundary: BoundaryMap = .{ .spans = filtered_spans.items };
 
         const saved_input = self.input;
         const saved_pos = self.pos;
@@ -2045,7 +2051,10 @@ pub const Parser = struct {
         // skip their bodies when the subset is scanned again.
         self.entities_preparsed = true;
         defer self.entities_preparsed = false;
-        try self.parseSubsetDeclarations(false, ids);
+        try self.parseSubsetDeclarations(
+            false,
+            if (stripped.has_markers) &boundary else null,
+        );
         self.input = saved_input;
         self.pos = saved_pos;
         self.allow_pe_in_declarations = saved_allow;
@@ -2217,6 +2226,7 @@ pub const Parser = struct {
                 allocator,
                 expanded.items,
                 null,
+                0,
                 &filtered,
                 null,
             );
@@ -3729,7 +3739,6 @@ fn internalSubsetNeedsExpansion(raw: []const u8) bool {
     return false;
 }
 
-/// Resolve external conditional sections after parameter-entity expansion.
 fn findSectionSpecial(input: []const u8, start: usize) usize {
     const Vec = @Vector(16, u8);
     const lt: Vec = @splat('<');
@@ -3752,6 +3761,49 @@ fn findSectionSpecial(input: []const u8, start: usize) usize {
         }
     }
     return input.len;
+}
+
+const BoundarySpan = struct {
+    start: usize,
+    id: u32,
+};
+
+/// Compact parameter-entity boundary map for a stripped DTD buffer. Only
+/// positions where the boundary id changes are stored, so a 600 KiB subset
+/// costs a few hundred spans instead of a per-byte id array.
+const BoundaryMap = struct {
+    spans: []const BoundarySpan,
+    /// Span containing the previous lookup. Declaration scans move forward,
+    /// so lookups advance this cursor instead of binary searching.
+    cursor: usize = 0,
+
+    fn idAt(self: *BoundaryMap, offset: usize) u32 {
+        if (self.spans.len == 0) return 0;
+        while (self.cursor + 1 < self.spans.len and
+            self.spans[self.cursor + 1].start <= offset)
+        {
+            self.cursor += 1;
+        }
+        while (self.cursor > 0 and self.spans[self.cursor].start > offset) {
+            self.cursor -= 1;
+        }
+        return self.spans[self.cursor].id;
+    }
+};
+
+/// Index of the first span starting after `offset`.
+fn firstBoundaryAfter(spans: []const BoundarySpan, offset: usize) usize {
+    var lo: usize = 0;
+    var hi: usize = spans.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (spans[mid].start <= offset) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
 }
 
 fn findExpansionSpecial(input: []const u8, start: usize) usize {
@@ -3819,55 +3871,46 @@ fn findConditionalSpecial(input: []const u8, start: usize) usize {
 fn appendConditionalSlice(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
-    out_ids: ?*std.ArrayList(u32),
-    input_ids: ?[]const u32,
+    out_spans: ?*std.ArrayList(BoundarySpan),
+    input_spans: ?[]const BoundarySpan,
+    span_base: usize,
     input: []const u8,
     start: usize,
     end: usize,
 ) Error!void {
     if (end <= start) return;
+    const out_start = out.items.len;
     try out.appendSlice(allocator, input[start..end]);
-    const ids = out_ids orelse return;
-    if (input_ids) |source| {
-        const available = @min(end, source.len);
-        if (available > start) {
-            try ids.appendSlice(allocator, source[start..available]);
-        }
-        if (end > available) {
-            try ids.appendNTimes(allocator, 0, end - available);
-        }
-    } else {
-        try ids.appendNTimes(allocator, 0, end - start);
+    const spans = out_spans orelse return;
+    const source = input_spans orelse return;
+    const abs_start = span_base + start;
+    const abs_end = span_base + end;
+    const boundary_index = firstBoundaryAfter(source, abs_start);
+    const start_id: u32 = if (boundary_index == 0)
+        0
+    else
+        source[boundary_index - 1].id;
+    if (spans.items.len == 0 or
+        spans.items[spans.items.len - 1].id != start_id)
+    {
+        try spans.append(allocator, .{ .start = out_start, .id = start_id });
+    }
+    var index = boundary_index;
+    while (index < source.len and source[index].start < abs_end) : (index += 1) {
+        try spans.append(allocator, .{
+            .start = out_start + (source[index].start - abs_start),
+            .id = source[index].id,
+        });
     }
 }
 
-/// Resolve external conditional sections after parameter-entity expansion.
-fn appendConditionalByte(
-    allocator: std.mem.Allocator,
-    out: *std.ArrayList(u8),
-    out_ids: *std.ArrayList(u32),
-    input_ids: ?[]const u32,
-    position: usize,
-    byte: u8,
-) Error!void {
-    try out.append(allocator, byte);
-    if (input_ids) |ids| {
-        try out_ids.append(
-            allocator,
-            if (position < ids.len) ids[position] else 0,
-        );
-    } else {
-        try out_ids.append(allocator, 0);
-    }
-}
-
-/// Resolve external conditional sections after parameter-entity expansion.
 fn evaluateConditionals(
     allocator: std.mem.Allocator,
     input: []const u8,
-    input_ids: ?[]const u32,
+    input_spans: ?[]const BoundarySpan,
+    span_base: usize,
     out: *std.ArrayList(u8),
-    out_ids: ?*std.ArrayList(u32),
+    out_spans: ?*std.ArrayList(BoundarySpan),
 ) Error!void {
     var pos: usize = 0;
     var quote: u8 = 0;
@@ -3878,8 +3921,9 @@ fn evaluateConditionals(
             try appendConditionalSlice(
                 allocator,
                 out,
-                out_ids,
-                input_ids,
+                out_spans,
+                input_spans,
+                span_base,
                 input,
                 pos,
                 close,
@@ -3888,8 +3932,9 @@ fn evaluateConditionals(
             try appendConditionalSlice(
                 allocator,
                 out,
-                out_ids,
-                input_ids,
+                out_spans,
+                input_spans,
+                span_base,
                 input,
                 close,
                 close + 1,
@@ -3903,8 +3948,9 @@ fn evaluateConditionals(
             try appendConditionalSlice(
                 allocator,
                 out,
-                out_ids,
-                input_ids,
+                out_spans,
+                input_spans,
+                span_base,
                 input,
                 pos,
                 special,
@@ -3918,8 +3964,9 @@ fn evaluateConditionals(
             try appendConditionalSlice(
                 allocator,
                 out,
-                out_ids,
-                input_ids,
+                out_spans,
+                input_spans,
+                span_base,
                 input,
                 pos,
                 pos + 1,
@@ -3933,8 +3980,9 @@ fn evaluateConditionals(
             try appendConditionalSlice(
                 allocator,
                 out,
-                out_ids,
-                input_ids,
+                out_spans,
+                input_spans,
+                span_base,
                 input,
                 pos,
                 end + 3,
@@ -3948,8 +3996,9 @@ fn evaluateConditionals(
             try appendConditionalSlice(
                 allocator,
                 out,
-                out_ids,
-                input_ids,
+                out_spans,
+                input_spans,
+                span_base,
                 input,
                 pos,
                 end + 2,
@@ -3963,8 +4012,9 @@ fn evaluateConditionals(
             try appendConditionalSlice(
                 allocator,
                 out,
-                out_ids,
-                input_ids,
+                out_spans,
+                input_spans,
+                span_base,
                 input,
                 pos,
                 pos + 1,
@@ -4053,16 +4103,13 @@ fn evaluateConditionals(
         const content_end = scan - 3;
 
         if (std.mem.eql(u8, keyword, "INCLUDE")) {
-            const ids_slice: ?[]const u32 = if (input_ids) |ids|
-                ids[content_start..content_end]
-            else
-                null;
             try evaluateConditionals(
                 allocator,
                 input[content_start..content_end],
-                ids_slice,
+                input_spans,
+                span_base + content_start,
                 out,
-                out_ids,
+                out_spans,
             );
         } else if (!std.mem.eql(u8, keyword, "IGNORE")) {
             return error.InvalidDoctype;
