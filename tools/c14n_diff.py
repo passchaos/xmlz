@@ -6,6 +6,11 @@ import subprocess
 import sys
 import tempfile
 
+try:
+    from lxml import etree
+except ImportError:  # pragma: no cover
+    etree = None
+
 DOCUMENTS = [
     '<a z="1" a="2"><b/></a>',
     '<a xmlns="urn:d" xmlns:p="urn:p" xmlns:q="urn:q">'
@@ -43,8 +48,76 @@ MODES = [
 ]
 
 
+SUBSET_CASES = [
+    (
+        "namespaced-subtree",
+        "<root xmlns:a='urn:a'><a:child a:x='1'><a:leaf/></a:child></root>",
+        "/*/*",
+        False,
+    ),
+    (
+        "namespaced-subtree-exclusive",
+        "<root xmlns:a='urn:a'><a:child a:x='1'><a:leaf/></a:child></root>",
+        "/*/*",
+        True,
+    ),
+    (
+        "default-namespace-reset",
+        "<root xmlns='urn:a'><child xmlns=''><leaf/></child></root>",
+        "/*/*",
+        False,
+    ),
+    (
+        "inherited-default-namespace",
+        "<root xmlns='urn:a'><child><leaf>t</leaf></child></root>",
+        "/*/*",
+        False,
+    ),
+    (
+        "attribute-namespaces",
+        "<root xmlns:a='urn:a' xmlns:b='urn:b'><a:child b:x='1'/></root>",
+        "/*/*",
+        False,
+    ),
+    (
+        "attribute-namespaces-exclusive",
+        "<root xmlns:a='urn:a' xmlns:b='urn:b'><a:child b:x='1'/></root>",
+        "/*/*",
+        True,
+    ),
+    (
+        "nested-default-namespaces",
+        "<root xmlns='urn:a'><child xmlns='urn:b'><leaf xmlns=''/></child></root>",
+        "/*/*",
+        False,
+    ),
+    (
+        "leaf-namespace-propagation",
+        "<root xmlns:a='urn:a'><a:child><a:leaf a:v='1'/></a:child></root>",
+        "/*/*/*",
+        False,
+    ),
+    (
+        "mixed-attributes",
+        "<root xmlns:p='urn:p' xmlns:q='urn:q'>"
+        "<child q:b='2' p:a='1' c='3'/></root>",
+        "/*/*",
+        False,
+    ),
+    (
+        "text-escaping",
+        "<root><child>a&amp;b&lt;c&gt;d</child></root>",
+        "/*/*",
+        False,
+    ),
+]
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def run_bytes(cmd):
+    return subprocess.run(cmd, capture_output=True)
 
 
 def main():
@@ -86,6 +159,52 @@ def main():
                         f"  xmllint: {expected.stdout!r}\n"
                         f"  xmlz:    {actual.stdout!r}"
                     )
+        finally:
+            os.unlink(path)
+    for name, document, xpath, exclusive in SUBSET_CASES:
+        if etree is None:
+            print(f"SKIP subset {name}: lxml is not installed")
+            continue
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".xml", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(document)
+            path = handle.name
+        try:
+            tree = etree.fromstring(document.encode())
+            elements = tree.xpath(xpath)
+            if not elements:
+                print(f"SKIP subset {name}: xpath selected nothing")
+                continue
+            expected = etree.tostring(
+                elements[0],
+                method="c14n",
+                exclusive=exclusive,
+                with_comments=False,
+            )
+            expression = (
+                f"{xpath}/descendant-or-self::node() | "
+                f"{xpath}/descendant-or-self::node()/@*"
+            )
+            args = [canonicalizer, path, f"--select={expression}"]
+            if exclusive:
+                args.append("--exclusive")
+            actual = run_bytes(args)
+            checks += 1
+            if actual.returncode != 0:
+                failures += 1
+                print(
+                    f"FAIL subset {name}: xmlz failed: "
+                    f"{actual.stderr.decode('utf-8', 'replace').strip()}"
+                )
+                continue
+            if actual.stdout != expected:
+                failures += 1
+                print(
+                    f"FAIL subset {name}\n"
+                    f"  libxml2: {expected!r}\n"
+                    f"  xmlz:    {actual.stdout!r}"
+                )
         finally:
             os.unlink(path)
     print(f"{checks - failures}/{checks} canonicalization differential checks passed")

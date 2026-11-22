@@ -142,7 +142,9 @@ by the conformance harness.
 - `zig build conformance` runs the W3C XML 1.0/1.1 and Namespaces suites,
   including DTD validity checks for tests with a DTD.
 - `zig build xpath-diff` compares XPath results against libxml2's `xmllint`.
-- `zig build c14n-diff` compares canonical forms against libxml2's `xmllint`.
+- `zig build c14n-diff` compares canonical forms against libxml2's `xmllint`
+  for whole documents and against lxml element canonicalization for
+  node-sets.
 - `zig build xslt-diff` compares XSLT result trees against libxslt via `lxml`.
 - `zig build xsd-diff` compares schema validation results against libxml2 via
   `lxml`.

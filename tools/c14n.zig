@@ -2,6 +2,7 @@
 //!
 //! Usage: c14n FILE [--comments] [--c14n11] [--exclusive]
 //!                  [--inclusive=PREFIX[,PREFIX...]]
+//!                  [--select=XPATH] [--no-fixup]
 const std = @import("std");
 const xmlz = @import("xmlz");
 
@@ -12,6 +13,8 @@ pub fn main(init: std.process.Init) !void {
     const path = args.next() orelse return error.MissingInput;
 
     var options: xmlz.c14n.Options = .{};
+    var select_expression: ?[]const u8 = null;
+    var fixup = true;
     var inclusive: std.ArrayList([]const u8) = .empty;
     defer inclusive.deinit(init.gpa);
     while (args.next()) |arg| {
@@ -21,6 +24,10 @@ pub fn main(init: std.process.Init) !void {
             options.version = .c14n_1_1;
         } else if (std.mem.eql(u8, arg, "--exclusive")) {
             options.exclusive = true;
+        } else if (std.mem.startsWith(u8, arg, "--select=")) {
+            select_expression = arg["--select=".len..];
+        } else if (std.mem.eql(u8, arg, "--no-fixup")) {
+            fixup = false;
         } else if (std.mem.startsWith(u8, arg, "--inclusive=")) {
             var tokens = std.mem.tokenizeAny(
                 u8,
@@ -55,6 +62,39 @@ pub fn main(init: std.process.Init) !void {
         .keep_pis = true,
     });
     defer document.deinit();
+
+    if (select_expression) |expression_source| {
+        var expression = try xmlz.xpath.Expression.parse(
+            init.gpa,
+            expression_source,
+        );
+        defer expression.deinit();
+        const context: xmlz.xpath.Context = .{
+            .document = &document,
+            .node = .{ .node = 0 },
+        };
+        var result = try expression.evaluate(init.gpa, &context);
+        defer result.deinit();
+        const nodes = switch (result.value) {
+            .node_set => |nodes| nodes,
+            else => return error.InvalidArgument,
+        };
+        const output = try xmlz.c14n.canonicalizeNodes(
+            init.gpa,
+            &document,
+            nodes,
+            .{
+                .version = options.version,
+                .comments = options.comments,
+                .exclusive = options.exclusive,
+                .inclusive_prefixes = options.inclusive_prefixes,
+                .fixup_inheritable = fixup,
+            },
+        );
+        defer init.gpa.free(output);
+        try std.Io.File.stdout().writeStreamingAll(init.io, output);
+        return;
+    }
 
     const output = try xmlz.c14n.canonicalize(init.gpa, &document, options);
     defer init.gpa.free(output);

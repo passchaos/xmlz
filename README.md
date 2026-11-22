@@ -48,9 +48,12 @@ then exposes them through a pull parser and reusable lexical primitives.
   reference-resolution algorithm, `elementBase` applies `xml:base` along the
   ancestor chain, and `xml:id` matching uses the XML ID whitespace rules.
 - **Canonical XML.** `c14n.canonicalize` emits Canonical XML 1.0/1.1 and
-  Exclusive XML Canonicalization 1.0 forms with specification namespace and
-  attribute ordering, redundant-declaration suppression, and exact escaping,
-  with 69/69 differential checks against libxml2.
+  Exclusive XML Canonicalization 1.0 forms for whole documents, and
+  `c14n.canonicalizeNodes` canonicalizes XPath node-sets with namespace
+  propagation plus `xml:base`/`xml:lang`/`xml:space` fixups. Both use
+  specification namespace and attribute ordering, redundant-declaration
+  suppression, and exact escaping, with 79/79 differential checks against
+  libxml2.
 - **XSLT 1.0.** `xslt.transform` compiles templates, modes, parameters,
   variables, sorting, copy instructions, AVTs, keys, includes/imports with
   precedence and `apply-imports`, attribute sets, whitespace stripping,
@@ -105,7 +108,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | Writer/serializer | Complete |
 | XPath 1.0 | Complete (all axes, core library, differential checks) |
 | XInclude 1.0 | Complete (XML/text, fallback, nesting, xml:base) |
-| Canonical XML | Complete (C14N 1.0/1.1, exclusive; whole documents) |
+| Canonical XML | Complete (C14N 1.0/1.1, exclusive; whole documents and node-sets) |
 | XML Base / xml:id | Complete (RFC 3986 resolution, base chains, ID normalization) |
 | XSLT 1.0 | Core engine (templates, modes, params, sorting, copy, AVTs) |
 | XML Schema 1.0 | Core validation (structures, datatypes, facets, groups, identity) |
