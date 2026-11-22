@@ -243,6 +243,33 @@ STYLESHEETS = [
         {},
     ),
     (
+        "html-void-boolean",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/"><html><head><title>T</title></head><body><br/><img src="x"/><div/><input checked="checked"/><p>a &amp; b &lt; c</p></body></html></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "html-script-style",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/"><html><body><script>if (a &lt; b) x();</script><style>a &gt; b {}</style><textarea>a &lt; b</textarea></body></html></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "html-boolean-attrs",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="html"/>
+        <xsl:template match="/"><html><body><input checked="false" disabled="no" selected=""/><p/></body></html></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>
@@ -681,6 +708,21 @@ def main():
                         f"  xmlz:    {actual_text!r}"
                     )
                 continue
+            if method == "html":
+                expected_html = etree.tostring(
+                    expected_result,
+                    method="html",
+                    encoding="unicode",
+                )
+                actual_text = actual.stdout.decode("utf-8", "replace")
+                if expected_html != actual_text:
+                    failures += 1
+                    print(
+                        f"FAIL {name} (html)\n"
+                        f"  libxslt: {expected_html!r}\n"
+                        f"  xmlz:    {actual_text!r}"
+                    )
+                continue
 
             expected_xml = etree.tostring(
                 expected_result,
@@ -745,6 +787,21 @@ def main():
                     print(
                         f"FAIL {name} (text)\n"
                         f"  libxslt: {expected_text!r}\n"
+                        f"  xmlz:    {actual_text!r}"
+                    )
+                continue
+            if method == "html":
+                expected_html = etree.tostring(
+                    expected_result,
+                    method="html",
+                    encoding="unicode",
+                )
+                actual_text = actual.stdout.decode("utf-8", "replace")
+                if expected_html != actual_text:
+                    failures += 1
+                    print(
+                        f"FAIL {name} (html)\n"
+                        f"  libxslt: {expected_html!r}\n"
                         f"  xmlz:    {actual_text!r}"
                     )
                 continue

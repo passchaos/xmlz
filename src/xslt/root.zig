@@ -521,3 +521,65 @@ test "XSLT rejects circular and misplaced imports" {
         }),
     );
 }
+
+test "XSLT HTML output method" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="html"/>
+        \\  <xsl:template match="/"><html><head><title>T</title></head><body>
+        \\    <br/><img src="x"/><div/><input checked="checked"/>
+        \\    <p>a &amp; b &lt; c</p>
+        \\  </body></html></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<html><head><title>T</title></head><body>" ++
+            "<br><img src=\"x\"><div></div><input checked>" ++
+            "<p>a &amp; b &lt; c</p></body></html>",
+        output,
+    );
+}
+
+test "XSLT HTML output keeps script and style raw" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="html"/>
+        \\  <xsl:template match="/"><html><body>
+        \\    <script>if (a &lt; b) x();</script>
+        \\    <style>a &gt; b {}</style>
+        \\    <textarea>a &lt; b</textarea>
+        \\  </body></html></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<html><body><script>if (a < b) x();</script>" ++
+            "<style>a > b {}</style><textarea>a &lt; b</textarea>" ++
+            "</body></html>",
+        output,
+    );
+}
+
+test "XSLT HTML output minimizes boolean attributes" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="html"/>
+        \\  <xsl:template match="/"><html><body>
+        \\    <input checked="false" disabled="no" selected=""/>
+        \\    <p/>
+        \\  </body></html></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<html><body><input checked disabled selected><p></p></body></html>",
+        output,
+    );
+}

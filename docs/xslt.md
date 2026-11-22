@@ -56,8 +56,10 @@ defer result.deinit();
   `with-param`).
 - `xsl:number` with a `value` expression, and same-name sibling numbering
   otherwise.
-- `xsl:output` methods `xml` and `text`, `omit-xml-declaration`, `indent`, and
-  `version`. Result serialization is always UTF-8.
+- `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
+  `indent`, and `version`. HTML output uses HTML void elements, minimizes
+  common boolean attributes, and keeps `script`/`style` content raw. Result
+  serialization is always UTF-8.
 - The XSLT `current()` function in expressions and predicates.
 
 Match patterns are translated into XPath selectors and evaluated once against
@@ -74,8 +76,8 @@ template priority its specified default behavior.
 - `disable-output-escaping`, `cdata-section-elements`, and DOCTYPE output are
   not emitted, and `xsl:output encoding` is recorded but not transcoded (the
   result is always UTF-8).
-- The `html` output method is serialized as XML without a declaration; HTML
-  void-element and raw-text rules are not implemented.
+- HTML output is compact, does not insert a Content-Type `meta` element, and
+  does not emit DOCTYPE declarations.
 - `xsl:number` `count`, `from`, `level="multiple"`, and `level="any"` are not
   implemented.
 - `format-number`, `document`, `generate-id`, `system-property`,
@@ -95,5 +97,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-46/46 XSLT differential checks passed
+49/49 XSLT differential checks passed
 ```

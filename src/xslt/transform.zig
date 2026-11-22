@@ -42,6 +42,15 @@ pub const Result = struct {
             try writeTextNode(out, &self.document, self.document.documentNode());
             return;
         }
+        if (self.output.method == .html) {
+            try writeHtmlNode(
+                out,
+                &self.document,
+                self.document.documentNode(),
+                false,
+            );
+            return;
+        }
         try writer_mod.writeDocument(out, &self.document, .{
             .xml_declaration = self.output.method == .xml and
                 !self.output.omit_xml_declaration,
@@ -1648,6 +1657,131 @@ fn resolveDefaultNamespace(bindings: []const namespace.Binding) []const u8 {
         if (binding.prefix.len == 0) return binding.uri;
     }
     return "";
+}
+
+fn writeHtmlNode(
+    out: *std.Io.Writer,
+    document: *const dom.Document,
+    id: dom.NodeId,
+    raw_text: bool,
+) std.Io.Writer.Error!void {
+    const node_value = document.node(id);
+    switch (node_value.kind) {
+        .document => {
+            var child = node_value.first_child;
+            while (child != dom.null_node) : (child = document.node(child).next_sibling) {
+                try writeHtmlNode(out, document, child, false);
+            }
+        },
+        .element => try writeHtmlElement(out, document, id),
+        .text => {
+            if (raw_text) {
+                try out.writeAll(node_value.value);
+            } else {
+                try writeHtmlText(out, node_value.value);
+            }
+        },
+        .comment => {
+            try out.writeAll("<!--");
+            try out.writeAll(node_value.value);
+            try out.writeAll("-->");
+        },
+        .processing_instruction => {
+            try out.writeAll("<?");
+            try out.writeAll(node_value.name);
+            if (node_value.value.len != 0) {
+                try out.writeByte(' ');
+                try out.writeAll(node_value.value);
+            }
+            try out.writeAll("?>");
+        },
+    }
+}
+
+fn writeHtmlElement(
+    out: *std.Io.Writer,
+    document: *const dom.Document,
+    id: dom.NodeId,
+) std.Io.Writer.Error!void {
+    const node_value = document.node(id);
+    try out.writeByte('<');
+    try out.writeAll(node_value.name);
+    for (document.attributesOf(id)) |attr| {
+        try out.writeByte(' ');
+        try out.writeAll(attr.name);
+        if (attr.ns.len == 0 and isHtmlBooleanAttribute(attr.name)) {
+            continue;
+        }
+        try out.writeAll("=\"");
+        try writeHtmlAttribute(out, attr.value);
+        try out.writeByte('"');
+    }
+    try out.writeByte('>');
+    if (node_value.ns.len == 0 and isHtmlVoidElement(node_value.local)) {
+        return;
+    }
+    const raw_text = node_value.ns.len == 0 and
+        (std.ascii.eqlIgnoreCase(node_value.local, "script") or
+            std.ascii.eqlIgnoreCase(node_value.local, "style"));
+    var child = node_value.first_child;
+    while (child != dom.null_node) : (child = document.node(child).next_sibling) {
+        try writeHtmlNode(out, document, child, raw_text);
+    }
+    try out.writeAll("</");
+    try out.writeAll(node_value.name);
+    try out.writeByte('>');
+}
+
+fn writeHtmlText(
+    out: *std.Io.Writer,
+    text: []const u8,
+) std.Io.Writer.Error!void {
+    for (text) |byte| {
+        switch (byte) {
+            '&' => try out.writeAll("&amp;"),
+            '<' => try out.writeAll("&lt;"),
+            '>' => try out.writeAll("&gt;"),
+            else => try out.writeByte(byte),
+        }
+    }
+}
+
+fn writeHtmlAttribute(
+    out: *std.Io.Writer,
+    value: []const u8,
+) std.Io.Writer.Error!void {
+    for (value) |byte| {
+        switch (byte) {
+            '&' => try out.writeAll("&amp;"),
+            '<' => try out.writeAll("&lt;"),
+            '>' => try out.writeAll("&gt;"),
+            '"' => try out.writeAll("&quot;"),
+            else => try out.writeByte(byte),
+        }
+    }
+}
+
+fn isHtmlVoidElement(local: []const u8) bool {
+    const void_elements = [_][]const u8{
+        "area", "base",  "basefont", "br",   "col",  "frame", "hr",
+        "img",  "input", "isindex",  "link", "meta", "param",
+    };
+    for (void_elements) |candidate| {
+        if (std.ascii.eqlIgnoreCase(local, candidate)) return true;
+    }
+    return false;
+}
+
+fn isHtmlBooleanAttribute(name: []const u8) bool {
+    const boolean_attributes = [_][]const u8{
+        "checked", "compact",  "declare",  "defer",    "disabled",
+        "ismap",   "multiple", "nohref",   "noresize", "noshade",
+        "nowrap",  "readonly", "selected",
+    };
+    for (boolean_attributes) |candidate| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
+    }
+    return false;
 }
 
 fn writeTextNode(
