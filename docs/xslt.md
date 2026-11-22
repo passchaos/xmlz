@@ -215,6 +215,11 @@ x86-64):
 | identity transform | 30.8 ms | 51.0 ms |
 | sorted report | 28.9 ms | 45.5 ms |
 
+The vendored xmlspec workload (XML 1.0 Second Edition to HTML) is a second
+real-world test. It exercises `xsl:number` heavily (`level="any"`,
+`level="multiple"`, count/from patterns), `//` paths, and a large result
+tree: about 19 ms per transform against 11 ms for libxslt through lxml.
+
 The real-world DocBook HTML transform (`tests/docbook` from libxslt,
 `html/docbook.xsl` over `test/gdp-handbook.xml`, with the full 440 KiB
 DocBook 4.1.2 DTD loaded) produces output identical to the libxslt
@@ -230,6 +235,11 @@ The hot paths are designed for repeated transforms:
   document, and documents loaded by `document()` are indexed lazily.
 - `xsl:call-template`, global variables, and attribute sets use name
   indexes instead of scanning the stylesheet.
+- `xsl:number` count/from patterns are tested with the structural matcher
+  when possible; node membership uses a bitmap, and `level="any"` counts
+  use binary searches over match sets (or a lazy per-document name index)
+  instead of walking the document backwards.
+- `//name` paths traverse descendants once and test each node directly.
 - `xsl:strip-space`/`xsl:preserve-space` declarations are folded into
   per-name lookup tables instead of scanning every rule per element.
 - `id()` uses a per-document hash index built from DTD-declared ID
