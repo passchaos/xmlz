@@ -386,15 +386,67 @@ fn decodeLatin1Alloc(
 ) ![]u8 {
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
-    for (source) |byte| {
-        try appendCodepoint(
-            &output,
-            allocator,
-            @intCast(byte),
-            max_output_bytes,
-        );
+    var pos: usize = 0;
+    while (pos < source.len) {
+        const high = findHighByte(source, pos);
+        if (high > pos) {
+            const run = high - pos;
+            if (run > max_output_bytes or
+                output.items.len > max_output_bytes - run)
+            {
+                return error.SvgResourceInputTooLarge;
+            }
+            try output.appendSlice(allocator, source[pos..high]);
+            pos = high;
+            if (pos >= source.len) break;
+        }
+        const byte = source[pos];
+        var encoded: [4]u8 = undefined;
+        const count = std.unicode.utf8Encode(@as(u21, byte), &encoded) catch
+            return error.InvalidXmlEncoding;
+        if (count > max_output_bytes or
+            output.items.len > max_output_bytes - count)
+        {
+            return error.SvgResourceInputTooLarge;
+        }
+        try output.appendSlice(allocator, encoded[0..count]);
+        pos += 1;
     }
     return output.toOwnedSlice(allocator);
+}
+
+/// First byte at or after `start` that is not ASCII.
+fn findHighByte(input: []const u8, start: usize) usize {
+    const Vec = @Vector(32, u8);
+    const threshold: Vec = @splat(0x80);
+    var index = start;
+    while (index + 32 <= input.len) : (index += 32) {
+        const chunk: Vec = input[index..][0..32].*;
+        const mask: u32 = @bitCast(chunk >= threshold);
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < input.len) : (index += 1) {
+        if (input[index] >= 0x80) return index;
+    }
+    return input.len;
+}
+
+/// First byte at or after `start` in the Windows-1252 extension range.
+fn findWindows1252Special(input: []const u8, start: usize) usize {
+    const Vec = @Vector(32, u8);
+    const low: Vec = @splat(0x80);
+    const high: Vec = @splat(0xA0);
+    var index = start;
+    while (index + 32 <= input.len) : (index += 32) {
+        const chunk: Vec = input[index..][0..32].*;
+        const mask: u32 = @as(u32, @bitCast(chunk >= low)) &
+            @as(u32, @bitCast(chunk < high));
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < input.len) : (index += 1) {
+        if (input[index] >= 0x80 and input[index] < 0xA0) return index;
+    }
+    return input.len;
 }
 
 fn decodeWindows1252Alloc(
@@ -404,20 +456,30 @@ fn decodeWindows1252Alloc(
 ) ![]u8 {
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(allocator);
-    for (source) |byte| {
-        const codepoint: u21 = if (byte < 0x80 or byte >= 0xA0)
-            byte
-        else blk: {
-            const mapped = windows_1252[byte - 0x80];
-            if (mapped == 0) return error.InvalidXmlEncoding;
-            break :blk mapped;
-        };
+    var pos: usize = 0;
+    while (pos < source.len) {
+        const special = findWindows1252Special(source, pos);
+        if (special > pos) {
+            const run = special - pos;
+            if (run > max_output_bytes or
+                output.items.len > max_output_bytes - run)
+            {
+                return error.SvgResourceInputTooLarge;
+            }
+            try output.appendSlice(allocator, source[pos..special]);
+            pos = special;
+            if (pos >= source.len) break;
+        }
+        const byte = source[pos];
+        const mapped = windows_1252[byte - 0x80];
+        if (mapped == 0) return error.InvalidXmlEncoding;
         try appendCodepoint(
             &output,
             allocator,
-            codepoint,
+            mapped,
             max_output_bytes,
         );
+        pos += 1;
     }
     return output.toOwnedSlice(allocator);
 }

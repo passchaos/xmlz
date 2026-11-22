@@ -6466,24 +6466,69 @@ const html_tag_table = [_]HtmlTagInfo{
     .{ .name = "var", .is_inline = true },
 };
 
-fn htmlTagInfo(name: []const u8) ?HtmlTagInfo {
-    for (html_tag_table) |info| {
-        if (std.ascii.eqlIgnoreCase(info.name, name)) return info;
+const html_tag_map = std.StaticStringMap(HtmlTagInfo).initComptime(blk: {
+    var entries: [html_tag_table.len]struct {
+        []const u8,
+        HtmlTagInfo,
+    } = undefined;
+    for (html_tag_table, 0..) |info, index| {
+        entries[index] = .{ info.name, info };
     }
-    return null;
+    break :blk entries;
+});
+
+const html_uri_attributes = std.StaticStringMap(void).initComptime(.{
+    .{ "href", {} },
+    .{ "src", {} },
+    .{ "action", {} },
+    .{ "name", {} },
+    .{ "cite", {} },
+    .{ "longdesc", {} },
+    .{ "usemap", {} },
+    .{ "background", {} },
+    .{ "profile", {} },
+    .{ "classid", {} },
+    .{ "codebase", {} },
+    .{ "data", {} },
+    .{ "formaction", {} },
+    .{ "icon", {} },
+    .{ "manifest", {} },
+    .{ "poster", {} },
+});
+
+const html_boolean_attributes = std.StaticStringMap(void).initComptime(.{
+    .{ "checked", {} },
+    .{ "compact", {} },
+    .{ "declare", {} },
+    .{ "defer", {} },
+    .{ "disabled", {} },
+    .{ "ismap", {} },
+    .{ "multiple", {} },
+    .{ "nohref", {} },
+    .{ "noresize", {} },
+    .{ "noshade", {} },
+    .{ "nowrap", {} },
+    .{ "readonly", {} },
+    .{ "selected", {} },
+});
+
+/// HTML element and attribute names are ASCII; lowercase into a stack buffer
+/// before the table lookup so lookups stay case-insensitive.
+fn htmlNameLower(name: []const u8, buffer: []u8) ?[]const u8 {
+    if (name.len > buffer.len) return null;
+    return std.ascii.lowerString(buffer, name);
+}
+
+fn htmlTagInfo(name: []const u8) ?HtmlTagInfo {
+    var buffer: [64]u8 = undefined;
+    const lower = htmlNameLower(name, &buffer) orelse return null;
+    return html_tag_map.get(lower);
 }
 
 fn isHtmlUriAttribute(name: []const u8) bool {
-    const uri_attributes = [_][]const u8{
-        "href",     "src",    "action",     "name",    "cite",
-        "longdesc", "usemap", "background", "profile", "classid",
-        "codebase", "data",   "formaction", "icon",    "manifest",
-        "poster",
-    };
-    for (uri_attributes) |candidate| {
-        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
-    }
-    return false;
+    var buffer: [64]u8 = undefined;
+    const lower = htmlNameLower(name, &buffer) orelse return false;
+    return html_uri_attributes.has(lower);
 }
 
 fn writeHtmlUriAttribute(
@@ -6516,17 +6561,68 @@ fn writeHtmlUriAttribute(
     }
 }
 
+fn findHtmlTextSpecial(text: []const u8, start: usize) usize {
+    const Vec = @Vector(32, u8);
+    const amp: Vec = @splat('&');
+    const lt: Vec = @splat('<');
+    const gt: Vec = @splat('>');
+    var index = start;
+    while (index + 32 <= text.len) : (index += 32) {
+        const chunk: Vec = text[index..][0..32].*;
+        const mask: u32 = @bitCast((chunk == amp) | (chunk == lt) | (chunk == gt));
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < text.len) : (index += 1) {
+        switch (text[index]) {
+            '&', '<', '>' => return index,
+            else => {},
+        }
+    }
+    return text.len;
+}
+
+fn findHtmlAttributeSpecial(value: []const u8, start: usize) usize {
+    const Vec = @Vector(32, u8);
+    const amp: Vec = @splat('&');
+    const lt: Vec = @splat('<');
+    const gt: Vec = @splat('>');
+    const quote: Vec = @splat('"');
+    var index = start;
+    while (index + 32 <= value.len) : (index += 32) {
+        const chunk: Vec = value[index..][0..32].*;
+        const mask: u32 = @bitCast(
+            (chunk == amp) | (chunk == lt) | (chunk == gt) | (chunk == quote),
+        );
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < value.len) : (index += 1) {
+        switch (value[index]) {
+            '&', '<', '>', '"' => return index,
+            else => {},
+        }
+    }
+    return value.len;
+}
+
 fn writeHtmlText(
     out: *std.Io.Writer,
     text: []const u8,
 ) std.Io.Writer.Error!void {
-    for (text) |byte| {
-        switch (byte) {
+    var pos: usize = 0;
+    while (pos < text.len) {
+        const special = findHtmlTextSpecial(text, pos);
+        if (special > pos) {
+            try out.writeAll(text[pos..special]);
+            pos = special;
+            if (pos >= text.len) break;
+        }
+        switch (text[pos]) {
             '&' => try out.writeAll("&amp;"),
             '<' => try out.writeAll("&lt;"),
             '>' => try out.writeAll("&gt;"),
-            else => try out.writeByte(byte),
+            else => unreachable,
         }
+        pos += 1;
     }
 }
 
@@ -6534,38 +6630,29 @@ fn writeHtmlAttribute(
     out: *std.Io.Writer,
     value: []const u8,
 ) std.Io.Writer.Error!void {
-    for (value) |byte| {
-        switch (byte) {
+    var pos: usize = 0;
+    while (pos < value.len) {
+        const special = findHtmlAttributeSpecial(value, pos);
+        if (special > pos) {
+            try out.writeAll(value[pos..special]);
+            pos = special;
+            if (pos >= value.len) break;
+        }
+        switch (value[pos]) {
             '&' => try out.writeAll("&amp;"),
             '<' => try out.writeAll("&lt;"),
             '>' => try out.writeAll("&gt;"),
             '"' => try out.writeAll("&quot;"),
-            else => try out.writeByte(byte),
+            else => unreachable,
         }
+        pos += 1;
     }
-}
-
-fn isHtmlVoidElement(local: []const u8) bool {
-    const void_elements = [_][]const u8{
-        "area", "base",  "basefont", "br",   "col",  "frame", "hr",
-        "img",  "input", "isindex",  "link", "meta", "param",
-    };
-    for (void_elements) |candidate| {
-        if (std.ascii.eqlIgnoreCase(local, candidate)) return true;
-    }
-    return false;
 }
 
 fn isHtmlBooleanAttribute(name: []const u8) bool {
-    const boolean_attributes = [_][]const u8{
-        "checked", "compact",  "declare",  "defer",    "disabled",
-        "ismap",   "multiple", "nohref",   "noresize", "noshade",
-        "nowrap",  "readonly", "selected",
-    };
-    for (boolean_attributes) |candidate| {
-        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
-    }
-    return false;
+    var buffer: [64]u8 = undefined;
+    const lower = htmlNameLower(name, &buffer) orelse return false;
+    return html_boolean_attributes.has(lower);
 }
 
 fn writeTextNode(
