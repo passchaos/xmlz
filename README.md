@@ -99,7 +99,7 @@ then exposes them through a pull parser and reusable lexical primitives.
   repetition, mixed content, text, empty, data/value (XSD datatype libraries,
   facets, `except`), lists, recursive defines, includes, nested grammars,
   `parentRef`, external references, implicit grouping of multiple content
-  children, and embedded Schematron patterns, with 77/77 differential checks
+  children, and embedded Schematron patterns, with 86/86 differential checks
   against libxml2 (including catalog-aware includes) plus 33/33 compact-syntax
   checks.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,

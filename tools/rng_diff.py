@@ -25,6 +25,43 @@ RNG2SCH = os.path.join(
 
 CASES = [
     (
+        "implicit-group-attribute-content",
+        f"""<element xmlns="{RNG}" name="root">
+          <attribute name="id"><text/></attribute>
+          <text/>
+        </element>""",
+        [
+            "<root id='x'>hi</root>",
+            "<root id='x'/>",
+            "<root>hi</root>",
+        ],
+    ),
+    (
+        "implicit-group-three-children",
+        f"""<element xmlns="{RNG}" name="root">
+          <attribute name="a"><text/></attribute>
+          <attribute name="b"><text/></attribute>
+          <empty/>
+        </element>""",
+        [
+            "<root a='1' b='2'/>",
+            "<root a='1'/>",
+            "<root b='2'/>",
+        ],
+    ),
+    (
+        "attribute-default-content",
+        f"""<element xmlns="{RNG}" name="root">
+          <attribute name="id"/>
+          <empty/>
+        </element>""",
+        [
+            "<root id='x'/>",
+            "<root id=''/>",
+            "<root/>",
+        ],
+    ),
+    (
         "element-sequence",
         f"""<element xmlns="{RNG}" name="root">
           <group>

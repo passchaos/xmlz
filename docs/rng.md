@@ -90,7 +90,7 @@ overrides, external references, catalog-resolved includes, and embedded
 Schematron patterns. Expected output:
 
 ```text
-77/77 RELAX NG differential checks passed
+86/86 RELAX NG differential checks passed
 ```
 
 The `rng` command accepts `--catalog=FILE`; `include` and `externalRef`
