@@ -218,7 +218,8 @@ x86-64):
 The vendored xmlspec workload (XML 1.0 Second Edition to HTML) is a second
 real-world test. It exercises `xsl:number` heavily (`level="any"`,
 `level="multiple"`, count/from patterns), `//` paths, and a large result
-tree: about 19 ms per transform against 11 ms for libxslt through lxml.
+tree: about 10.6 ms per transform, matching libxslt through lxml (~10.8 ms
+median).
 
 The real-world DocBook HTML transform (`tests/docbook` from libxslt,
 `html/docbook.xsl` over `test/gdp-handbook.xml`, with the full 440 KiB
@@ -239,7 +240,9 @@ The hot paths are designed for repeated transforms:
   when possible; node membership uses a bitmap, and `level="any"` counts
   use binary searches over match sets (or a lazy per-document name index)
   instead of walking the document backwards.
-- `//name` paths traverse descendants once and test each node directly.
+- `//name` paths traverse descendants once and test each node directly,
+  including non-positional predicates, instead of materializing every
+  descendant and filtering children.
 - `xsl:strip-space`/`xsl:preserve-space` declarations are folded into
   per-name lookup tables instead of scanning every rule per element.
 - `id()` uses a per-document hash index built from DTD-declared ID

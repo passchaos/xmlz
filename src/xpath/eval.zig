@@ -196,7 +196,7 @@ const Evaluator = struct {
             path.steps[0].predicates.len == 0 and
             path.steps[0].node_test == .node and
             path.steps[1].axis == .child and
-            path.steps[1].predicates.len == 0)
+            !predicatesNeedPositions(path.steps[1].predicates))
         {
             const step = path.steps[1];
             const prefix_uri = try resolveNameTestPrefix(
@@ -211,11 +211,23 @@ const Evaluator = struct {
                 prefix_uri,
                 &out,
             );
-            if (out.items.len == 0) return .{ .node_set = &.{} };
-            const owned: []const value.NodeRef = try out.toOwnedSlice(
-                self.allocator,
-            );
-            return .{ .node_set = owned };
+            if (step.predicates.len != 0) {
+                if (try self.filterDescendantMatches(
+                    context,
+                    step.predicates,
+                    &out,
+                )) |nodes| {
+                    return .{ .node_set = nodes };
+                }
+                // A predicate produced a numeric result (positional
+                // filtering), so the general path must handle it.
+            } else {
+                if (out.items.len == 0) return .{ .node_set = &.{} };
+                const owned: []const value.NodeRef = try out.toOwnedSlice(
+                    self.allocator,
+                );
+                return .{ .node_set = owned };
+            }
         }
         var initial: [1]value.NodeRef = undefined;
         var current: []const value.NodeRef = undefined;
@@ -545,6 +557,35 @@ const Evaluator = struct {
                 .order = @intCast(index),
             } });
         }
+    }
+
+    /// Apply non-positional predicates to the collected nodes. Returns null
+    /// when a predicate yields a number, which the caller must treat as
+    /// positional filtering.
+    fn filterDescendantMatches(
+        self: *Evaluator,
+        context: *const value.Context,
+        predicates: []const *ast.Expr,
+        nodes: *std.ArrayList(value.NodeRef),
+    ) Error!?[]const value.NodeRef {
+        var predicate_context = context.*;
+        predicate_context.position = 1;
+        predicate_context.size = 1;
+        var filtered: std.ArrayList(value.NodeRef) = .empty;
+        outer: for (nodes.items) |candidate| {
+            predicate_context.node = candidate;
+            for (predicates) |predicate| {
+                const result = try self.eval(predicate, &predicate_context);
+                if (result == .number) return null;
+                if (!result.toBoolean()) continue :outer;
+            }
+            try filtered.append(self.allocator, candidate);
+        }
+        if (filtered.items.len == 0) return &.{};
+        const owned: []const value.NodeRef = try filtered.toOwnedSlice(
+            self.allocator,
+        );
+        return owned;
     }
 
     fn appendDescendantMatches(
@@ -2377,6 +2418,53 @@ fn isForwardAxis(axis: ast.Axis) bool {
         .preceding,
         .preceding_sibling,
         => false,
+    };
+}
+
+/// Whether any predicate depends on position()/last() or is a bare number.
+fn predicatesNeedPositions(predicates: []const *ast.Expr) bool {
+    for (predicates) |predicate| {
+        if (predicate.* == .number) return true;
+        if (exprUsesPositionFunction(predicate)) return true;
+    }
+    return false;
+}
+
+fn exprUsesPositionFunction(expression: *const ast.Expr) bool {
+    return switch (expression.*) {
+        .function_call => |call| blk: {
+            if (std.mem.eql(u8, call.name, "position") or
+                std.mem.eql(u8, call.name, "last"))
+            {
+                break :blk true;
+            }
+            for (call.args) |argument| {
+                if (exprUsesPositionFunction(argument)) break :blk true;
+            }
+            break :blk false;
+        },
+        .binary => |binary| exprUsesPositionFunction(binary.lhs) or
+            exprUsesPositionFunction(binary.rhs),
+        .unary_minus => |inner| exprUsesPositionFunction(inner),
+        .path => |path| blk: {
+            if (path.start) |start| {
+                if (exprUsesPositionFunction(start)) break :blk true;
+            }
+            for (path.steps) |step| {
+                for (step.predicates) |predicate| {
+                    if (exprUsesPositionFunction(predicate)) break :blk true;
+                }
+            }
+            break :blk false;
+        },
+        .filter => |filter| blk: {
+            if (exprUsesPositionFunction(filter.primary)) break :blk true;
+            for (filter.predicates) |predicate| {
+                if (exprUsesPositionFunction(predicate)) break :blk true;
+            }
+            break :blk false;
+        },
+        .literal, .number, .variable => false,
     };
 }
 
