@@ -83,6 +83,17 @@ pub fn build(b: *std.Build) void {
     c14n_tool.root_module.addImport("xmlz", mod);
     b.installArtifact(c14n_tool);
 
+    const xslt_tool = b.addExecutable(.{
+        .name = "xslt",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/xslt.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    xslt_tool.root_module.addImport("xmlz", mod);
+    b.installArtifact(xslt_tool);
+
     const xpath_diff = b.addSystemCommand(&.{
         "python3",
         "tools/xpath_diff.py",
@@ -104,6 +115,17 @@ pub fn build(b: *std.Build) void {
         "Differential canonicalization checks against libxml2's xmllint",
     );
     c14n_diff_step.dependOn(&c14n_diff.step);
+
+    const xslt_diff = b.addSystemCommand(&.{
+        "python3",
+        "tools/xslt_diff.py",
+    });
+    xslt_diff.addFileArg(xslt_tool.getEmittedBin());
+    const xslt_diff_step = b.step(
+        "xslt-diff",
+        "Differential XSLT checks against libxslt through lxml",
+    );
+    xslt_diff_step.dependOn(&xslt_diff.step);
 
     const check_step = b.step("check", "Run unit tests and the conformance suite");
     check_step.dependOn(test_step);

@@ -16,6 +16,7 @@ pub const dom_builder = @import("dom_builder.zig");
 pub const writer = @import("writer.zig");
 pub const c14n = @import("c14n.zig");
 pub const xpath = @import("xpath/root.zig");
+pub const xslt = @import("xslt/root.zig");
 pub const validation = @import("validation.zig");
 
 const findTagEnd = markup.findTagEnd;
@@ -40,6 +41,7 @@ test {
     _ = writer;
     _ = c14n;
     _ = xpath;
+    _ = xslt;
     _ = validation;
     _ = @import("fuzz_tests.zig");
 }

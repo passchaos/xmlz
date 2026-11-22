@@ -15,6 +15,8 @@ chars / encoding / markup / character_data
                   +-------+--------+
                   |                |
                writer           xpath / xinclude / c14n
+                                  |
+                                xslt
 ```
 
 ## Pull parser
@@ -84,6 +86,17 @@ pass element-aware base URIs to the resolver, including the base established by
 an included document's root, and XPath `id()` matches `xml:id` with the
 required whitespace normalization.
 
+## XSLT
+
+`xslt` compiles stylesheet instruction trees and translates match patterns
+into XPath selectors that are evaluated once per transform. Template conflict
+resolution follows XSLT priority and document order. The runtime executes
+templates, modes, parameters, variables, sorting, copy instructions, literal
+result elements, AVTs, and the core instruction set into a `dom_builder`
+document, reusing the XPath engine for expressions and `current()`. Imported
+stylesheets, keys, result-tree-fragment node sets, and HTML serialization are
+not implemented.
+
 ## Trusted mode
 
 `Parser.Options.trusted = true` skips character, name, duplicate-attribute, and
@@ -99,5 +112,6 @@ by the conformance harness.
   including DTD validity checks for tests with a DTD.
 - `zig build xpath-diff` compares XPath results against libxml2's `xmllint`.
 - `zig build c14n-diff` compares canonical forms against libxml2's `xmllint`.
+- `zig build xslt-diff` compares XSLT result trees against libxslt via `lxml`.
 - `zig build bench` compares pull/DOM throughput against expat, pugixml, and
   libxml2 with reproducible generated input.

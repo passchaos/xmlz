@@ -51,6 +51,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   Exclusive XML Canonicalization 1.0 forms with specification namespace and
   attribute ordering, redundant-declaration suppression, and exact escaping,
   with 69/69 differential checks against libxml2.
+- **XSLT 1.0.** `xslt.transform` compiles templates, modes, parameters,
+  variables, sorting, copy instructions, AVTs, and the core instruction set,
+  reusing the XPath engine for match patterns and expressions, with 35/35
+  differential checks against libxslt.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.
@@ -81,7 +85,8 @@ then exposes them through a pull parser and reusable lexical primitives.
 | XInclude 1.0 | Complete (XML/text, fallback, nesting, xml:base) |
 | Canonical XML | Complete (C14N 1.0/1.1, exclusive; whole documents) |
 | XML Base / xml:id | Complete (RFC 3986 resolution, base chains, ID normalization) |
-| XSD / XSLT | Out of scope for the core engine |
+| XSLT 1.0 | Core engine (templates, modes, params, sorting, copy, AVTs) |
+| XSD | Out of scope for the core engine |
 
 ## Quick start
 
@@ -191,6 +196,7 @@ src/c14n.zig            Canonical XML 1.0/1.1 and exclusive C14N
 src/xinclude.zig        XInclude 1.0 processing
 src/xmlbase.zig         XML Base resolution and xml:id normalization
 src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
+src/xslt/               XSLT 1.0 stylesheet compiler and transformer
 src/namespace.zig       Namespaces in XML 1.0 resolver
 src/root.zig            public API surface
 tools/conformance.zig   W3C suite harness
@@ -213,6 +219,7 @@ zig build check         # both
 zig build bench         # parser/DOM benchmarks vs expat, pugixml, libxml2
 zig build xpath-diff    # XPath differential checks vs libxml2 xmllint
 zig build c14n-diff     # canonicalization differential checks vs libxml2
+zig build xslt-diff     # XSLT differential checks vs libxslt (needs lxml)
 zig build test          # includes deterministic mutation/fuzz smoke tests
 ```
 

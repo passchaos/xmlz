@@ -859,6 +859,12 @@ const Evaluator = struct {
             if (items.len != 0) return error.InvalidArgument;
             return .{ .number = @floatFromInt(context.position) };
         }
+        if (std.mem.eql(u8, name, "current")) {
+            if (items.len != 0) return error.InvalidArgument;
+            const nodes = try self.allocator.alloc(value.NodeRef, 1);
+            nodes[0] = context.current orelse context.node;
+            return .{ .node_set = nodes };
+        }
         if (std.mem.eql(u8, name, "count")) {
             if (items.len != 1) return error.InvalidArgument;
             return .{ .number = @floatFromInt(

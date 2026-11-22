@@ -82,6 +82,8 @@ pub const Variable = struct {
 pub const Context = struct {
     document: *const dom.Document,
     node: NodeRef,
+    /// XSLT current node returned by `current()`. Defaults to `node`.
+    current: ?NodeRef = null,
     position: usize = 1,
     size: usize = 1,
     /// Prefix bindings for name tests. XPath 1.0 does not use the document's
@@ -98,7 +100,11 @@ pub const Context = struct {
     }
 
     pub fn variable(self: *const Context, name: []const u8) ?Value {
-        for (self.variables) |entry| {
+        // Later bindings shadow earlier ones, matching XSLT variable scope.
+        var index = self.variables.len;
+        while (index > 0) {
+            index -= 1;
+            const entry = self.variables[index];
             if (std.mem.eql(u8, entry.name, name)) return entry.value;
         }
         return null;
@@ -113,6 +119,7 @@ pub const Context = struct {
         return .{
             .document = self.document,
             .node = node,
+            .current = self.current,
             .position = position,
             .size = size,
             .namespaces = self.namespaces,
