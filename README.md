@@ -66,8 +66,13 @@ then exposes them through a pull parser and reusable lexical primitives.
   `document()` with resolver caching, `unparsed-entity-uri()`, EXSLT
   `exsl:node-set()`), CDATA
   sections, DOCTYPE declarations, HTML output, and output encodings,
-  and the core instruction set, reusing the XPath engine for match patterns
-  and expressions, with 87/87 differential checks against libxslt (including
+  and the core instruction set. Match patterns compile into an inverted
+  index that matches structural patterns by walking up from each candidate
+  node, while predicate patterns and `id()`/`key()` fall back to the XPath
+  engine; keys, `id()` values, and loaded documents are indexed lazily.
+  Identity and sorted-report transforms run faster than libxslt, and the
+  real-world DocBook HTML transform matches libxslt's output. There are
+  87/87 differential checks against libxslt (including
   catalog-aware includes and `document()`), the complete libxslt general
   regression suite (`zig build xslt-suite`, 205 passed with no tracked
   differences), the libxslt EXSLT corpus (`zig build xslt-exslt-suite`,

@@ -103,10 +103,20 @@ defer result.deinit();
   encodings fall back to UTF-8.
 - The XSLT `current()` function in expressions and predicates.
 
-Match patterns are translated into XPath selectors and evaluated once against
-the source document. This reuses the full XPath engine, including `//`,
-predicates, attribute axes, and namespace-aware name tests, and gives XSLT
-template priority its specified default behavior.
+Match patterns are compiled into an inverted index. Simple patterns (`*`,
+`name`, `text()`, `@*`, `@name`, ...) are bucketed by node kind and expanded
+name. Multi-step patterns and unions (`chapter/title`, `a//b`, `foo|bar`) are
+compiled into structural step chains and matched by walking up from the
+candidate node, so no document-wide selection is needed. Patterns with
+predicates or `id()`/`key()` calls fall back to evaluating the equivalent
+XPath selector once per document, and only for documents that are actually
+transformed. The index preserves XSLT template priority, import precedence,
+and rule order.
+
+Keys and `id()` lookups are indexed per document on first use. Loading a
+document with `document()` therefore costs nothing until a node from it is
+matched, keyed, or looked up, which matters for large lookup tables (DocBook
+localization data, glossaries, symbol tables).
 
 ## libxslt regression suite
 
@@ -189,6 +199,40 @@ libxslt xmlspec suite: 1 passed, 0 failed
 Generated `idN` values are normalized before the comparison. The test
 exercises external DTD loading, DTD-declared ID and default attributes,
 `xsl:strip-space`, imports, `apply-imports`, modes, `id()`, and HTML output.
+
+## Performance
+
+```sh
+zig build -Doptimize=ReleaseFast xslt-bench
+```
+
+The benchmark parses once and applies the stylesheet in-process repeatedly
+for both engines. On a 20 000-row, 3 MiB document (Zig 0.16.0, Ubuntu 24.04,
+x86-64):
+
+| Workload | xmlz | libxslt (lxml) |
+| --- | ---: | ---: |
+| identity transform | 32.5 ms | 55.1 ms |
+| sorted report | 32.1 ms | 44.8 ms |
+
+The real-world DocBook HTML transform (`tests/docbook` from libxslt,
+`html/docbook.xsl` over `test/gdp-handbook.xml`, with the full 440 KiB
+DocBook 4.1.2 DTD loaded) produces output identical to the libxslt
+reference. A full single run takes about 110 ms, of which roughly half is
+parsing the source document and its DTD; a repeated in-process transform
+takes about 42 ms against 21 ms for libxslt through lxml.
+
+The hot paths are designed for repeated transforms:
+
+- Template matching uses the inverted index described above. Structural
+  patterns never scan a document; predicate patterns are evaluated once per
+  document, and documents loaded by `document()` are indexed lazily.
+- `xsl:strip-space`/`xsl:preserve-space` declarations are folded into
+  per-name lookup tables instead of scanning every rule per element.
+- `id()` uses a per-document hash index built from DTD-declared ID
+  attributes and `xml:id`, and `key()` indexes each document on first use.
+- Entity declarations use a hashed table; DocBook's DTD declares thousands
+  of entities, and expansion validates each declaration only once.
 
 ## Limitations
 

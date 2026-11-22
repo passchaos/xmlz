@@ -263,6 +263,7 @@ pub fn apply(
         .source = source,
         .builder = &builder,
         .key_map = KeyMap.init(arena_allocator),
+        .template_index = TemplateIndex.init(arena_allocator),
         .node_ids = NodeIdMap.init(arena_allocator),
         .document_cache = std.StringHashMap(dom.NodeId).init(arena_allocator),
         .resolver = options.resolver,
@@ -272,7 +273,12 @@ pub fn apply(
             *const xpath_ast.Expr,
             *SelectorEntry,
         ).init(arena_allocator),
+        .selector_var_usage = std.AutoHashMap(
+            *const xpath_ast.Expr,
+            bool,
+        ).init(arena_allocator),
     };
+    try runtime.buildSpaceRuleIndex();
     try runtime.prepareSource();
     runtime.source_has_namespaces = documentHasNamespaces(runtime.source);
     try runtime.prepareMergedSource();
@@ -345,11 +351,235 @@ const SimplePattern = union(enum) {
     child_node,
 };
 
+/// A match pattern step that can be checked by walking up from a candidate
+/// node instead of evaluating the pattern as a document-wide selection.
+const StructuralTest = union(enum) {
+    name: NamePattern,
+    node,
+    text,
+    comment,
+    processing_instruction: ?[]const u8,
+};
+
+const StructuralStep = struct {
+    axis: xpath_ast.Axis,
+    node_test: StructuralTest,
+};
+
+/// A match pattern compiled into chains of child/attribute steps, one per
+/// union branch. The `descendant-or-self::node()` markers produced by `//`
+/// are kept as steps so patterns like `a//b` match any ancestor chain.
+const StructuralPattern = struct {
+    alternatives: []const []const StructuralStep,
+};
+
+const PatternMatcher = union(enum) {
+    simple: SimplePattern,
+    structural: StructuralPattern,
+};
+
 const TemplateState = struct {
     template: *const compile.Template,
-    matches: std.AutoHashMap(NodeKey, void),
-    simple: ?SimplePattern = null,
+    matcher: ?PatternMatcher = null,
 };
+
+const NameKey = struct {
+    uri: []const u8,
+    /// Null selects the namespace-wide wildcard (`prefix:*`).
+    local: ?[]const u8,
+};
+
+const NameKeyContext = struct {
+    pub fn hash(_: NameKeyContext, key: NameKey) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(key.uri);
+        hasher.update("\x00");
+        if (key.local) |local| hasher.update(local);
+        return hasher.final();
+    }
+
+    pub fn eql(_: NameKeyContext, a: NameKey, b: NameKey) bool {
+        if (!std.mem.eql(u8, a.uri, b.uri)) return false;
+        const a_local = a.local orelse return b.local == null;
+        const b_local = b.local orelse return false;
+        return std.mem.eql(u8, a_local, b_local);
+    }
+};
+
+const SpaceRuleEntry = struct {
+    index: usize,
+    strip: bool,
+};
+
+const TemplateList = std.ArrayListUnmanaged(u32);
+const NameTemplateMap = std.HashMapUnmanaged(
+    NameKey,
+    TemplateList,
+    NameKeyContext,
+    80,
+);
+
+/// Inverted index from nodes to the template rules that can match them.
+/// Non-simple patterns are evaluated once per document into `nodes`; simple
+/// patterns are bucketed by node kind and expanded name. Matching a node then
+/// costs a hash lookup plus a few short category scans instead of testing
+/// every rule in the stylesheet.
+const TemplateIndex = struct {
+    allocator: std.mem.Allocator,
+    nodes: std.AutoHashMapUnmanaged(NodeKey, TemplateList) = .empty,
+    element_any: TemplateList = .empty,
+    elements: NameTemplateMap = .empty,
+    elements_by_uri: std.StringHashMapUnmanaged(TemplateList) = .empty,
+    attribute_any: TemplateList = .empty,
+    attributes: NameTemplateMap = .empty,
+    attributes_by_uri: std.StringHashMapUnmanaged(TemplateList) = .empty,
+    text: TemplateList = .empty,
+    comment: TemplateList = .empty,
+    processing_instruction: TemplateList = .empty,
+    child_node: TemplateList = .empty,
+    document_node: TemplateList = .empty,
+
+    fn init(allocator: std.mem.Allocator) TemplateIndex {
+        return .{ .allocator = allocator };
+    }
+
+    fn addMatch(self: *TemplateIndex, key: NodeKey, index: u32) !void {
+        const entry = try self.nodes.getOrPut(self.allocator, key);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        // A selector that reaches into documents loaded by `document()` can
+        // be evaluated again when those documents are indexed.
+        for (entry.value_ptr.items) |existing| {
+            if (existing == index) return;
+        }
+        try entry.value_ptr.append(self.allocator, index);
+    }
+
+    fn addMatcher(
+        self: *TemplateIndex,
+        index: u32,
+        matcher: PatternMatcher,
+    ) !void {
+        switch (matcher) {
+            .simple => |pattern| try self.addSimple(index, pattern),
+            .structural => |pattern| try self.addStructural(index, pattern),
+        }
+    }
+
+    fn addSimple(self: *TemplateIndex, index: u32, pattern: SimplePattern) !void {
+        switch (pattern) {
+            .element_any => try self.element_any.append(self.allocator, index),
+            .element_name => |name| try self.addElementName(index, name),
+            .attribute_any => try self.attribute_any.append(
+                self.allocator,
+                index,
+            ),
+            .attribute_name => |name| try self.addAttributeName(index, name),
+            .text => try self.text.append(self.allocator, index),
+            .comment => try self.comment.append(self.allocator, index),
+            .processing_instruction => try self.processing_instruction.append(
+                self.allocator,
+                index,
+            ),
+            .child_node => try self.child_node.append(self.allocator, index),
+        }
+    }
+
+    fn addStructural(
+        self: *TemplateIndex,
+        index: u32,
+        pattern: StructuralPattern,
+    ) !void {
+        for (pattern.alternatives) |steps| {
+            if (steps.len == 0) {
+                try self.document_node.append(self.allocator, index);
+                continue;
+            }
+            const last = steps[steps.len - 1];
+            switch (last.node_test) {
+                .name => |name| {
+                    if (last.axis == .attribute) {
+                        try self.addAttributeName(index, name);
+                    } else {
+                        try self.addElementName(index, name);
+                    }
+                },
+                .node => try self.child_node.append(self.allocator, index),
+                .text => try self.text.append(self.allocator, index),
+                .comment => try self.comment.append(self.allocator, index),
+                .processing_instruction => try self.processing_instruction.append(
+                    self.allocator,
+                    index,
+                ),
+            }
+        }
+    }
+
+    fn addElementName(self: *TemplateIndex, index: u32, name: NamePattern) !void {
+        if (name.local) |local| {
+            try appendName(
+                &self.elements,
+                self.allocator,
+                .{ .uri = name.uri, .local = local },
+                index,
+            );
+        } else if (name.check_namespace) {
+            try appendUri(
+                &self.elements_by_uri,
+                self.allocator,
+                name.uri,
+                index,
+            );
+        } else {
+            try self.element_any.append(self.allocator, index);
+        }
+    }
+
+    fn addAttributeName(
+        self: *TemplateIndex,
+        index: u32,
+        name: NamePattern,
+    ) !void {
+        if (name.local) |local| {
+            try appendName(
+                &self.attributes,
+                self.allocator,
+                .{ .uri = name.uri, .local = local },
+                index,
+            );
+        } else if (name.check_namespace) {
+            try appendUri(
+                &self.attributes_by_uri,
+                self.allocator,
+                name.uri,
+                index,
+            );
+        } else {
+            try self.attribute_any.append(self.allocator, index);
+        }
+    }
+};
+
+fn appendName(
+    map: *NameTemplateMap,
+    allocator: std.mem.Allocator,
+    key: NameKey,
+    index: u32,
+) !void {
+    const entry = try map.getOrPut(allocator, key);
+    if (!entry.found_existing) entry.value_ptr.* = .empty;
+    try entry.value_ptr.append(allocator, index);
+}
+
+fn appendUri(
+    map: *std.StringHashMapUnmanaged(TemplateList),
+    allocator: std.mem.Allocator,
+    uri: []const u8,
+    index: u32,
+) !void {
+    const entry = try map.getOrPut(allocator, uri);
+    if (!entry.found_existing) entry.value_ptr.* = .empty;
+    try entry.value_ptr.append(allocator, index);
+}
 
 const KeyQuery = struct {
     name: []const u8,
@@ -464,11 +694,38 @@ const Runtime = struct {
     global_states: []u8 = &.{},
     supplied_parameters: []const xpath.Variable = &.{},
     template_states: []TemplateState = &.{},
+    template_index: TemplateIndex,
+    /// Documents whose template matches have been indexed, keyed by the
+    /// merged document-root node id.
+    built_match_roots: std.AutoHashMapUnmanaged(usize, void) = .empty,
+    /// Documents whose keys have been indexed, keyed by root node id.
+    built_key_roots: std.AutoHashMapUnmanaged(usize, void) = .empty,
+    /// Indexed `id()` values per document: token -> element node ids.
+    id_index: std.StringHashMapUnmanaged(TemplateList) = .empty,
+    built_id_roots: std.AutoHashMapUnmanaged(usize, void) = .empty,
+    /// DTD-declared ID attribute names grouped by element name.
+    id_attributes: ?std.StringHashMapUnmanaged(
+        std.ArrayListUnmanaged([]const u8),
+    ) = null,
     messages: std.ArrayList([]const u8) = .empty,
     key_map: KeyMap,
     node_ids: NodeIdMap,
     next_node_id: usize = 0,
     selector_cache: std.AutoHashMap(*const xpath_ast.Expr, *SelectorEntry),
+    /// Whether each cached selector expression references a variable.
+    /// Selectors without variable references are safe to cache across
+    /// template invocations.
+    selector_var_usage: std.AutoHashMap(*const xpath_ast.Expr, bool),
+    /// Last matching `xsl:strip-space`/`xsl:preserve-space` declaration per
+    /// element name, namespace wildcard, and global wildcard.
+    space_exact: std.HashMapUnmanaged(
+        NameKey,
+        SpaceRuleEntry,
+        NameKeyContext,
+        80,
+    ) = .empty,
+    space_by_uri: std.StringHashMapUnmanaged(SpaceRuleEntry) = .empty,
+    space_any: ?SpaceRuleEntry = null,
     keys_ready: bool = false,
     /// Growable view of the source document plus documents loaded by
     /// `document()`.
@@ -820,6 +1077,10 @@ const Runtime = struct {
             .namespaces = &.{},
             .variables = &.{},
             .document_range = self.documentRange(root_ref),
+            .id_resolver = .{
+                .context = self,
+                .lookup = lookupId,
+            },
             .xslt_functions = true,
             .current_date_time = self.now,
             .document_base = self.base_uri,
@@ -868,20 +1129,15 @@ const Runtime = struct {
         return error.LoadFailed;
     }
 
-    /// Recompute template matches, keys, and selector caches so the newly
-    /// merged nodes participate in matching.
+    /// Invalidate document-wide caches after `document()` merges a new
+    /// document. Template matches and keys for the new document are indexed
+    /// lazily the first time a node from it is used, so a large lookup table
+    /// that is never transformed costs nothing.
     fn refreshAfterDocumentLoad(self: *Runtime) Error!void {
         if (self.suppress_refresh or self.refresh_depth != 0) return;
         self.refresh_depth += 1;
         defer self.refresh_depth -= 1;
         self.selector_cache.clearRetainingCapacity();
-        if (self.keys_ready) {
-            self.key_map.clearRetainingCapacity();
-            try self.buildKeys();
-        }
-        if (self.template_states.len != 0) {
-            try self.buildTemplateMatches();
-        }
     }
 
     fn copyFilteredNode(
@@ -964,35 +1220,149 @@ const Runtime = struct {
         }
     }
 
+    fn buildSpaceRuleIndex(self: *Runtime) Error!void {
+        for (self.stylesheet.space_rules, 0..) |rule, index| {
+            const entry: SpaceRuleEntry = .{ .index = index, .strip = rule.strip };
+            if (rule.any) {
+                self.space_any = entry;
+            } else if (rule.namespace_uri) |uri| {
+                if (rule.local) |local| {
+                    try self.space_exact.put(self.allocator, .{
+                        .uri = uri,
+                        .local = local,
+                    }, entry);
+                } else {
+                    try self.space_by_uri.put(self.allocator, uri, entry);
+                }
+            }
+        }
+    }
+
     fn shouldStrip(
         self: *Runtime,
         namespace_uri: []const u8,
         local: []const u8,
     ) bool {
         // The last matching declaration wins (imports are compiled first).
-        var winner: ?compile.SpaceRule = null;
-        for (self.stylesheet.space_rules) |rule| {
-            if (rule.matches(namespace_uri, local)) winner = rule;
+        var winner: ?SpaceRuleEntry = null;
+        if (self.space_exact.get(.{
+            .uri = namespace_uri,
+            .local = local,
+        })) |entry| {
+            winner = entry;
         }
-        return if (winner) |rule| rule.strip else false;
+        if (self.space_by_uri.get(namespace_uri)) |entry| {
+            if (winner == null or entry.index > winner.?.index) {
+                winner = entry;
+            }
+        }
+        if (self.space_any) |entry| {
+            if (winner == null or entry.index > winner.?.index) {
+                winner = entry;
+            }
+        }
+        return if (winner) |entry| entry.strip else false;
     }
 
     fn buildKeys(self: *Runtime) Error!void {
         self.keys_ready = false;
+        try self.buildKeysForDocument(.{ .node = 0 });
+        self.keys_ready = true;
+    }
+
+    /// Index the key definitions against one document. Keys are scoped to
+    /// the document of the node passed to `key()`, so documents loaded by
+    /// `document()` can be indexed on first use.
+    fn buildKeysForDocument(
+        self: *Runtime,
+        root: xpath.NodeRef,
+    ) Error!void {
+        const root_id: usize = @intCast(refNodeId(root));
+        if (self.built_key_roots.contains(root_id)) return;
+        try self.built_key_roots.put(self.allocator, root_id, {});
         for (self.stylesheet.keys) |*key_def| {
-            try self.collectKeyNodes(key_def, key_def.selector, .{ .node = 0 });
-            for (self.document_roots.items) |root| {
-                const relative = try relativePattern(
-                    self.allocator,
-                    key_def.selector,
-                );
-                try self.collectKeyNodes(
-                    key_def,
-                    relative,
-                    .{ .node = root },
-                );
+            const selector = if (root_id == 0)
+                key_def.selector
+            else
+                try relativePattern(self.allocator, key_def.selector);
+            try self.collectKeyNodes(key_def, selector, root);
+        }
+        self.sortKeyLists();
+    }
+
+    /// Build the `id()` index for one document. `id()` is heavily used by
+    /// cross-referencing stylesheets, so scanning every node and every DTD
+    /// attribute declaration per call is far too slow.
+    fn buildIdIndexForDocument(
+        self: *Runtime,
+        root: xpath.NodeRef,
+    ) Error!void {
+        const root_id: usize = @intCast(refNodeId(root));
+        if (self.built_id_roots.contains(root_id)) return;
+        try self.built_id_roots.put(self.allocator, root_id, {});
+        try self.buildIdAttributes();
+        const range = self.documentRange(root);
+        const end = @min(range.end, self.source.nodes.len);
+        var index = range.start;
+        while (index < end) : (index += 1) {
+            const node = self.source.node(@intCast(index));
+            if (node.kind != .element) continue;
+            const element: dom.NodeId = @intCast(index);
+            if (self.id_attributes) |map| {
+                if (map.get(node.name)) |names| {
+                    for (names.items) |attribute_name| {
+                        const value = self.source.attribute(
+                            element,
+                            attribute_name,
+                        ) orelse continue;
+                        try self.addIdEntry(value, element);
+                    }
+                }
+            }
+            if (self.source.attributeNs(
+                element,
+                namespace.xml_uri,
+                "id",
+            )) |raw| {
+                var tokens = std.mem.tokenizeAny(u8, raw, " \t\r\n");
+                const token = tokens.next() orelse continue;
+                if (tokens.next() == null) {
+                    try self.addIdEntry(token, element);
+                }
             }
         }
+    }
+
+    fn buildIdAttributes(self: *Runtime) Error!void {
+        if (self.id_attributes != null) return;
+        var map: std.StringHashMapUnmanaged(
+            std.ArrayListUnmanaged([]const u8),
+        ) = .empty;
+        if (self.source.dtd) |dtd| {
+            for (dtd.attributes) |decl| {
+                if (decl.attr_type != .id) continue;
+                const entry = try map.getOrPut(self.allocator, decl.element);
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
+                try entry.value_ptr.append(self.allocator, decl.name);
+            }
+        }
+        self.id_attributes = map;
+    }
+
+    fn addIdEntry(
+        self: *Runtime,
+        token: []const u8,
+        node: dom.NodeId,
+    ) Error!void {
+        const entry = try self.id_index.getOrPut(self.allocator, token);
+        if (!entry.found_existing) entry.value_ptr.* = .empty;
+        const list = entry.value_ptr;
+        if (list.items.len == 0 or list.items[list.items.len - 1] != node) {
+            try list.append(self.allocator, node);
+        }
+    }
+
+    fn sortKeyLists(self: *Runtime) void {
         var iterator = self.key_map.iterator();
         while (iterator.next()) |entry| {
             const list = entry.value_ptr;
@@ -1011,7 +1381,6 @@ const Runtime = struct {
             }
             list.shrinkRetainingCapacity(write);
         }
-        self.keys_ready = true;
     }
 
     fn collectKeyNodes(
@@ -1030,6 +1399,10 @@ const Runtime = struct {
                 .context = self,
                 .lookup = lookupKey,
             } else null,
+            .id_resolver = .{
+                .context = self,
+                .lookup = lookupId,
+            },
             .xslt_functions = true,
             .current_date_time = self.now,
             .node_id_generator = .{
@@ -1109,24 +1482,42 @@ const Runtime = struct {
         const templates = self.stylesheet.templates;
         self.template_states = try self.allocator.alloc(TemplateState, templates.len);
         for (templates, 0..) |*template, index| {
-            self.template_states[index] = .{
-                .template = template,
-                .matches = std.AutoHashMap(NodeKey, void).init(self.allocator),
-            };
-            const selector = template.selector orelse continue;
-            if (simplePattern(template)) |pattern| {
-                self.template_states[index].simple = pattern;
+            self.template_states[index] = .{ .template = template };
+            if (template.selector == null) continue;
+            const matcher: PatternMatcher = if (simplePattern(template)) |pattern|
+                .{ .simple = pattern }
+            else if (try structuralPattern(
+                self.allocator,
+                template,
+            )) |pattern|
+                .{ .structural = pattern }
+            else
                 continue;
-            }
-            try self.collectTemplateMatches(index, selector, .{ .node = 0 });
-            for (self.document_roots.items) |root| {
-                const relative = try relativePattern(self.allocator, selector);
-                try self.collectTemplateMatches(
-                    index,
-                    relative,
-                    .{ .node = root },
-                );
-            }
+            self.template_states[index].matcher = matcher;
+            try self.template_index.addMatcher(@intCast(index), matcher);
+        }
+        // The source document is indexed eagerly; documents loaded later by
+        // `document()` are indexed on first use. Patterns that compile to a
+        // structural chain are matched directly and never precomputed.
+        try self.ensureDocumentMatches(.{ .node = 0 });
+    }
+
+    /// Index the nodes of the document containing `node`. Each non-simple
+    /// match pattern is evaluated once per document rather than once per
+    /// stylesheet, and only for documents that are actually transformed.
+    fn ensureDocumentMatches(self: *Runtime, node: xpath.NodeRef) Error!void {
+        const root: usize = @intCast(self.documentRange(node).start);
+        if (self.built_match_roots.contains(root)) return;
+        try self.built_match_roots.put(self.allocator, root, {});
+        const root_ref: xpath.NodeRef = .{ .node = @intCast(root) };
+        for (self.template_states, 0..) |state, index| {
+            if (state.matcher != null) continue;
+            const selector = state.template.selector orelse continue;
+            const expression = if (root == 0)
+                selector
+            else
+                try relativePattern(self.allocator, selector);
+            try self.collectTemplateMatches(@intCast(index), expression, root_ref);
         }
     }
 
@@ -1146,6 +1537,10 @@ const Runtime = struct {
                 .context = self,
                 .lookup = lookupKey,
             } else null,
+            .id_resolver = .{
+                .context = self,
+                .lookup = lookupId,
+            },
             .xslt_functions = true,
             .current_date_time = self.now,
             .node_id_generator = .{
@@ -1183,9 +1578,9 @@ const Runtime = struct {
         switch (result) {
             .node_set => |nodes| {
                 for (nodes) |ref| {
-                    try self.template_states[index].matches.put(
+                    try self.template_index.addMatch(
                         nodeKey(ref),
-                        {},
+                        @intCast(index),
                     );
                 }
             },
@@ -1282,6 +1677,10 @@ const Runtime = struct {
                 .context = self,
                 .lookup = lookupKey,
             } else null,
+            .id_resolver = .{
+                .context = self,
+                .lookup = lookupId,
+            },
             .number_formatter = .{
                 .context = self,
                 .format = formatNumberCallback,
@@ -1509,31 +1908,8 @@ const Runtime = struct {
         self: *Runtime,
         node: xpath.NodeRef,
         mode: ?[]const u8,
-    ) ?*const compile.Template {
-        const key = nodeKey(node);
-        var best: ?*const compile.Template = null;
-        for (self.template_states) |state| {
-            if (state.template.selector == null) continue;
-            if (!modeMatches(state.template.mode, mode)) continue;
-            if (state.simple) |pattern| {
-                if (!self.simpleMatches(pattern, node)) continue;
-            } else if (!state.matches.contains(key)) {
-                continue;
-            }
-            if (best) |current| {
-                if (state.template.precedence < current.precedence) continue;
-                if (state.template.precedence == current.precedence) {
-                    if (state.template.priority < current.priority) continue;
-                    if (state.template.priority == current.priority and
-                        state.template.order < current.order)
-                    {
-                        continue;
-                    }
-                }
-            }
-            best = state.template;
-        }
-        return best;
+    ) Error!?*const compile.Template {
+        return self.findTemplateWithLimit(node, mode, std.math.maxInt(usize));
     }
 
     fn applyTemplates(
@@ -1564,7 +1940,7 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!void {
-        if (self.findTemplate(node, mode)) |template| {
+        if (try self.findTemplate(node, mode)) |template| {
             try self.executeTemplate(template, node, position, size, params);
         } else {
             try self.builtinTemplate(node, mode, params);
@@ -1713,19 +2089,19 @@ const Runtime = struct {
     ) Error!void {
         const mark = self.variables.items.len;
         defer self.variables.shrinkRetainingCapacity(mark);
-        for (body) |instruction| {
+        for (body) |*instruction| {
             try self.executeInstruction(instruction, node, position, size);
         }
     }
 
     fn executeInstruction(
         self: *Runtime,
-        instruction: compile.Instruction,
+        instruction: *const compile.Instruction,
         node: xpath.NodeRef,
         position: usize,
         size: usize,
     ) Error!void {
-        switch (instruction) {
+        switch (instruction.*) {
             .literal_text => |text| try self.appendText(text),
             .text => |text| try self.appendText(text),
             .raw_text => |text| try self.appendTextRaw(text),
@@ -1906,7 +2282,7 @@ const Runtime = struct {
             position,
             size,
         );
-        if (self.findTemplateBelow(
+        if (try self.findTemplateBelow(
             node,
             self.current_mode,
             current.precedence,
@@ -1924,32 +2300,352 @@ const Runtime = struct {
         node: xpath.NodeRef,
         mode: ?[]const u8,
         maximum_precedence: usize,
-    ) ?*const compile.Template {
-        const key = nodeKey(node);
+    ) Error!?*const compile.Template {
+        return self.findTemplateWithLimit(node, mode, maximum_precedence);
+    }
+
+    /// Pick the best matching rule from the inverted index. Candidates come
+    /// from the per-node match list and the node-kind buckets for simple
+    /// patterns, so only rules that can match are compared.
+    fn findTemplateWithLimit(
+        self: *Runtime,
+        node: xpath.NodeRef,
+        mode: ?[]const u8,
+        maximum_precedence: usize,
+    ) Error!?*const compile.Template {
+        try self.ensureDocumentMatches(node);
         var best: ?*const compile.Template = null;
-        for (self.template_states) |state| {
-            if (state.template.selector == null) continue;
-            if (state.template.precedence >= maximum_precedence) continue;
-            if (!modeMatches(state.template.mode, mode)) continue;
-            if (state.simple) |pattern| {
-                if (!self.simpleMatches(pattern, node)) continue;
-            } else if (!state.matches.contains(key)) {
+        if (self.template_index.nodes.get(nodeKey(node))) |candidates| {
+            for (candidates.items) |index| {
+                const template = self.template_states[index].template;
+                if (template.precedence >= maximum_precedence) continue;
+                if (!modeMatches(template.mode, mode)) continue;
+                best = betterTemplate(best, template);
+            }
+        }
+        self.collectCandidates(
+            node,
+            mode,
+            maximum_precedence,
+            &best,
+        );
+        return best;
+    }
+
+    fn collectCandidates(
+        self: *Runtime,
+        node: xpath.NodeRef,
+        mode: ?[]const u8,
+        maximum_precedence: usize,
+        best: *?*const compile.Template,
+    ) void {
+        const index = &self.template_index;
+        switch (node) {
+            .node => |id| {
+                const value = self.source.node(id);
+                switch (value.kind) {
+                    .element => {
+                        self.addCandidates(
+                            index.element_any.items,
+                            node,
+                            mode,
+                            maximum_precedence,
+                            best,
+                        );
+                        if (index.elements.get(.{
+                            .uri = value.ns,
+                            .local = value.local,
+                        })) |list| {
+                            self.addCandidates(
+                                list.items,
+                                node,
+                                mode,
+                                maximum_precedence,
+                                best,
+                            );
+                        }
+                        if (index.elements_by_uri.get(value.ns)) |list| {
+                            self.addCandidates(
+                                list.items,
+                                node,
+                                mode,
+                                maximum_precedence,
+                                best,
+                            );
+                        }
+                        self.addCandidates(
+                            index.child_node.items,
+                            node,
+                            mode,
+                            maximum_precedence,
+                            best,
+                        );
+                    },
+                    .text => {
+                        self.addCandidates(
+                            index.text.items,
+                            node,
+                            mode,
+                            maximum_precedence,
+                            best,
+                        );
+                        self.addCandidates(
+                            index.child_node.items,
+                            node,
+                            mode,
+                            maximum_precedence,
+                            best,
+                        );
+                    },
+                    .comment => {
+                        self.addCandidates(
+                            index.comment.items,
+                            node,
+                            mode,
+                            maximum_precedence,
+                            best,
+                        );
+                        self.addCandidates(
+                            index.child_node.items,
+                            node,
+                            mode,
+                            maximum_precedence,
+                            best,
+                        );
+                    },
+                    .processing_instruction => {
+                        self.addCandidates(
+                            index.processing_instruction.items,
+                            node,
+                            mode,
+                            maximum_precedence,
+                            best,
+                        );
+                        self.addCandidates(
+                            index.child_node.items,
+                            node,
+                            mode,
+                            maximum_precedence,
+                            best,
+                        );
+                    },
+                    .document => {
+                        self.addCandidates(
+                            index.document_node.items,
+                            node,
+                            mode,
+                            maximum_precedence,
+                            best,
+                        );
+                    },
+                }
+            },
+            .attribute => |attribute| {
+                const name = self.source.attributesOf(
+                    attribute.element,
+                )[attribute.index];
+                self.addCandidates(
+                    index.attribute_any.items,
+                    node,
+                    mode,
+                    maximum_precedence,
+                    best,
+                );
+                if (index.attributes.get(.{
+                    .uri = name.ns,
+                    .local = name.localName(),
+                })) |list| {
+                    self.addCandidates(
+                        list.items,
+                        node,
+                        mode,
+                        maximum_precedence,
+                        best,
+                    );
+                }
+                if (index.attributes_by_uri.get(name.ns)) |list| {
+                    self.addCandidates(
+                        list.items,
+                        node,
+                        mode,
+                        maximum_precedence,
+                        best,
+                    );
+                }
+            },
+            .namespace_node => {},
+        }
+    }
+
+    fn addCandidates(
+        self: *Runtime,
+        candidates: []const u32,
+        node: xpath.NodeRef,
+        mode: ?[]const u8,
+        maximum_precedence: usize,
+        best: *?*const compile.Template,
+    ) void {
+        for (candidates) |index| {
+            const state = &self.template_states[index];
+            const template = state.template;
+            if (template.precedence >= maximum_precedence) continue;
+            if (!modeMatches(template.mode, mode)) continue;
+            const matched = switch (state.matcher.?) {
+                .simple => |pattern| self.simpleMatches(pattern, node),
+                .structural => |pattern| self.structuralMatches(pattern, node),
+            };
+            if (!matched) continue;
+            best.* = betterTemplate(best.*, template);
+        }
+    }
+
+    /// Match a structural pattern by walking up from the candidate node.
+    fn structuralMatches(
+        self: *Runtime,
+        pattern: StructuralPattern,
+        node: xpath.NodeRef,
+    ) bool {
+        for (pattern.alternatives) |steps| {
+            if (steps.len == 0) {
+                switch (node) {
+                    .node => |id| if (self.source.node(id).kind == .document) {
+                        return true;
+                    },
+                    else => {},
+                }
                 continue;
             }
-            if (best) |current| {
-                if (state.template.precedence < current.precedence) continue;
-                if (state.template.precedence == current.precedence) {
-                    if (state.template.priority < current.priority) continue;
-                    if (state.template.priority == current.priority and
-                        state.template.order < current.order)
-                    {
-                        continue;
-                    }
-                }
+            if (self.matchStructuralStep(steps, steps.len - 1, node)) {
+                return true;
             }
-            best = state.template;
         }
-        return best;
+        return false;
+    }
+
+    /// Whether `node` is selected by `steps[index]` given that the prefix
+    /// `steps[0..index]` selected its context.
+    fn matchStructuralStep(
+        self: *Runtime,
+        steps: []const StructuralStep,
+        index: usize,
+        node: xpath.NodeRef,
+    ) bool {
+        const step = steps[index];
+        switch (step.axis) {
+            .child => switch (node) {
+                .node => {},
+                else => return false,
+            },
+            .attribute => switch (node) {
+                .attribute => {},
+                else => return false,
+            },
+            else => return false,
+        }
+        if (!self.structuralTestMatches(step.node_test, node)) return false;
+        if (step.axis == .attribute) {
+            const element = node.attribute.element;
+            return self.matchStructuralContext(
+                steps,
+                index,
+                .{ .node = element },
+            );
+        }
+        const parent = self.parentRef(node) orelse return false;
+        return self.matchStructuralContext(steps, index, parent);
+    }
+
+    /// Whether `node` is selected by `steps[0..index]`. Index zero requires
+    /// the initial context of an absolute path: the document root.
+    fn matchStructuralContext(
+        self: *Runtime,
+        steps: []const StructuralStep,
+        index: usize,
+        node: xpath.NodeRef,
+    ) bool {
+        if (index == 0) {
+            return switch (node) {
+                .node => |id| self.source.node(id).kind == .document,
+                else => false,
+            };
+        }
+        const step = steps[index - 1];
+        if (step.axis == .descendant_or_self) {
+            // A leading `//` accepts any node in the document.
+            if (index == 1) return true;
+            var current: ?xpath.NodeRef = node;
+            while (current) |candidate| {
+                if (self.matchStructuralContext(
+                    steps,
+                    index - 1,
+                    candidate,
+                )) {
+                    return true;
+                }
+                current = self.parentRef(candidate);
+            }
+            return false;
+        }
+        return self.matchStructuralStep(steps, index - 1, node);
+    }
+
+    fn structuralTestMatches(
+        self: *Runtime,
+        node_test: StructuralTest,
+        node: xpath.NodeRef,
+    ) bool {
+        return switch (node_test) {
+            .name => |name| switch (node) {
+                .node => |id| {
+                    const value = self.source.node(id);
+                    if (value.kind != .element) return false;
+                    if (name.check_namespace and
+                        !std.mem.eql(u8, value.ns, name.uri))
+                    {
+                        return false;
+                    }
+                    return if (name.local) |local|
+                        std.mem.eql(u8, value.local, local)
+                    else
+                        true;
+                },
+                .attribute => |attr| {
+                    const value = self.source.attributesOf(
+                        attr.element,
+                    )[attr.index];
+                    if (name.check_namespace and
+                        !std.mem.eql(u8, value.ns, name.uri))
+                    {
+                        return false;
+                    }
+                    return if (name.local) |local|
+                        std.mem.eql(u8, value.localName(), local)
+                    else
+                        true;
+                },
+                .namespace_node => false,
+            },
+            .node => true,
+            .text => switch (node) {
+                .node => |id| self.source.node(id).kind == .text,
+                else => false,
+            },
+            .comment => switch (node) {
+                .node => |id| self.source.node(id).kind == .comment,
+                else => false,
+            },
+            .processing_instruction => |target| switch (node) {
+                .node => |id| {
+                    const value = self.source.node(id);
+                    if (value.kind != .processing_instruction) return false;
+                    return if (target) |expected|
+                        std.mem.eql(u8, value.name, expected)
+                    else
+                        true;
+                },
+                else => false,
+            },
+        };
     }
 
     fn executeLiteralElement(
@@ -2620,7 +3316,12 @@ const Runtime = struct {
         self: *Runtime,
         selector: compile.CompiledExpr,
     ) Error!*SelectorEntry {
-        const cacheable = self.variables.items.len == self.global_count;
+        const uses_variables = self.selector_var_usage.get(selector.node) orelse blk: {
+            const value = exprUsesVariables(selector.node);
+            try self.selector_var_usage.put(selector.node, value);
+            break :blk value;
+        };
+        const cacheable = !uses_variables;
         if (cacheable) {
             if (self.selector_cache.get(selector.node)) |entry| return entry;
         }
@@ -2634,6 +3335,10 @@ const Runtime = struct {
                 .context = self,
                 .lookup = lookupKey,
             } else null,
+            .id_resolver = .{
+                .context = self,
+                .lookup = lookupId,
+            },
             .xslt_functions = true,
             .current_date_time = self.now,
             .node_id_generator = .{
@@ -3637,6 +4342,10 @@ fn lookupKey(
     _ = allocator;
     const runtime: *Runtime = @ptrCast(@alignCast(context.?));
     const range = runtime.documentRange(node);
+    runtime.buildKeysForDocument(.{ .node = @intCast(range.start) }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return &.{},
+    };
     if (runtime.key_map.get(.{ .name = name, .value = value })) |list| {
         var all_in_range = true;
         for (list.items) |candidate| {
@@ -3657,6 +4366,39 @@ fn lookupKey(
         return out.toOwnedSlice(runtime.allocator);
     }
     return &.{};
+}
+
+fn lookupId(
+    context: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    node: xpath.NodeRef,
+) xpath_value.IdError![]const xpath.NodeRef {
+    const runtime: *Runtime = @ptrCast(@alignCast(context.?));
+    const range = runtime.documentRange(node);
+    runtime.buildIdIndexForDocument(.{ .node = @intCast(range.start) }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return &.{},
+    };
+    var out: std.ArrayList(xpath.NodeRef) = .empty;
+    var tokens = std.mem.tokenizeAny(u8, text, " \t\r\n");
+    while (tokens.next()) |token| {
+        const list = runtime.id_index.get(token) orelse continue;
+        for (list.items) |id| {
+            if (id < range.start or id >= range.end) continue;
+            try out.append(allocator, .{ .node = id });
+        }
+    }
+    std.mem.sort(xpath.NodeRef, out.items, {}, xpath_value.orderLessThan);
+    var write: usize = 0;
+    for (out.items) |candidate| {
+        if (write == 0 or !out.items[write - 1].eql(candidate)) {
+            out.items[write] = candidate;
+            write += 1;
+        }
+    }
+    out.shrinkRetainingCapacity(write);
+    return out.toOwnedSlice(allocator);
 }
 
 fn documentHasNamespaces(document: *const dom.Document) bool {
@@ -3793,6 +4535,42 @@ fn resolveDocument(
 ) xpath_value.DocumentError![]const xpath.NodeRef {
     const runtime: *Runtime = @ptrCast(@alignCast(context.?));
     return runtime.loadDocument(allocator, href, base);
+}
+
+/// Whether an expression references any variable. Selectors that do not are
+/// independent of the local template bindings in scope and can be cached.
+fn exprUsesVariables(expression: *const xpath_ast.Expr) bool {
+    return switch (expression.*) {
+        .variable => true,
+        .binary => |binary| exprUsesVariables(binary.lhs) or
+            exprUsesVariables(binary.rhs),
+        .unary_minus => |inner| exprUsesVariables(inner),
+        .path => |path| blk: {
+            if (path.start) |start| {
+                if (exprUsesVariables(start)) break :blk true;
+            }
+            for (path.steps) |step| {
+                for (step.predicates) |predicate| {
+                    if (exprUsesVariables(predicate)) break :blk true;
+                }
+            }
+            break :blk false;
+        },
+        .filter => |filter| blk: {
+            if (exprUsesVariables(filter.primary)) break :blk true;
+            for (filter.predicates) |predicate| {
+                if (exprUsesVariables(predicate)) break :blk true;
+            }
+            break :blk false;
+        },
+        .function_call => |call| blk: {
+            for (call.args) |argument| {
+                if (exprUsesVariables(argument)) break :blk true;
+            }
+            break :blk false;
+        },
+        .literal, .number => false,
+    };
 }
 
 /// Strip the absolute-path root from a match selector so it can be evaluated
@@ -3936,6 +4714,119 @@ fn simplePattern(template: *const compile.Template) ?SimplePattern {
             return .{ .processing_instruction = target };
         },
     }
+}
+
+/// Compile a match pattern into structural chains when every union branch
+/// consists only of child/attribute steps and `//` markers without
+/// predicates. Such patterns are matched per candidate node and never
+/// evaluated against whole documents.
+fn structuralPattern(
+    allocator: std.mem.Allocator,
+    template: *const compile.Template,
+) Error!?StructuralPattern {
+    const expression = template.selector orelse return null;
+    var alternatives: std.ArrayListUnmanaged([]const StructuralStep) = .empty;
+    if (!try appendStructuralAlternative(
+        allocator,
+        template.namespaces,
+        expression,
+        &alternatives,
+    )) return null;
+    return .{ .alternatives = try alternatives.toOwnedSlice(allocator) };
+}
+
+fn appendStructuralAlternative(
+    allocator: std.mem.Allocator,
+    namespaces: []const namespace.Binding,
+    expression: *const xpath_ast.Expr,
+    alternatives: *std.ArrayListUnmanaged([]const StructuralStep),
+) Error!bool {
+    switch (expression.*) {
+        .binary => |binary| {
+            if (binary.op != .union_) return false;
+            if (!try appendStructuralAlternative(
+                allocator,
+                namespaces,
+                binary.lhs,
+                alternatives,
+            )) return false;
+            return appendStructuralAlternative(
+                allocator,
+                namespaces,
+                binary.rhs,
+                alternatives,
+            );
+        },
+        .path => |path| {
+            if (!path.absolute or path.start != null) return false;
+            const steps = try allocator.alloc(StructuralStep, path.steps.len);
+            for (path.steps, 0..) |step, index| {
+                if (step.predicates.len != 0) return false;
+                switch (step.axis) {
+                    .child, .attribute => {},
+                    .descendant_or_self => switch (step.node_test) {
+                        .node => {},
+                        else => return false,
+                    },
+                    else => return false,
+                }
+                const structural_test: StructuralTest = switch (step.node_test) {
+                    .name => |name_test| blk: {
+                        var uri: []const u8 = "";
+                        if (name_test.prefix) |prefix| {
+                            uri = resolvePrefix(namespaces, prefix) orelse
+                                return false;
+                        }
+                        break :blk .{ .name = .{
+                            .uri = uri,
+                            .local = name_test.local,
+                            .check_namespace = name_test.prefix != null or
+                                name_test.local != null,
+                        } };
+                    },
+                    .node => .node,
+                    .text => .text,
+                    .comment => .comment,
+                    .processing_instruction => |target| .{
+                        .processing_instruction = target,
+                    },
+                };
+                steps[index] = .{ .axis = step.axis, .node_test = structural_test };
+            }
+            if (steps.len != 0) {
+                const last = steps[steps.len - 1];
+                if (last.axis == .descendant_or_self) return false;
+                if (last.axis == .attribute) {
+                    switch (last.node_test) {
+                        .name => {},
+                        else => return false,
+                    }
+                }
+            }
+            try alternatives.append(allocator, steps);
+            return true;
+        },
+        else => return false,
+    }
+}
+
+/// Rule precedence: later imports lose, lower priority loses, and the later
+/// rule wins a full tie.
+fn betterTemplate(
+    current: ?*const compile.Template,
+    candidate: *const compile.Template,
+) *const compile.Template {
+    const existing = current orelse return candidate;
+    if (candidate.precedence < existing.precedence) return existing;
+    if (candidate.precedence == existing.precedence) {
+        if (candidate.priority < existing.priority) return existing;
+        if (candidate.priority == existing.priority and
+            candidate.order < existing.order)
+        {
+            return existing;
+        }
+    }
+    return candidate;
 }
 
 fn modeMatches(template_mode: ?[]const u8, mode: ?[]const u8) bool {
@@ -5166,7 +6057,13 @@ fn writeHtmlUriAttribute(
     value: []const u8,
 ) std.Io.Writer.Error!void {
     const hex = "0123456789ABCDEF";
-    for (value) |byte| {
+    // libxml2 drops leading whitespace from URI attribute values and
+    // escapes interior/trailing whitespace.
+    var start: usize = 0;
+    while (start < value.len and std.ascii.isWhitespace(value[start])) {
+        start += 1;
+    }
+    for (value[start..]) |byte| {
         switch (byte) {
             '&' => try out.writeAll("&amp;"),
             '<' => try out.writeAll("&lt;"),

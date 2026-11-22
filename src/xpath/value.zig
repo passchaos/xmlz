@@ -80,6 +80,7 @@ pub const Variable = struct {
 };
 
 pub const KeyError = error{OutOfMemory};
+pub const IdError = error{OutOfMemory};
 
 pub const NumberFormatError = error{ OutOfMemory, InvalidFormat };
 
@@ -174,6 +175,18 @@ pub const ExtensionFunctionHooks = struct {
     ) anyerror!Value,
 };
 
+/// Resolves XPath `id()` lookups. Implementations can keep an index instead
+/// of scanning the document for every call.
+pub const IdResolver = struct {
+    context: *anyopaque,
+    lookup: *const fn (
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        text: []const u8,
+        node: NodeRef,
+    ) IdError![]const NodeRef,
+};
+
 /// Resolves variables that are not present in `variables`, such as lazily
 /// evaluated XSLT globals.
 pub const VariableResolver = struct {
@@ -207,6 +220,8 @@ pub const Context = struct {
     current: ?NodeRef = null,
     /// XSLT `key()` resolver.
     key_resolver: ?KeyResolver = null,
+    /// Indexed `id()` resolver.
+    id_resolver: ?IdResolver = null,
     /// XSLT `format-number()` formatter.
     number_formatter: ?NumberFormatter = null,
     /// XSLT `generate-id()` generator.
@@ -270,6 +285,7 @@ pub const Context = struct {
             .node = node,
             .current = self.current,
             .key_resolver = self.key_resolver,
+            .id_resolver = self.id_resolver,
             .number_formatter = self.number_formatter,
             .node_id_generator = self.node_id_generator,
             .document_resolver = self.document_resolver,

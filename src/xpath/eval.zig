@@ -2065,6 +2065,16 @@ const Evaluator = struct {
         context: *const value.Context,
         text: []const u8,
     ) Error![]const value.NodeRef {
+        if (context.id_resolver) |resolver| {
+            return resolver.lookup(
+                resolver.context,
+                self.allocator,
+                text,
+                context.node,
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+        }
         var out: std.ArrayList(value.NodeRef) = .empty;
         const range_start = if (context.document_range) |range| range.start else 0;
         const range_end = if (context.document_range) |range|
