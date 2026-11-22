@@ -1351,3 +1351,77 @@ test "XSLT emits an HTML doctype" {
         output,
     );
 }
+
+fn loadExtraDocument(
+    _: ?*anyopaque,
+    href: []const u8,
+    base: []const u8,
+) ?Resource {
+    _ = base;
+    if (!std.mem.eql(u8, href, "extra.xml")) return null;
+    return .{
+        .uri = "extra.xml",
+        .data = "<items><item>one</item><item>two</item></items>",
+    };
+}
+
+test "XSLT document('') returns the stylesheet document" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <count><xsl:value-of select="count(document(''))"/></count>
+        \\    <name><xsl:value-of select="name(document('')/*)"/></name>
+        \\    <same><xsl:value-of select="count(document('')) = count(document(''))"/></same>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><count>1</count><name>xsl:stylesheet</name><same>true</same></out>",
+        output,
+    );
+}
+
+test "XSLT document loads and applies templates to external nodes" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out>
+        \\    <count><xsl:value-of select="count(document('extra.xml')/items/item)"/></count>
+        \\    <cached><xsl:value-of select="count(document('extra.xml')) = count(document('extra.xml'))"/></cached>
+        \\    <apply><xsl:apply-templates select="document('extra.xml')/items/item"/></apply>
+        \\  </out></xsl:template>
+        \\  <xsl:template match="item"><i><xsl:value-of select="."/></i></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{
+        .resolver = .{ .context = null, .load = loadExtraDocument },
+    });
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><count>2</count><cached>true</cached><apply><i>one</i><i>two</i></apply></out>",
+        output,
+    );
+}
+
+test "XSLT document reports load failures" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/">
+        \\    <xsl:value-of select="document('missing.xml')"/>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    try testing.expectError(
+        error.InvalidArgument,
+        transformToString(stylesheet, "<root/>", .{
+            .resolver = .{ .context = null, .load = loadExtraDocument },
+        }),
+    );
+}

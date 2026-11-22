@@ -3,7 +3,9 @@
 const std = @import("std");
 const dom = @import("../dom.zig");
 const dom_builder = @import("../dom_builder.zig");
+const encoding = @import("../encoding.zig");
 const namespace = @import("../namespace.zig");
+const xmlbase = @import("../xmlbase.zig");
 const xpath = @import("../xpath/root.zig");
 const xpath_ast = @import("../xpath/ast.zig");
 const xpath_value = @import("../xpath/value.zig");
@@ -118,16 +120,24 @@ pub fn apply(
         .builder = &builder,
         .key_map = KeyMap.init(arena_allocator),
         .node_ids = NodeIdMap.init(arena_allocator),
+        .document_cache = std.StringHashMap(dom.NodeId).init(arena_allocator),
+        .resolver = options.resolver,
+        .base_uri = options.base,
         .selector_cache = std.AutoHashMap(
             *const xpath_ast.Expr,
             *SelectorEntry,
         ).init(arena_allocator),
     };
     try runtime.prepareSource();
+    try runtime.prepareMergedSource();
+    runtime.suppress_refresh = true;
     try runtime.buildKeys();
     try runtime.buildTemplateMatches();
+    runtime.suppress_refresh = false;
     try runtime.evaluateGlobals(options.parameters);
     try runtime.applyTemplates(&.{.{ .node = 0 }}, null, &.{});
+    runtime.deinitMergedSource();
+    runtime.deinitLoadedDocuments();
     runtime.deinitFilteredSource();
     runtime.deinitFragments();
 
@@ -279,6 +289,19 @@ const Runtime = struct {
     next_node_id: usize = 0,
     selector_cache: std.AutoHashMap(*const xpath_ast.Expr, *SelectorEntry),
     keys_ready: bool = false,
+    /// Growable view of the source document plus documents loaded by
+    /// `document()`.
+    merged: ?*dom.Document = null,
+    merged_nodes: std.ArrayList(dom.Node) = .empty,
+    merged_attributes: std.ArrayList(dom.Attribute) = .empty,
+    loaded_documents: std.ArrayList(*dom.Document) = .empty,
+    document_cache: std.StringHashMap(dom.NodeId),
+    /// Merged document-node ids for documents loaded by `document()`.
+    document_roots: std.ArrayList(dom.NodeId) = .empty,
+    resolver: ?compile.Resolver = null,
+    base_uri: []const u8 = "",
+    suppress_refresh: bool = false,
+    refresh_depth: usize = 0,
     filtered_source: ?*dom.Document = null,
     fragment_documents: std.ArrayList(*dom.Document) = .empty,
     current_template: ?*const compile.Template = null,
@@ -342,6 +365,151 @@ const Runtime = struct {
         if (self.filtered_source) |document| {
             document.deinit();
             self.filtered_source = null;
+        }
+    }
+
+    /// Build the growable document view used by the transformation. Source
+    /// node ids are preserved so references created before a `document()`
+    /// call remain valid.
+    fn prepareMergedSource(self: *Runtime) Error!void {
+        try self.merged_nodes.appendSlice(self.allocator, self.source.nodes);
+        try self.merged_attributes.appendSlice(
+            self.allocator,
+            self.source.attributes,
+        );
+        const document = try self.allocator.create(dom.Document);
+        document.* = .{
+            .arena = std.heap.ArenaAllocator.init(self.allocator),
+            .nodes = self.merged_nodes.items,
+            .attributes = self.merged_attributes.items,
+        };
+        self.merged = document;
+        self.source = document;
+    }
+
+    fn deinitMergedSource(self: *Runtime) void {
+        if (self.merged) |document| {
+            document.arena.deinit();
+            self.merged = null;
+        }
+    }
+
+    fn deinitLoadedDocuments(self: *Runtime) void {
+        for (self.loaded_documents.items) |document| document.deinit();
+        self.loaded_documents.clearRetainingCapacity();
+    }
+
+    /// Append a document's nodes to the merged view and return the id of its
+    /// document node.
+    fn appendDocumentNodes(
+        self: *Runtime,
+        document: *const dom.Document,
+    ) Error!dom.NodeId {
+        const node_offset: dom.NodeId = @intCast(self.merged_nodes.items.len);
+        const attr_offset: u32 = @intCast(self.merged_attributes.items.len);
+        try self.merged_nodes.ensureUnusedCapacity(
+            self.allocator,
+            document.nodes.len,
+        );
+        for (document.nodes) |node| {
+            var copy = node;
+            if (copy.parent != dom.null_node) copy.parent += node_offset;
+            if (copy.first_child != dom.null_node) copy.first_child += node_offset;
+            if (copy.last_child != dom.null_node) copy.last_child += node_offset;
+            if (copy.next_sibling != dom.null_node) {
+                copy.next_sibling += node_offset;
+            }
+            if (copy.attr_count != 0) copy.attr_start += attr_offset;
+            self.merged_nodes.appendAssumeCapacity(copy);
+        }
+        try self.merged_attributes.appendSlice(
+            self.allocator,
+            document.attributes,
+        );
+        if (self.merged) |merged| {
+            merged.nodes = self.merged_nodes.items;
+            merged.attributes = self.merged_attributes.items;
+        }
+        try self.document_roots.append(self.allocator, node_offset);
+        return node_offset;
+    }
+
+    fn loadDocument(
+        self: *Runtime,
+        allocator: std.mem.Allocator,
+        href: []const u8,
+        base: []const u8,
+    ) xpath_value.DocumentError![]const xpath.NodeRef {
+        const absolute = if (href.len == 0)
+            ""
+        else if (base.len != 0)
+            xmlbase.resolve(self.allocator, base, href) catch
+                return error.OutOfMemory
+        else
+            try self.allocator.dupe(u8, href);
+        if (self.document_cache.get(absolute)) |root| {
+            const nodes = try allocator.alloc(xpath.NodeRef, 1);
+            nodes[0] = .{ .node = root };
+            return nodes;
+        }
+        const document = if (href.len == 0)
+            self.stylesheet.principal
+        else blk: {
+            const resolver = self.resolver orelse return error.LoadFailed;
+            const resource = resolver.load(
+                resolver.context,
+                href,
+                if (base.len != 0) base else self.base_uri,
+            ) orelse return error.LoadFailed;
+            const owned = try self.allocator.dupe(u8, resource.data);
+            const decoded = encoding.decodeAlloc(
+                self.allocator,
+                owned,
+                64 * 1024 * 1024,
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.LoadFailed,
+            };
+            const pointer = try self.allocator.create(dom.Document);
+            pointer.* = dom.Document.parse(
+                self.allocator,
+                decoded,
+                .{ .keep_comments = true, .keep_pis = true },
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.LoadFailed,
+            };
+            try self.loaded_documents.append(self.allocator, pointer);
+            break :blk pointer;
+        };
+        const root = self.appendDocumentNodes(document) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.LoadFailed,
+        };
+        const key = try self.allocator.dupe(u8, absolute);
+        try self.document_cache.put(key, root);
+        self.refreshAfterDocumentLoad() catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.LoadFailed,
+        };
+        const nodes = try allocator.alloc(xpath.NodeRef, 1);
+        nodes[0] = .{ .node = root };
+        return nodes;
+    }
+
+    /// Recompute template matches, keys, and selector caches so the newly
+    /// merged nodes participate in matching.
+    fn refreshAfterDocumentLoad(self: *Runtime) Error!void {
+        if (self.suppress_refresh or self.refresh_depth != 0) return;
+        self.refresh_depth += 1;
+        defer self.refresh_depth -= 1;
+        self.selector_cache.clearRetainingCapacity();
+        if (self.keys_ready) {
+            self.key_map.clearRetainingCapacity();
+            try self.buildKeys();
+        }
+        if (self.template_states.len != 0) {
+            try self.buildTemplateMatches();
         }
     }
 
@@ -523,37 +691,59 @@ const Runtime = struct {
                 .matches = std.AutoHashMap(NodeKey, void).init(self.allocator),
             };
             const selector = template.selector orelse continue;
-            var context: xpath.Context = .{
-                .document = self.source,
-                .node = .{ .node = 0 },
-                .namespaces = template.namespaces,
-                .key_resolver = if (self.keys_ready) .{
-                    .context = self,
-                    .lookup = lookupKey,
-                } else null,
-                .xslt_functions = true,
-                .node_id_generator = .{
-                    .context = self,
-                    .generate = generateNodeId,
-                },
-            };
-            var result = xpath_eval.evaluate(
-                self.allocator,
-                selector,
-                &context,
-            ) catch |err| return mapEvalError(err);
-            defer result.deinit();
-            switch (result.value) {
-                .node_set => |nodes| {
-                    for (nodes) |ref| {
-                        try self.template_states[index].matches.put(
-                            nodeKey(ref),
-                            {},
-                        );
-                    }
-                },
-                else => return error.InvalidStylesheet,
+            try self.collectTemplateMatches(index, selector, .{ .node = 0 });
+            for (self.document_roots.items) |root| {
+                const relative = try relativePattern(self.allocator, selector);
+                try self.collectTemplateMatches(
+                    index,
+                    relative,
+                    .{ .node = root },
+                );
             }
+        }
+    }
+
+    fn collectTemplateMatches(
+        self: *Runtime,
+        index: usize,
+        selector: *const xpath_ast.Expr,
+        node: xpath.NodeRef,
+    ) Error!void {
+        var context: xpath.Context = .{
+            .document = self.source,
+            .node = node,
+            .namespaces = self.template_states[index].template.namespaces,
+            .key_resolver = if (self.keys_ready) .{
+                .context = self,
+                .lookup = lookupKey,
+            } else null,
+            .xslt_functions = true,
+            .node_id_generator = .{
+                .context = self,
+                .generate = generateNodeId,
+            },
+            .document_resolver = .{
+                .context = self,
+                .resolve = resolveDocument,
+            },
+            .document_base = self.base_uri,
+        };
+        var result = xpath_eval.evaluate(
+            self.allocator,
+            selector,
+            &context,
+        ) catch |err| return mapEvalError(err);
+        defer result.deinit();
+        switch (result.value) {
+            .node_set => |nodes| {
+                for (nodes) |ref| {
+                    try self.template_states[index].matches.put(
+                        nodeKey(ref),
+                        {},
+                    );
+                }
+            },
+            else => return error.InvalidStylesheet,
         }
     }
 
@@ -625,6 +815,11 @@ const Runtime = struct {
                 .context = self,
                 .generate = generateNodeId,
             },
+            .document_resolver = .{
+                .context = self,
+                .resolve = resolveDocument,
+            },
+            .document_base = self.base_uri,
         };
         var result = xpath_eval.evaluate(
             self.allocator,
@@ -1548,6 +1743,11 @@ const Runtime = struct {
                 .context = self,
                 .generate = generateNodeId,
             },
+            .document_resolver = .{
+                .context = self,
+                .resolve = resolveDocument,
+            },
+            .document_base = self.base_uri,
         };
         var result = xpath_eval.evaluate(
             self.allocator,
@@ -2369,6 +2569,48 @@ fn lookupKey(
         return list.items;
     }
     return &.{};
+}
+
+fn resolveDocument(
+    context: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    href: []const u8,
+    base: []const u8,
+) xpath_value.DocumentError![]const xpath.NodeRef {
+    const runtime: *Runtime = @ptrCast(@alignCast(context.?));
+    return runtime.loadDocument(allocator, href, base);
+}
+
+/// Strip the absolute-path root from a match selector so it can be evaluated
+/// with a document node as the context node. This lets template rules match
+/// nodes from documents loaded by `document()`.
+fn relativePattern(
+    allocator: std.mem.Allocator,
+    selector: *xpath_ast.Expr,
+) Error!*xpath_ast.Expr {
+    return switch (selector.*) {
+        .binary => |binary| blk: {
+            if (binary.op != .union_) break :blk selector;
+            const out = try allocator.create(xpath_ast.Expr);
+            out.* = .{ .binary = .{
+                .op = .union_,
+                .lhs = try relativePattern(allocator, binary.lhs),
+                .rhs = try relativePattern(allocator, binary.rhs),
+            } };
+            break :blk out;
+        },
+        .path => |path| blk: {
+            if (!path.absolute or path.start != null) break :blk selector;
+            const out = try allocator.create(xpath_ast.Expr);
+            out.* = .{ .path = .{
+                .absolute = false,
+                .start = null,
+                .steps = path.steps,
+            } };
+            break :blk out;
+        },
+        else => selector,
+    };
 }
 
 fn generateNodeId(

@@ -624,6 +624,7 @@ STYLESHEETS = [
           <f6><xsl:value-of select="function-available('system-property')"/></f6>
           <f7><xsl:value-of select="function-available('unknown')"/></f7>
           <f8><xsl:value-of select="function-available('node-set')"/></f8>
+          <f9><xsl:value-of select="function-available('document')"/></f9>
         </out></xsl:template>
         </xsl:stylesheet>""",
         b"<root/>",
@@ -893,6 +894,24 @@ STYLESHEETS = [
 
 
 BUNDLES = [
+    (
+        "document-function",
+        {
+            "main.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:output method="xml" omit-xml-declaration="yes"/>
+              <xsl:template match="/"><out>
+                <count><xsl:value-of select="count(document('extra.xml')/items/item)"/></count>
+                <cached><xsl:value-of select="count(document('extra.xml')) = count(document('extra.xml'))"/></cached>
+                <sheet><xsl:value-of select="count(document(''))"/></sheet>
+                <apply><xsl:apply-templates select="document('extra.xml')/items/item"/></apply>
+              </out></xsl:template>
+              <xsl:template match="item"><i><xsl:value-of select="."/></i></xsl:template>
+            </xsl:stylesheet>""",
+            "extra.xml": "<items><item>one</item><item>two</item></items>",
+        },
+        "<root><item>local</item></root>",
+        {},
+    ),
     (
         "include-named-template",
         {

@@ -118,6 +118,20 @@ pub const NodeIdGenerator = struct {
     ) error{OutOfMemory}![]const u8,
 };
 
+pub const DocumentError = error{ OutOfMemory, LoadFailed };
+
+/// XSLT `document()` hook. Returns the document nodes for `href`, resolved
+/// against `base`.
+pub const DocumentResolver = struct {
+    context: ?*anyopaque = null,
+    resolve: *const fn (
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        href: []const u8,
+        base: []const u8,
+    ) DocumentError![]const NodeRef,
+};
+
 pub const Context = struct {
     document: *const dom.Document,
     node: NodeRef,
@@ -129,6 +143,10 @@ pub const Context = struct {
     number_formatter: ?NumberFormatter = null,
     /// XSLT `generate-id()` generator.
     node_id_generator: ?NodeIdGenerator = null,
+    /// XSLT `document()` resolver.
+    document_resolver: ?DocumentResolver = null,
+    /// Base URI used by `document()` when no second argument is given.
+    document_base: []const u8 = "",
     /// Enables XSLT-specific functions such as `generate-id()`,
     /// `system-property()`, `element-available()`, and
     /// `function-available()`.
@@ -172,6 +190,8 @@ pub const Context = struct {
             .key_resolver = self.key_resolver,
             .number_formatter = self.number_formatter,
             .node_id_generator = self.node_id_generator,
+            .document_resolver = self.document_resolver,
+            .document_base = self.document_base,
             .xslt_functions = self.xslt_functions,
             .position = position,
             .size = size,

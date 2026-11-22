@@ -142,6 +142,8 @@ pub const Output = struct {
 
 pub const Stylesheet = struct {
     arena: std.heap.ArenaAllocator,
+    /// Document containing the principal stylesheet element.
+    principal: *const dom.Document,
     templates: []const Template = &.{},
     globals: []const Variable = &.{},
     keys: []const KeyDef = &.{},
@@ -352,6 +354,7 @@ pub fn compileWithOptions(
     try compiler.expandAttributeSets();
     return .{
         .arena = arena,
+        .principal = document,
         .templates = try compiler.templates.toOwnedSlice(compiler.arena),
         .globals = try compiler.dedupeGlobals(),
         .keys = try compiler.keys.toOwnedSlice(compiler.arena),

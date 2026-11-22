@@ -57,10 +57,11 @@ then exposes them through a pull parser and reusable lexical primitives.
   multi-level `xsl:number` with count/from patterns and number formats,
   `disable-output-escaping`, `format-number()` with decimal formats, result
   tree fragments, namespace aliases, XSLT functions (`generate-id`,
-  `system-property`, `element-available`, `function-available`), CDATA
-  sections, DOCTYPE declarations, HTML output,
+  `system-property`, `element-available`, `function-available`,
+  `document()` with resolver caching), CDATA sections, DOCTYPE declarations,
+  HTML output,
   and the core instruction set, reusing the XPath engine for match patterns
-  and expressions, with 79/79 differential checks against libxslt.
+  and expressions, with 80/80 differential checks against libxslt.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,

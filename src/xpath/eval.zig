@@ -1166,6 +1166,61 @@ const Evaluator = struct {
             }
             return .{ .boolean = false };
         }
+        if (std.mem.eql(u8, name, "document")) {
+            if (!context.xslt_functions) return error.UnknownFunction;
+            if (items.len == 0 or items.len > 2) return error.InvalidArgument;
+            const resolver = context.document_resolver orelse
+                return error.UnknownFunction;
+            var base = context.document_base;
+            if (items.len == 2) {
+                const base_nodes = try self.requireNodeSet(items[1]);
+                if (self.firstInDocumentOrder(base_nodes)) |base_node| {
+                    const base_id = switch (base_node) {
+                        .node => |id| id,
+                        .attribute => |attr| attr.element,
+                        .namespace_node => |ns| ns.element,
+                    };
+                    const resolved = xmlbase.elementBase(
+                        self.allocator,
+                        context.document,
+                        base_id,
+                        context.document_base,
+                    ) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                    };
+                    if (resolved) |resolved_base| base = resolved_base;
+                }
+            }
+            var hrefs: std.ArrayList([]const u8) = .empty;
+            switch (items[0]) {
+                .node_set => |nodes| {
+                    for (nodes) |node| {
+                        try hrefs.append(
+                            self.allocator,
+                            try self.stringValue(context, node),
+                        );
+                    }
+                },
+                else => try hrefs.append(
+                    self.allocator,
+                    try self.toString(items[0], context),
+                ),
+            }
+            var out: std.ArrayList(value.NodeRef) = .empty;
+            for (hrefs.items) |href| {
+                const roots = resolver.resolve(
+                    resolver.context,
+                    self.allocator,
+                    href,
+                    base,
+                ) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.LoadFailed => return error.InvalidArgument,
+                };
+                try out.appendSlice(self.allocator, roots);
+            }
+            return .{ .node_set = try self.sortDedup(out.items) };
+        }
         return error.UnknownFunction;
     }
 
@@ -1372,6 +1427,7 @@ const xpath_core_functions = [_][]const u8{
 /// XSLT 1.0 functions implemented by this processor.
 const xslt_functions = [_][]const u8{
     "current",
+    "document",
     "element-available",
     "function-available",
     "generate-id",

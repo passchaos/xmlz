@@ -114,7 +114,14 @@ pub fn main(init: std.process.Init) !void {
     var result = try xmlz.xslt.apply(
         &compiled,
         &source.document,
-        .{ .parameters = parameters.items },
+        .{
+            .parameters = parameters.items,
+            .resolver = .{
+                .context = &loader,
+                .load = loadStylesheet,
+            },
+            .base = stylesheet_path,
+        },
     );
     defer result.deinit();
 

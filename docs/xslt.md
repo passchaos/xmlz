@@ -75,6 +75,10 @@ defer result.deinit();
 - XSLT-specific functions `generate-id()`, `system-property()`,
   `element-available()`, and `function-available()`. Generated ids are stable
   within a transformation and deterministic (`id1`, `id2`, ...).
+- `document()` through the `Options` resolver, with per-URI caching,
+  `document('')` returning the principal stylesheet document, relative URI
+  resolution against the stylesheet base (or an `xml:base` from the optional
+  second argument), and template matching for nodes from loaded documents.
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
   `indent`, and `version`, `cdata-section-elements` (with `]]>` splitting),
   and `doctype-public`/`doctype-system` for XML and HTML output. HTML output
@@ -95,7 +99,10 @@ template priority its specified default behavior.
 - `xsl:output encoding` is recorded but not transcoded (the result is always
   UTF-8).
 - HTML output is compact and does not insert a Content-Type `meta` element.
-- `document()` and `unparsed-entity-uri()` are not available in expressions.
+- `unparsed-entity-uri()` is not available in expressions.
+- `document()` merges loaded documents into the source view: `key()` indexes
+  the principal source document only, and `id()` searches all merged
+  documents rather than just the context node's document.
 - `function-available()` reports XSLT functions in the XSLT namespace as
   available, as required by XSLT 1.0; libxslt reports them as unavailable
   unless registered as extensions.
@@ -112,5 +119,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-79/79 XSLT differential checks passed
+80/80 XSLT differential checks passed
 ```
