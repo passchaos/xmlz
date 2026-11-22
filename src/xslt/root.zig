@@ -1548,3 +1548,45 @@ test "XSLT exsl:node-set exposes result tree fragments" {
         output,
     );
 }
+
+fn loadKeyDocument(
+    _: ?*anyopaque,
+    href: []const u8,
+    base: []const u8,
+) ?Resource {
+    _ = base;
+    if (!std.mem.eql(u8, href, "extra.xml")) return null;
+    return .{
+        .uri = "extra.xml",
+        .data = "<items><item xml:id='a'>A</item>" ++
+            "<item xml:id='b'>B</item></items>",
+    };
+}
+
+test "XSLT key and id stay scoped to the context document" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:key name="k" match="item" use="@xml:id"/>
+        \\  <xsl:template match="/"><out>
+        \\    <foreign><xsl:for-each select="document('extra.xml')/items/item">
+        \\      <n><xsl:value-of select="count(key('k', @xml:id))"/></n>
+        \\      <i><xsl:value-of select="count(id(@xml:id))"/></i>
+        \\    </xsl:for-each></foreign>
+        \\    <local><xsl:value-of select="count(key('k', 'a'))"/></local>
+        \\    <localId><xsl:value-of select="count(id('a'))"/></localId>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source = "<root><item xml:id='a'>local</item></root>";
+    const output = try transformToString(stylesheet, source, .{
+        .resolver = .{ .context = null, .load = loadKeyDocument },
+    });
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><foreign><n>1</n><i>1</i><n>1</n><i>1</i></foreign>" ++
+            "<local>1</local><localId>1</localId></out>",
+        output,
+    );
+}

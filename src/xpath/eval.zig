@@ -932,6 +932,7 @@ const Evaluator = struct {
                 self.allocator,
                 key_name,
                 key_value,
+                context.node,
             ) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
             };
@@ -1429,9 +1430,14 @@ const Evaluator = struct {
         text: []const u8,
     ) Error![]const value.NodeRef {
         var out: std.ArrayList(value.NodeRef) = .empty;
+        const range_start = if (context.document_range) |range| range.start else 0;
+        const range_end = if (context.document_range) |range|
+            @min(range.end, context.document.nodes.len)
+        else
+            context.document.nodes.len;
         var tokens = std.mem.tokenizeAny(u8, text, " \t\r\n");
         while (tokens.next()) |token| {
-            for (context.document.nodes, 0..) |node, index| {
+            for (context.document.nodes[range_start..range_end], range_start..) |node, index| {
                 if (node.kind != .element) continue;
                 const id = @as(dom.NodeId, @intCast(index));
                 if (context.document.attribute(id, "id")) |id_value| {

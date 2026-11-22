@@ -67,7 +67,7 @@ then exposes them through a pull parser and reusable lexical primitives.
   `exsl:node-set()`), CDATA
   sections, DOCTYPE declarations, HTML output, and output encodings,
   and the core instruction set, reusing the XPath engine for match patterns
-  and expressions, with 85/85 differential checks against libxslt.
+  and expressions, with 86/86 differential checks against libxslt.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,

@@ -318,6 +318,7 @@ const Runtime = struct {
     /// Growable view of the source document plus documents loaded by
     /// `document()`.
     merged: ?*dom.Document = null,
+    source_node_count: usize = 0,
     merged_nodes: std.ArrayList(dom.Node) = .empty,
     merged_attributes: std.ArrayList(dom.Attribute) = .empty,
     loaded_documents: std.ArrayList(*dom.Document) = .empty,
@@ -403,6 +404,7 @@ const Runtime = struct {
             self.allocator,
             self.source.attributes,
         );
+        self.source_node_count = self.merged_nodes.items.len;
         const document = try self.allocator.create(dom.Document);
         document.* = .{
             .arena = std.heap.ArenaAllocator.init(self.allocator),
@@ -461,6 +463,28 @@ const Runtime = struct {
         }
         try self.document_roots.append(self.allocator, node_offset);
         return node_offset;
+    }
+
+    /// Node-id range of the document containing `node`.
+    fn documentRange(
+        self: *Runtime,
+        node: xpath.NodeRef,
+    ) xpath_value.NodeRange {
+        const id: usize = refNodeId(node);
+        if (id < self.source_node_count) {
+            return .{ .start = 0, .end = self.source_node_count };
+        }
+        var start = self.source_node_count;
+        for (self.document_roots.items) |root| {
+            const root_id: usize = root;
+            if (root_id <= id and root_id >= start) start = root_id;
+        }
+        var end = self.merged_nodes.items.len;
+        for (self.document_roots.items) |root| {
+            const root_id: usize = root;
+            if (root_id > start and root_id < end) end = root_id;
+        }
+        return .{ .start = start, .end = end };
     }
 
     fn loadDocument(
@@ -639,41 +663,17 @@ const Runtime = struct {
     fn buildKeys(self: *Runtime) Error!void {
         self.keys_ready = false;
         for (self.stylesheet.keys) |*key_def| {
-            var context: xpath.Context = .{
-                .document = self.source,
-                .node = .{ .node = 0 },
-                .namespaces = key_def.namespaces,
-            };
-            var selected = xpath_eval.evaluate(
-                self.allocator,
-                key_def.selector,
-                &context,
-            ) catch |err| return mapEvalError(err);
-            defer selected.deinit();
-            const nodes = switch (selected.value) {
-                .node_set => |value| value,
-                else => return error.InvalidStylesheet,
-            };
-            for (nodes) |node| {
-                const value = try self.evalOwned(key_def.use, node, 1, 1);
-                switch (value) {
-                    .node_set => |value_nodes| {
-                        for (value_nodes) |value_node| {
-                            try self.addKeyValue(
-                                key_def.name,
-                                try self.stringValue(value_node),
-                                node,
-                            );
-                        }
-                    },
-                    else => {
-                        try self.addKeyValue(
-                            key_def.name,
-                            try self.toString(value),
-                            node,
-                        );
-                    },
-                }
+            try self.collectKeyNodes(key_def, key_def.selector, .{ .node = 0 });
+            for (self.document_roots.items) |root| {
+                const relative = try relativePattern(
+                    self.allocator,
+                    key_def.selector,
+                );
+                try self.collectKeyNodes(
+                    key_def,
+                    relative,
+                    .{ .node = root },
+                );
             }
         }
         var iterator = self.key_map.iterator();
@@ -695,6 +695,51 @@ const Runtime = struct {
             list.shrinkRetainingCapacity(write);
         }
         self.keys_ready = true;
+    }
+
+    fn collectKeyNodes(
+        self: *Runtime,
+        key_def: *const compile.KeyDef,
+        selector: *const xpath_ast.Expr,
+        node: xpath.NodeRef,
+    ) Error!void {
+        var context: xpath.Context = .{
+            .document = self.source,
+            .node = node,
+            .namespaces = key_def.namespaces,
+            .document_range = self.documentRange(node),
+        };
+        var selected = xpath_eval.evaluate(
+            self.allocator,
+            selector,
+            &context,
+        ) catch |err| return mapEvalError(err);
+        defer selected.deinit();
+        const nodes = switch (selected.value) {
+            .node_set => |value| value,
+            else => return error.InvalidStylesheet,
+        };
+        for (nodes) |selected_node| {
+            const value = try self.evalOwned(key_def.use, selected_node, 1, 1);
+            switch (value) {
+                .node_set => |value_nodes| {
+                    for (value_nodes) |value_node| {
+                        try self.addKeyValue(
+                            key_def.name,
+                            try self.stringValue(value_node),
+                            selected_node,
+                        );
+                    }
+                },
+                else => {
+                    try self.addKeyValue(
+                        key_def.name,
+                        try self.toString(value),
+                        selected_node,
+                    );
+                },
+            }
+        }
     }
 
     fn addKeyValue(
@@ -742,6 +787,7 @@ const Runtime = struct {
             .document = self.source,
             .node = node,
             .namespaces = self.template_states[index].template.namespaces,
+            .document_range = self.documentRange(node),
             .key_resolver = if (self.keys_ready) .{
                 .context = self,
                 .lookup = lookupKey,
@@ -835,6 +881,7 @@ const Runtime = struct {
             .size = size,
             .namespaces = expression.namespaces,
             .variables = self.variables.items,
+            .document_range = self.documentRange(node),
             .key_resolver = if (self.keys_ready) .{
                 .context = self,
                 .lookup = lookupKey,
@@ -1771,6 +1818,7 @@ const Runtime = struct {
             .document = self.source,
             .node = .{ .node = 0 },
             .namespaces = selector.namespaces,
+            .document_range = self.documentRange(.{ .node = 0 }),
             .key_resolver = if (self.keys_ready) .{
                 .context = self,
                 .lookup = lookupKey,
@@ -2603,13 +2651,39 @@ fn lookupKey(
     allocator: std.mem.Allocator,
     name: []const u8,
     value: []const u8,
+    node: xpath.NodeRef,
 ) xpath_value.KeyError![]const xpath.NodeRef {
     _ = allocator;
     const runtime: *Runtime = @ptrCast(@alignCast(context.?));
+    const range = runtime.documentRange(node);
     if (runtime.key_map.get(.{ .name = name, .value = value })) |list| {
-        return list.items;
+        var all_in_range = true;
+        for (list.items) |candidate| {
+            const id = refNodeId(candidate);
+            if (id < range.start or id >= range.end) {
+                all_in_range = false;
+                break;
+            }
+        }
+        if (all_in_range) return list.items;
+        var out: std.ArrayList(xpath.NodeRef) = .empty;
+        for (list.items) |candidate| {
+            const id = refNodeId(candidate);
+            if (id >= range.start and id < range.end) {
+                try out.append(runtime.allocator, candidate);
+            }
+        }
+        return out.toOwnedSlice(runtime.allocator);
     }
     return &.{};
+}
+
+fn refNodeId(node: xpath.NodeRef) usize {
+    return switch (node) {
+        .node => |id| id,
+        .attribute => |attribute| attribute.element,
+        .namespace_node => |namespace_node| namespace_node.element,
+    };
 }
 
 fn convertTree(

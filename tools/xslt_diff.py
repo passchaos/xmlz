@@ -1082,6 +1082,26 @@ BUNDLES = [
         "<root/>",
         {},
     ),
+    (
+        "key-id-document-scope",
+        {
+            "main.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:output method="xml" omit-xml-declaration="yes"/>
+              <xsl:key name="k" match="item" use="@xml:id"/>
+              <xsl:template match="/"><out>
+                <foreign><xsl:for-each select="document('extra.xml')/items/item">
+                  <n><xsl:value-of select="count(key('k', @xml:id))"/></n>
+                  <i><xsl:value-of select="count(id(@xml:id))"/></i>
+                </xsl:for-each></foreign>
+                <local><xsl:value-of select="count(key('k', 'a'))"/></local>
+                <localId><xsl:value-of select="count(id('a'))"/></localId>
+              </out></xsl:template>
+            </xsl:stylesheet>""",
+            "extra.xml": "<items><item xml:id='a'>A</item><item xml:id='b'>B</item></items>",
+        },
+        "<root><item xml:id='a'>local</item></root>",
+        {},
+    ),
 ]
 
 

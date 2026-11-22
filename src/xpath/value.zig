@@ -103,7 +103,14 @@ pub const KeyResolver = struct {
         allocator: std.mem.Allocator,
         name: []const u8,
         value: []const u8,
+        node: NodeRef,
     ) KeyError![]const NodeRef,
+};
+
+/// Contiguous node-id range occupied by one document in a merged view.
+pub const NodeRange = struct {
+    start: usize,
+    end: usize,
 };
 
 /// XSLT `generate-id()` hook. The returned string must be unique for the
@@ -156,6 +163,9 @@ pub const Context = struct {
     node_id_generator: ?NodeIdGenerator = null,
     /// XSLT `document()` resolver.
     document_resolver: ?DocumentResolver = null,
+    /// Document range containing the context node, when documents have been
+    /// merged into one view. Used by `key()` and `id()` to stay per-document.
+    document_range: ?NodeRange = null,
     /// EXSLT `node-set()` converter.
     tree_converter: ?TreeConverter = null,
     /// Base URI used by `document()` when no second argument is given.
@@ -204,6 +214,7 @@ pub const Context = struct {
             .number_formatter = self.number_formatter,
             .node_id_generator = self.node_id_generator,
             .document_resolver = self.document_resolver,
+            .document_range = self.document_range,
             .tree_converter = self.tree_converter,
             .document_base = self.document_base,
             .xslt_functions = self.xslt_functions,

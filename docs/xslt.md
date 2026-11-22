@@ -82,6 +82,8 @@ defer result.deinit();
   `document('')` returning the principal stylesheet document, relative URI
   resolution against the stylesheet base (or an `xml:base` from the optional
   second argument), and template matching for nodes from loaded documents.
+- `key()` and `id()` are scoped to the document containing the context node,
+  including documents loaded by `document()`.
 - `unparsed-entity-uri()` for unparsed entities declared in the source DTD.
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
   `indent`, and `version`, `cdata-section-elements` (with `]]>` splitting),
@@ -104,13 +106,9 @@ template priority its specified default behavior.
   EXSLT `exsl:node-set()` extension; after conversion, normal node-set
   operations and template matching work.
 - HTML output is compact and does not insert a Content-Type `meta` element.
-- `document()` merges loaded documents into the source view: `key()` indexes
-  the principal source document only, and `id()` searches all merged
-  documents rather than just the context node's document.
 - `function-available()` reports XSLT functions in the XSLT namespace as
   available, as required by XSLT 1.0; libxslt reports them as unavailable
   unless registered as extensions.
-- Template conflict resolution uses a single import precedence.
 
 ## Differential verification
 
@@ -123,5 +121,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-85/85 XSLT differential checks passed
+86/86 XSLT differential checks passed
 ```
