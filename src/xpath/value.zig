@@ -9,20 +9,34 @@ pub const AttributeRef = struct {
     index: u32,
 };
 
+pub const NamespaceRef = struct {
+    element: dom.NodeId,
+    prefix: []const u8,
+    uri: []const u8,
+    /// Deterministic order among the element's namespace nodes.
+    order: u32,
+};
+
 pub const NodeRef = union(enum) {
     node: dom.NodeId,
     attribute: AttributeRef,
+    namespace_node: NamespaceRef,
 
     pub fn eql(a: NodeRef, b: NodeRef) bool {
         return switch (a) {
             .node => |a_id| switch (b) {
                 .node => |b_id| a_id == b_id,
-                .attribute => false,
+                else => false,
             },
             .attribute => |a_attr| switch (b) {
-                .node => false,
                 .attribute => |b_attr| a_attr.element == b_attr.element and
                     a_attr.index == b_attr.index,
+                else => false,
+            },
+            .namespace_node => |a_ns| switch (b) {
+                .namespace_node => |b_ns| a_ns.element == b_ns.element and
+                    std.mem.eql(u8, a_ns.prefix, b_ns.prefix),
+                else => false,
             },
         };
     }
@@ -30,9 +44,14 @@ pub const NodeRef = union(enum) {
     pub fn orderKey(self: NodeRef) OrderKey {
         return switch (self) {
             .node => |id| .{ .primary = id, .phase = 0, .index = 0 },
+            .namespace_node => |ns| .{
+                .primary = ns.element,
+                .phase = 1,
+                .index = ns.order,
+            },
             .attribute => |attr| .{
                 .primary = attr.element,
-                .phase = 1,
+                .phase = 2,
                 .index = attr.index,
             },
         };

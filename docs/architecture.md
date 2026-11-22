@@ -59,8 +59,9 @@ non-validating parser.
 ## XPath and XInclude
 
 `xpath` is a standalone XPath 1.0 lexer/parser/evaluator over `dom.Document`.
-It supports all core axes (the namespace axis is currently empty), predicates,
-operators, variables, and the core function library. `xinclude.process` expands
+It supports all core axes including `namespace` (in-scope namespace nodes with
+specification ordering), predicates, operators, variables, and the core
+function library. `xinclude.process` expands
 XInclude 1.0 includes using a resolver, with fallback, text mode, nesting, and
 circular detection.
 

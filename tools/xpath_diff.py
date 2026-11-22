@@ -11,6 +11,7 @@ XML = """<root>
   <item id="b" price="15"><name>Banana</name></item>
   <item id="c" price="10"><name>Cherry</name></item>
   <note> hello   world </note>
+  <ns:box xmlns:ns="urn:ns" xmlns="urn:inner"><ns:leaf>value</ns:leaf></ns:box>
   <!-- comment -->
   <?pi data?>
 </root>
@@ -41,11 +42,29 @@ NODE_EXPRESSIONS = [
     "//item[last()]/descendant-or-self::*",
     "//item[not(@missing)]",
     "//item/@*",
+    # Namespace axis: libxml2 orders namespace nodes with the xml binding
+    # first and the remaining declarations in reverse declaration order, while
+    # XPath 1.0 orders them lexicographically by prefix (default first). xmlz
+    # follows the specification, so only order-independent namespace
+    # expressions are compared here.
+    "/*/*[local-name() = 'box']/namespace::xml",
+    "/*/*[local-name() = 'box']/namespace::*[local-name() = 'ns']",
+    "/*/*[local-name() = 'box']/namespace::*[string() = 'urn:ns']",
+    "/*/*[local-name() = 'box']/namespace::*/parent::*",
+    "/*/*[local-name() = 'box']/*/namespace::xml",
     # libxml2 places an attribute after its parent's subtree for the
     # following axis; XPath 1.0 document order places attributes before the
     # parent's children. xmlz follows the specification, so this expression is
     # intentionally not compared.
     "//item[2]/@id/preceding::name",
+]
+
+# Node-set expressions whose string value depends on namespace node order.
+# They are still compared by count.
+COUNT_ONLY_EXPRESSIONS = [
+    "/*/*[local-name() = 'box']/namespace::*",
+    "/*/*[local-name() = 'box']/namespace::node()",
+    "/*/*[local-name() = 'box']/*/namespace::*",
 ]
 
 SCALAR_EXPRESSIONS = [
@@ -61,6 +80,10 @@ SCALAR_EXPRESSIONS = [
     "substring-after('1999/04/01', '/')",
     "name(//item[1])",
     "local-name(//item[1])",
+    "string(/*/*[local-name() = 'box']/namespace::xml)",
+    "name(/*/*[local-name() = 'box']/namespace::xml)",
+    "local-name(/*/*[local-name() = 'box']/namespace::*[string() = 'urn:ns'])",
+    "count(/*/*[local-name() = 'box']/namespace::*)",
     "boolean(//item)",
     "1 + 2 * 3",
     "1 div 2",
@@ -82,7 +105,7 @@ def main():
         handle.write(XML)
         path = handle.name
     try:
-        for expression in NODE_EXPRESSIONS:
+        for expression in NODE_EXPRESSIONS + COUNT_ONLY_EXPRESSIONS:
             expected = run(["xmllint", "--xpath", f"count({expression})", path])
             actual = run([evaluator, path, expression, "count"])
             if expected.returncode == 0 and actual.returncode == 0:

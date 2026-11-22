@@ -27,7 +27,15 @@ pub fn evaluate(
     return .{ .arena = arena, .value = result };
 }
 
-const Kind = enum { document, element, text, comment, processing_instruction, attribute };
+const Kind = enum {
+    document,
+    element,
+    text,
+    comment,
+    processing_instruction,
+    attribute,
+    namespace,
+};
 
 const Evaluator = struct {
     allocator: std.mem.Allocator,
@@ -258,7 +266,7 @@ const Evaluator = struct {
             ),
             .following => try self.appendFollowing(context, node, &out),
             .preceding => try self.appendPreceding(context, node, &out),
-            .namespace_axis => {},
+            .namespace_axis => try self.appendNamespaces(context, node, &out),
         }
         return out.toOwnedSlice(self.allocator);
     }
@@ -271,7 +279,7 @@ const Evaluator = struct {
     ) Error!void {
         const id = switch (node) {
             .node => |id| id,
-            .attribute => return,
+            .attribute, .namespace_node => return,
         };
         const node_value = context.document.node(id);
         if (node_value.kind != .document and node_value.kind != .element) return;
@@ -289,7 +297,7 @@ const Evaluator = struct {
     ) Error!void {
         const id = switch (node) {
             .node => |id| id,
-            .attribute => return,
+            .attribute, .namespace_node => return,
         };
         if (context.document.node(id).kind != .element) return;
         const attributes = context.document.attributesOf(id);
@@ -302,6 +310,76 @@ const Evaluator = struct {
         }
     }
 
+    /// Collect the in-scope namespaces of an element. Nearest declarations
+    /// win, undeclarations shadow outer bindings without producing a node,
+    /// and the `xml` prefix is always in scope.
+    fn appendNamespaces(
+        self: *Evaluator,
+        context: *const value.Context,
+        node: value.NodeRef,
+        out: *std.ArrayList(value.NodeRef),
+    ) Error!void {
+        const id = switch (node) {
+            .node => |node_id| node_id,
+            .attribute, .namespace_node => return,
+        };
+        if (context.document.node(id).kind != .element) return;
+
+        var entries: std.ArrayList(value.NamespaceRef) = .empty;
+        var seen: std.ArrayList([]const u8) = .empty;
+        try seen.append(self.allocator, "xml");
+        try entries.append(self.allocator, .{
+            .element = id,
+            .prefix = "xml",
+            .uri = namespace.xml_uri,
+            .order = 0,
+        });
+
+        var current = id;
+        while (true) {
+            for (context.document.attributesOf(current)) |attribute| {
+                if (!namespace.Resolver.isNamespaceDeclaration(attribute.name)) continue;
+                const prefix = if (attribute.name.len == 5)
+                    ""
+                else
+                    attribute.name["xmlns:".len..];
+                var shadowed = false;
+                for (seen.items) |seen_prefix| {
+                    if (std.mem.eql(u8, seen_prefix, prefix)) {
+                        shadowed = true;
+                        break;
+                    }
+                }
+                if (shadowed) continue;
+                try seen.append(self.allocator, prefix);
+                // An empty URI undeclares the prefix, so it binds no namespace.
+                if (attribute.value.len == 0) continue;
+                try entries.append(self.allocator, .{
+                    .element = id,
+                    .prefix = prefix,
+                    .uri = attribute.value,
+                    .order = 0,
+                });
+            }
+            const parent = context.document.node(current).parent;
+            if (parent == dom.null_node) break;
+            if (context.document.node(parent).kind != .element) break;
+            current = parent;
+        }
+
+        std.mem.sort(
+            value.NamespaceRef,
+            entries.items,
+            {},
+            namespaceRefLessThan,
+        );
+        for (entries.items, 0..) |entry, index| {
+            var ordered = entry;
+            ordered.order = @intCast(index);
+            try out.append(self.allocator, .{ .namespace_node = ordered });
+        }
+    }
+
     fn appendDescendants(
         self: *Evaluator,
         context: *const value.Context,
@@ -310,7 +388,7 @@ const Evaluator = struct {
     ) Error!void {
         const id = switch (node) {
             .node => |id| id,
-            .attribute => return,
+            .attribute, .namespace_node => return,
         };
         const node_value = context.document.node(id);
         if (node_value.kind != .document and node_value.kind != .element) return;
@@ -329,7 +407,7 @@ const Evaluator = struct {
     ) Error!void {
         const id = switch (node) {
             .node => |id| id,
-            .attribute => return,
+            .attribute, .namespace_node => return,
         };
         const parent = context.document.node(id).parent;
         if (parent == dom.null_node) return;
@@ -347,7 +425,7 @@ const Evaluator = struct {
     ) Error!void {
         const id = switch (node) {
             .node => |id| id,
-            .attribute => return,
+            .attribute, .namespace_node => return,
         };
         const parent = context.document.node(id).parent;
         if (parent == dom.null_node) return;
@@ -417,6 +495,7 @@ const Evaluator = struct {
         _ = self;
         return switch (node) {
             .attribute => |attribute| .{ .node = attribute.element },
+            .namespace_node => |namespace_node| .{ .node = namespace_node.element },
             .node => |id| blk: {
                 const parent = context.document.node(id).parent;
                 if (parent == dom.null_node) break :blk null;
@@ -473,6 +552,24 @@ const Evaluator = struct {
                 return true;
             },
             .name => |name_test| {
+                if (axis == .namespace_axis) {
+                    if (node_kind != .namespace) return false;
+                    if (name_test.prefix) |prefix| {
+                        // Namespace nodes have a null namespace URI, so a
+                        // prefixed name test can never match one.
+                        _ = context.resolvePrefix(prefix) orelse
+                            return error.UndefinedPrefix;
+                        return false;
+                    }
+                    if (name_test.local) |expected| {
+                        return std.mem.eql(
+                            u8,
+                            self.localName(context, node),
+                            expected,
+                        );
+                    }
+                    return true;
+                }
                 if (axis == .attribute) {
                     if (node_kind != .attribute) return false;
                 } else {
@@ -508,6 +605,7 @@ const Evaluator = struct {
         _ = self;
         return switch (node) {
             .attribute => .attribute,
+            .namespace_node => .namespace,
             .node => |id| switch (context.document.node(id).kind) {
                 .document => .document,
                 .element => .element,
@@ -527,6 +625,7 @@ const Evaluator = struct {
         return switch (node) {
             .attribute => |attribute| context.document
                 .attributesOf(attribute.element)[attribute.index].localName(),
+            .namespace_node => |namespace_node| namespace_node.prefix,
             .node => |id| blk: {
                 const node_value = context.document.node(id);
                 break :blk switch (node_value.kind) {
@@ -547,6 +646,7 @@ const Evaluator = struct {
         return switch (node) {
             .attribute => |attribute| context.document
                 .attributesOf(attribute.element)[attribute.index].ns,
+            .namespace_node => "",
             .node => |id| blk: {
                 const node_value = context.document.node(id);
                 break :blk if (node_value.kind == .element) node_value.ns else "";
@@ -563,6 +663,7 @@ const Evaluator = struct {
         return switch (node) {
             .attribute => |attribute| context.document
                 .attributesOf(attribute.element)[attribute.index].name,
+            .namespace_node => |namespace_node| namespace_node.prefix,
             .node => |id| blk: {
                 const node_value = context.document.node(id);
                 break :blk switch (node_value.kind) {
@@ -582,6 +683,9 @@ const Evaluator = struct {
             .attribute => |attribute| {
                 return context.document
                     .attributesOf(attribute.element)[attribute.index].value;
+            },
+            .namespace_node => |namespace_node| {
+                return namespace_node.uri;
             },
             .node => |id| {
                 const node_value = context.document.node(id);
@@ -1123,4 +1227,14 @@ const Evaluator = struct {
 
 fn codepointCount(text: []const u8) usize {
     return std.unicode.utf8CountCodepoints(text) catch text.len;
+}
+
+/// Namespace nodes are ordered lexicographically by prefix, which places the
+/// default namespace (empty prefix) first.
+fn namespaceRefLessThan(
+    _: void,
+    a: value.NamespaceRef,
+    b: value.NamespaceRef,
+) bool {
+    return std.mem.order(u8, a.prefix, b.prefix) == .lt;
 }

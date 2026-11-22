@@ -13,6 +13,7 @@ pub const Value = value.Value;
 pub const Variable = value.Variable;
 pub const NodeRef = value.NodeRef;
 pub const AttributeRef = value.AttributeRef;
+pub const NamespaceRef = value.NamespaceRef;
 pub const Result = value.Result;
 pub const parseNumber = value.parseNumber;
 pub const formatNumber = value.formatNumber;
@@ -426,6 +427,96 @@ test "XPath lang and id functions" {
         document.node(result.value.node_set[0].node).name,
     );
     result.deinit();
+}
+
+test "XPath namespace axis" {
+    var document = try dom.Document.parse(testing.allocator, TestDocument, .{});
+    defer document.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try testing.expectEqual(@as(usize, 3), try countOf(&document, "/d:root/namespace::*"));
+    try testing.expectEqual(@as(usize, 3), try countOf(&document, "/d:root/namespace::node()"));
+    try testing.expectEqual(@as(usize, 1), try countOf(&document, "/d:root/namespace::p"));
+    try testing.expectEqual(@as(usize, 1), try countOf(&document, "/d:root/namespace::xml"));
+    try testing.expectEqual(@as(usize, 0), try countOf(&document, "/d:root/namespace::q"));
+    try testing.expectEqual(@as(usize, 1), try countOf(&document, "//d:item[1]/namespace::p"));
+    try testing.expectEqual(@as(usize, 1), try countOf(&document, "/d:root/namespace::p/parent::d:root"));
+
+    try testing.expectEqualStrings(
+        "urn:def",
+        try stringOf(&document, "string(/d:root/namespace::*)", allocator),
+    );
+    try testing.expectEqualStrings(
+        "urn:p",
+        try stringOf(&document, "string(/d:root/namespace::p)", allocator),
+    );
+    try testing.expectEqualStrings(
+        "p",
+        try stringOf(&document, "name(/d:root/namespace::p)", allocator),
+    );
+    try testing.expectEqualStrings(
+        "p",
+        try stringOf(&document, "local-name(/d:root/namespace::p)", allocator),
+    );
+    try testing.expectEqualStrings(
+        "",
+        try stringOf(&document, "namespace-uri(/d:root/namespace::p)", allocator),
+    );
+    try testing.expectEqualStrings(
+        namespace.xml_uri,
+        try stringOf(&document, "string(/d:root/namespace::xml)", allocator),
+    );
+    try testing.expectEqualStrings(
+        "",
+        try stringOf(&document, "name(/d:root/namespace::*)", allocator),
+    );
+
+    // Nearest declaration wins over an ancestor binding.
+    var shadow = try dom.Document.parse(
+        testing.allocator,
+        "<a xmlns='urn:a' xmlns:p='urn:one'><b xmlns:p='urn:two'><c/></b></a>",
+        .{},
+    );
+    defer shadow.deinit();
+    try testing.expectEqual(@as(usize, 3), try countOf(&shadow, "/*/namespace::*"));
+    try testing.expectEqual(@as(usize, 3), try countOf(&shadow, "/*/*/namespace::*"));
+    try testing.expectEqualStrings(
+        "urn:one",
+        try stringOf(&shadow, "string(/*/namespace::p)", allocator),
+    );
+    try testing.expectEqualStrings(
+        "urn:two",
+        try stringOf(&shadow, "string(/*/*/namespace::p)", allocator),
+    );
+    try testing.expectEqualStrings(
+        "urn:two",
+        try stringOf(&shadow, "string(/*/*/*/namespace::p)", allocator),
+    );
+
+    // XML 1.1 prefix undeclaration shadows an outer binding without
+    // producing a namespace node.
+    var undeclared = try dom.Document.parse(
+        testing.allocator,
+        "<?xml version='1.1'?><a xmlns:p='urn:p'><b xmlns:p=''><c/></b></a>",
+        .{},
+    );
+    defer undeclared.deinit();
+    try testing.expectEqual(@as(usize, 2), try countOf(&undeclared, "/*/namespace::*"));
+    try testing.expectEqual(@as(usize, 1), try countOf(&undeclared, "/*/*/namespace::*"));
+    try testing.expectEqual(@as(usize, 0), try countOf(&undeclared, "/*/*/namespace::p"));
+    try testing.expectEqualStrings(
+        namespace.xml_uri,
+        try stringOf(&undeclared, "string(/*/*/*/namespace::*)", allocator),
+    );
+
+    // Namespace nodes have no children, attributes, or siblings.
+    try testing.expectEqual(@as(usize, 0), try countOf(&document, "/d:root/namespace::p/child::node()"));
+    try testing.expectEqual(@as(usize, 0), try countOf(&document, "/d:root/namespace::p/attribute::*"));
+    try testing.expectEqual(@as(usize, 0), try countOf(&document, "/d:root/namespace::p/following-sibling::*"));
+    try testing.expectEqual(@as(usize, 0), try countOf(&document, "/d:root/namespace::p/preceding-sibling::*"));
+    try testing.expectEqual(@as(usize, 0), try countOf(&document, "//d:item[1]/@id/namespace::*"));
 }
 
 test "XPath parser rejects malformed expressions" {

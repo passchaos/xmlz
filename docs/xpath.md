@@ -35,8 +35,8 @@ switch (result.value) {
 
 - Location paths, absolute and relative, with `//` abbreviation.
 - Axes: `ancestor`, `ancestor-or-self`, `attribute`, `child`, `descendant`,
-  `descendant-or-self`, `following`, `following-sibling`, `parent`,
-  `preceding`, `preceding-sibling`, `self`.
+  `descendant-or-self`, `following`, `following-sibling`, `namespace`,
+  `parent`, `preceding`, `preceding-sibling`, `self`.
 - Node tests: name tests (including `prefix:*`), `node()`, `text()`,
   `comment()`, `processing-instruction('target')`.
 - Predicates with position and size context.
@@ -56,10 +56,23 @@ XPath 1.0 name tests use the namespace bindings supplied in
 not the document's default namespace. A prefixed name test with no matching
 binding returns `error.UndefinedPrefix`.
 
+The `namespace` axis exposes the in-scope namespaces of an element as
+namespace nodes (`value.NamespaceRef`). The axis includes the implicit `xml`
+binding, resolves nearest declarations first, and drops prefixes undeclared
+with an empty URI (Namespaces 1.1). Nodes are ordered lexicographically by
+prefix, as XPath 1.0 requires, so the default namespace node comes first. The
+string value of a namespace node is its URI; `name()` and `local-name()`
+return the prefix (empty for the default namespace), and `namespace-uri()`
+returns the empty string. Name tests on this axis match the prefix, and a
+prefixed test such as `namespace::p:*` never matches because namespace nodes
+have a null namespace URI.
+
 ## Known differences
 
-- The `namespace` axis currently returns an empty node-set. Namespace nodes are
-  not represented in the DOM node model.
+- libxml2 orders namespace nodes with the `xml` binding first and the
+  remaining declarations in reverse declaration order; xmlz follows the XPath
+  1.0 lexicographic order. The differential harness compares only
+  order-independent namespace expressions.
 - `id()` uses the document's `id` and `xml:id` attributes. XPath technically
   requires DTD-declared ID attributes; xmlz's fallback is intentionally
   permissive.
@@ -74,9 +87,9 @@ binding returns `error.UndefinedPrefix`.
 zig build xpath-diff
 ```
 
-The step runs 65 count/string comparisons against libxml2's `xmllint` on a
+The step runs 82 count/string comparisons against libxml2's `xmllint` on a
 shared document. Expected output:
 
 ```text
-65/65 XPath differential checks passed
+82/82 XPath differential checks passed
 ```
