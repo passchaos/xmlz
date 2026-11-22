@@ -58,8 +58,8 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,
-  identity constraints, built-in datatypes, facets, and `xsi:type` /
-  `xsi:nil`, with 193/193 differential checks against libxml2.
+  identity constraints, includes/imports, built-in datatypes, facets, and
+  `xsi:type` / `xsi:nil`, with 206/206 differential checks against libxml2.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.

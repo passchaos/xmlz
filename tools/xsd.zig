@@ -15,6 +15,58 @@ const Loaded = struct {
     }
 };
 
+const SchemaLoader = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    buffers: std.ArrayList([]u8) = .empty,
+    paths: std.ArrayList([]u8) = .empty,
+
+    fn deinit(self: *SchemaLoader) void {
+        for (self.buffers.items) |buffer| self.allocator.free(buffer);
+        for (self.paths.items) |path| self.allocator.free(path);
+        self.buffers.deinit(self.allocator);
+        self.paths.deinit(self.allocator);
+    }
+};
+
+fn loadSchema(
+    context: ?*anyopaque,
+    href: []const u8,
+    base: []const u8,
+) ?xmlz.xsd.Resource {
+    const loader: *SchemaLoader = @ptrCast(@alignCast(context.?));
+    const path = resolvePath(loader.allocator, base, href) catch return null;
+    const data = std.Io.Dir.cwd().readFileAlloc(
+        loader.io,
+        path,
+        loader.allocator,
+        .limited(64 * 1024 * 1024),
+    ) catch {
+        loader.allocator.free(path);
+        return null;
+    };
+    loader.paths.append(loader.allocator, path) catch {
+        loader.allocator.free(path);
+        loader.allocator.free(data);
+        return null;
+    };
+    loader.buffers.append(loader.allocator, data) catch {
+        loader.allocator.free(data);
+        return null;
+    };
+    return .{ .uri = path, .data = data };
+}
+
+fn resolvePath(
+    allocator: std.mem.Allocator,
+    base: []const u8,
+    href: []const u8,
+) ![]u8 {
+    if (std.fs.path.isAbsolute(href)) return allocator.dupe(u8, href);
+    const directory = std.fs.path.dirname(base) orelse ".";
+    return std.fs.path.resolve(allocator, &.{ directory, href });
+}
+
 pub fn main(init: std.process.Init) !void {
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
     defer args.deinit();
@@ -33,7 +85,16 @@ pub fn main(init: std.process.Init) !void {
     };
     defer instance_file.deinit(init.gpa);
 
-    var compiled = xmlz.xsd.parse(init.gpa, &schema_file.document) catch |err| {
+    var loader: SchemaLoader = .{ .allocator = init.gpa, .io = init.io };
+    defer loader.deinit();
+    var compiled = xmlz.xsd.parseWithOptions(
+        init.gpa,
+        &schema_file.document,
+        .{
+            .resolver = .{ .context = &loader, .load = loadSchema },
+            .base = schema_path,
+        },
+    ) catch |err| {
         std.debug.print("schema error: {s}\n", .{@errorName(err)});
         std.process.exit(2);
     };

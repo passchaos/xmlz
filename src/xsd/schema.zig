@@ -3,12 +3,13 @@
 //! Supported: global/local elements and attributes, simple types with
 //! restriction/list/union and facets, complex types with sequence/choice/all
 //! particles, groups, attribute groups, wildcards, substitution groups,
-//! identity constraints, attribute uses, and simple/complex content extension
-//! and restriction. Includes/imports and abstract-type enforcement are not
-//! implemented.
+//! identity constraints, attribute uses, simple/complex content extension and
+//! restriction, and include/import resolution. `xs:redefine` and abstract-type
+//! enforcement are not implemented.
 
 const std = @import("std");
 const dom = @import("../dom.zig");
+const encoding = @import("../encoding.zig");
 const namespace = @import("../namespace.zig");
 const xpath_ast = @import("../xpath/ast.zig");
 const xpath_parser = @import("../xpath/parser.zig");
@@ -57,6 +58,7 @@ pub const NamespaceRule = enum { any, other, target_namespace, local };
 pub const Wildcard = struct {
     namespace_rule: NamespaceRule = .any,
     process: enum { skip, lax, strict } = .strict,
+    target_namespace: []const u8 = "",
 };
 
 pub const Particle = union(enum) {
@@ -112,6 +114,7 @@ pub const ElementDecl = struct {
     substitution_qname: ?QName = null,
     substitution_group: ?*const ElementDecl = null,
     identity: []const *const IdentityConstraint = &.{},
+    doc: ?*const SchemaDocument = null,
     node: dom.NodeId = dom.null_node,
 };
 
@@ -123,6 +126,7 @@ pub const GroupDecl = struct {
     resolving: bool = false,
     cycle_checked: bool = false,
     visiting: bool = false,
+    doc: ?*const SchemaDocument = null,
     node: dom.NodeId = dom.null_node,
 };
 
@@ -133,6 +137,7 @@ pub const AttributeGroupDecl = struct {
     any_attribute: ?Wildcard = null,
     parsed: bool = false,
     resolving: bool = false,
+    doc: ?*const SchemaDocument = null,
     node: dom.NodeId = dom.null_node,
 };
 
@@ -162,6 +167,7 @@ pub const AttributeDecl = struct {
     default_value: ?[]const u8 = null,
     fixed_value: ?[]const u8 = null,
     global: bool = false,
+    doc: ?*const SchemaDocument = null,
     node: dom.NodeId = dom.null_node,
 };
 
@@ -219,7 +225,17 @@ pub const TypeDecl = struct {
     } = .unresolved,
     info: ?TypeInfo = null,
     resolving: bool = false,
+    doc: ?*const SchemaDocument = null,
     node: dom.NodeId = dom.null_node,
+};
+
+pub const SchemaDocument = struct {
+    document: *const dom.Document,
+    target_namespace: []const u8 = "",
+    element_form_qualified: bool = false,
+    attribute_form_qualified: bool = false,
+    base_uri: []const u8 = "",
+    chameleon: bool = false,
 };
 
 pub const Schema = struct {
@@ -232,8 +248,10 @@ pub const Schema = struct {
     types: []const *const TypeDecl,
     groups: []const *const GroupDecl,
     attribute_groups: []const *const AttributeGroupDecl,
+    documents: []const *dom.Document = &.{},
 
     pub fn deinit(self: *Schema) void {
+        for (self.documents) |document| document.deinit();
         self.arena.deinit();
         self.* = undefined;
     }
@@ -334,17 +352,55 @@ pub const Schema = struct {
     }
 };
 
-/// Compile an XML Schema document.
+pub const Resource = struct {
+    /// Resolved URI used as the base for nested schema references.
+    uri: []const u8 = "",
+    data: []const u8,
+};
+
+pub const Resolver = struct {
+    context: ?*anyopaque = null,
+    load: *const fn (
+        context: ?*anyopaque,
+        href: []const u8,
+        base: []const u8,
+    ) ?Resource,
+};
+
+pub const Options = struct {
+    resolver: ?Resolver = null,
+    /// Base URI of the top-level schema document.
+    base: []const u8 = "",
+};
+
+/// Compile an XML Schema document without external includes or imports.
 pub fn parse(
     allocator: std.mem.Allocator,
     document: *const dom.Document,
+) Error!Schema {
+    return parseWithOptions(allocator, document, .{});
+}
+
+/// Compile an XML Schema document, resolving `xs:include` and `xs:import`
+/// through the supplied resolver.
+pub fn parseWithOptions(
+    allocator: std.mem.Allocator,
+    document: *const dom.Document,
+    options: Options,
 ) Error!Schema {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     var compiler: Compiler = .{
         .arena = arena.allocator(),
+        .backing_allocator = allocator,
         .document = document,
+        .options = options,
     };
+    errdefer {
+        for (compiler.included_documents.items) |included| {
+            included.deinit();
+        }
+    }
     try compiler.run();
     return .{
         .arena = arena,
@@ -358,15 +414,30 @@ pub fn parse(
         .attribute_groups = try compiler.attribute_groups.toOwnedSlice(
             compiler.arena,
         ),
+        .documents = try compiler.included_documents.toOwnedSlice(
+            compiler.arena,
+        ),
     };
 }
 
+const LoadedDocument = struct {
+    uri: []const u8,
+    target_namespace: []const u8,
+};
+
 const Compiler = struct {
     arena: std.mem.Allocator,
+    backing_allocator: std.mem.Allocator,
     document: *const dom.Document,
     target_namespace: []const u8 = "",
     element_form_qualified: bool = false,
     attribute_form_qualified: bool = false,
+    options: Options = .{},
+    current_schema: *const SchemaDocument = undefined,
+    root_schema: *const SchemaDocument = undefined,
+    included_documents: std.ArrayList(*dom.Document) = .empty,
+    loaded_documents: std.ArrayList(LoadedDocument) = .empty,
+    include_stack: std.ArrayList(LoadedDocument) = .empty,
     elements: std.ArrayList(*const ElementDecl) = .empty,
     attributes: std.ArrayList(*const AttributeDecl) = .empty,
     types: std.ArrayList(*const TypeDecl) = .empty,
@@ -377,6 +448,41 @@ const Compiler = struct {
     local_attributes: std.ArrayList(*const AttributeDecl) = .empty,
     root: dom.NodeId = dom.null_node,
 
+    const SavedContext = struct {
+        document: *const dom.Document,
+        target_namespace: []const u8,
+        element_form_qualified: bool,
+        attribute_form_qualified: bool,
+        schema: *const SchemaDocument,
+    };
+
+    fn enterSchema(
+        self: *Compiler,
+        schema: *const SchemaDocument,
+    ) SavedContext {
+        const saved: SavedContext = .{
+            .document = self.document,
+            .target_namespace = self.target_namespace,
+            .element_form_qualified = self.element_form_qualified,
+            .attribute_form_qualified = self.attribute_form_qualified,
+            .schema = self.current_schema,
+        };
+        self.document = schema.document;
+        self.target_namespace = schema.target_namespace;
+        self.element_form_qualified = schema.element_form_qualified;
+        self.attribute_form_qualified = schema.attribute_form_qualified;
+        self.current_schema = schema;
+        return saved;
+    }
+
+    fn leaveSchema(self: *Compiler, saved: SavedContext) void {
+        self.document = saved.document;
+        self.target_namespace = saved.target_namespace;
+        self.element_form_qualified = saved.element_form_qualified;
+        self.attribute_form_qualified = saved.attribute_form_qualified;
+        self.current_schema = saved.schema;
+    }
+
     fn run(self: *Compiler) Error!void {
         const root = self.document.root();
         if (root == dom.null_node) return error.InvalidSchema;
@@ -384,19 +490,33 @@ const Compiler = struct {
         if (!isXsd(root_node, "schema")) return error.InvalidSchema;
         self.root = root;
 
-        if (self.document.attribute(root, "targetNamespace")) |value| {
-            self.target_namespace = value;
+        const schema_document = try self.arena.create(SchemaDocument);
+        schema_document.* = .{
+            .document = self.document,
+            .target_namespace = self.document.attribute(
+                root,
+                "targetNamespace",
+            ) orelse "",
+            .element_form_qualified = try self.formDefault(
+                root,
+                "elementFormDefault",
+            ),
+            .attribute_form_qualified = try self.formDefault(
+                root,
+                "attributeFormDefault",
+            ),
+            .base_uri = self.options.base,
+        };
+        self.root_schema = schema_document;
+        if (self.options.base.len != 0) {
+            try self.include_stack.append(self.arena, .{
+                .uri = self.options.base,
+                .target_namespace = schema_document.target_namespace,
+            });
+            defer _ = self.include_stack.pop();
         }
-        self.element_form_qualified = try self.formDefault(
-            root,
-            "elementFormDefault",
-        );
-        self.attribute_form_qualified = try self.formDefault(
-            root,
-            "attributeFormDefault",
-        );
 
-        try self.collectGlobals();
+        try self.collectGlobalsFor(schema_document);
         try self.parseGlobalBodies();
         try self.resolveSubstitutions();
         try self.resolveIdentityReferences();
@@ -416,8 +536,17 @@ const Compiler = struct {
         return error.InvalidSchema;
     }
 
-    fn collectGlobals(self: *Compiler) Error!void {
-        var child = self.document.node(self.root).first_child;
+    fn collectGlobalsFor(
+        self: *Compiler,
+        schema: *const SchemaDocument,
+    ) Error!void {
+        const saved = self.enterSchema(schema);
+        defer self.leaveSchema(saved);
+        const root = self.document.root();
+        if (root == dom.null_node) return error.InvalidSchema;
+        const root_node = self.document.node(root);
+        if (!isXsd(root_node, "schema")) return error.InvalidSchema;
+        var child = self.document.node(root).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
@@ -460,14 +589,148 @@ const Compiler = struct {
                     .local = decl.name,
                 }) != null) return error.InvalidSchema;
                 try self.attribute_groups.append(self.arena, decl);
-            } else if (std.mem.eql(u8, child_node.local, "include") or
-                std.mem.eql(u8, child_node.local, "import") or
-                std.mem.eql(u8, child_node.local, "redefine") or
+            } else if (std.mem.eql(u8, child_node.local, "include")) {
+                try self.processSchemaReference(child, false);
+            } else if (std.mem.eql(u8, child_node.local, "import")) {
+                try self.processSchemaReference(child, true);
+            } else if (std.mem.eql(u8, child_node.local, "redefine") or
                 std.mem.eql(u8, child_node.local, "notation"))
             {
                 return error.InvalidSchema;
             }
         }
+    }
+
+    fn processSchemaReference(
+        self: *Compiler,
+        id: dom.NodeId,
+        is_import: bool,
+    ) Error!void {
+        const href = self.document.attribute(id, "schemaLocation");
+        if (href == null) {
+            if (is_import) return;
+            return error.InvalidSchema;
+        }
+        const resolver = self.options.resolver orelse
+            return error.InvalidSchema;
+        const resource = resolver.load(
+            resolver.context,
+            href.?,
+            self.current_schema.base_uri,
+        ) orelse return error.InvalidSchema;
+
+        const owned = try self.arena.dupe(u8, resource.data);
+        const decoded = encoding.decodeAlloc(
+            self.arena,
+            owned,
+            64 * 1024 * 1024,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidSchema,
+        };
+        const document_ptr = try self.arena.create(dom.Document);
+        document_ptr.* = dom.Document.parse(
+            self.backing_allocator,
+            decoded,
+            .{},
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidSchema,
+        };
+        const root = document_ptr.root();
+        if (root == dom.null_node) return error.InvalidSchema;
+        const root_node = document_ptr.node(root);
+        if (!isXsd(root_node, "schema")) return error.InvalidSchema;
+
+        const included_namespace = document_ptr.attribute(
+            root,
+            "targetNamespace",
+        ) orelse "";
+        var effective_namespace = included_namespace;
+        var chameleon = false;
+        if (is_import) {
+            if (self.document.attribute(id, "namespace")) |declared| {
+                if (!std.mem.eql(u8, declared, included_namespace)) {
+                    document_ptr.deinit();
+                    return error.InvalidSchema;
+                }
+            } else if (included_namespace.len != 0) {
+                document_ptr.deinit();
+                return error.InvalidSchema;
+            }
+        } else {
+            if (included_namespace.len == 0) {
+                effective_namespace = self.target_namespace;
+                chameleon = self.target_namespace.len != 0;
+            } else if (!std.mem.eql(
+                u8,
+                included_namespace,
+                self.target_namespace,
+            )) {
+                document_ptr.deinit();
+                return error.InvalidSchema;
+            }
+        }
+
+        const key_uri = if (resource.uri.len != 0)
+            resource.uri
+        else
+            href.?;
+        const owned_key = try self.arena.dupe(u8, key_uri);
+        const owned_namespace = try self.arena.dupe(u8, effective_namespace);
+        for (self.loaded_documents.items) |loaded| {
+            if (std.mem.eql(u8, loaded.uri, owned_key) and
+                std.mem.eql(
+                    u8,
+                    loaded.target_namespace,
+                    owned_namespace,
+                ))
+            {
+                document_ptr.deinit();
+                return;
+            }
+        }
+        for (self.include_stack.items) |active| {
+            if (std.mem.eql(u8, active.uri, owned_key) and
+                std.mem.eql(
+                    u8,
+                    active.target_namespace,
+                    owned_namespace,
+                ))
+            {
+                document_ptr.deinit();
+                return error.InvalidSchema;
+            }
+        }
+        try self.include_stack.append(self.arena, .{
+            .uri = owned_key,
+            .target_namespace = owned_namespace,
+        });
+        defer _ = self.include_stack.pop();
+
+        try self.included_documents.append(self.arena, document_ptr);
+        const schema_document = try self.arena.create(SchemaDocument);
+        schema_document.* = .{
+            .document = document_ptr,
+            .target_namespace = effective_namespace,
+            .element_form_qualified = try formDefaultFor(
+                document_ptr,
+                root,
+                "elementFormDefault",
+            ),
+            .attribute_form_qualified = try formDefaultFor(
+                document_ptr,
+                root,
+                "attributeFormDefault",
+            ),
+            .base_uri = owned_key,
+            .chameleon = chameleon,
+        };
+        try self.collectGlobalsFor(schema_document);
+        try self.loaded_documents.append(self.arena, .{
+            .uri = owned_key,
+            .target_namespace = owned_namespace,
+        });
     }
 
     fn globalElement(self: *Compiler, id: dom.NodeId) Error!*const ElementDecl {
@@ -492,6 +755,7 @@ const Compiler = struct {
             .fixed_value = self.document.attribute(id, "fixed"),
             .substitution_qname = substitution_qname,
             .identity = try self.parseIdentityConstraints(id),
+            .doc = self.current_schema,
         };
         return decl;
     }
@@ -513,6 +777,7 @@ const Compiler = struct {
             .node = id,
             .default_value = self.document.attribute(id, "default"),
             .fixed_value = self.document.attribute(id, "fixed"),
+            .doc = self.current_schema,
         };
         return decl;
     }
@@ -526,6 +791,7 @@ const Compiler = struct {
             .namespace_uri = self.target_namespace,
             .global = true,
             .node = id,
+            .doc = self.current_schema,
         };
         return decl;
     }
@@ -538,6 +804,7 @@ const Compiler = struct {
             .name = name,
             .namespace_uri = self.target_namespace,
             .node = id,
+            .doc = self.current_schema,
         };
         return decl;
     }
@@ -553,6 +820,7 @@ const Compiler = struct {
             .name = name,
             .namespace_uri = self.target_namespace,
             .node = id,
+            .doc = self.current_schema,
         };
         return decl;
     }
@@ -573,12 +841,18 @@ const Compiler = struct {
             try self.checkGroupCycle(decl);
         }
         for (self.elements.items) |decl| {
+            const saved = self.enterSchema(decl.doc orelse
+                return error.InvalidSchema);
+            defer self.leaveSchema(saved);
             @constCast(decl).type_use = try self.elementTypeUse(
                 decl.node,
                 null,
             );
         }
         for (self.attributes.items) |decl| {
+            const saved = self.enterSchema(decl.doc orelse
+                return error.InvalidSchema);
+            defer self.leaveSchema(saved);
             @constCast(decl).type_use = try self.attributeTypeUse(decl.node);
         }
     }
@@ -586,6 +860,9 @@ const Compiler = struct {
     fn parseGroupBody(self: *Compiler, decl: *const GroupDecl) Error!void {
         if (decl.parsed) return;
         if (decl.resolving) return error.InvalidSchema;
+        const saved = self.enterSchema(decl.doc orelse
+            return error.InvalidSchema);
+        defer self.leaveSchema(saved);
         @constCast(decl).resolving = true;
         var particle: ?*const Particle = null;
         var child = self.document.node(decl.node).first_child;
@@ -647,6 +924,9 @@ const Compiler = struct {
     ) Error!void {
         if (decl.parsed) return;
         if (decl.resolving) return error.InvalidSchema;
+        const saved = self.enterSchema(decl.doc orelse
+            return error.InvalidSchema);
+        defer self.leaveSchema(saved);
         @constCast(decl).resolving = true;
         var attributes: []const AttributeUse = &.{};
         var any_attribute: ?Wildcard = null;
@@ -829,6 +1109,9 @@ const Compiler = struct {
     }
 
     fn parseTypeBody(self: *Compiler, decl: *const TypeDecl) Error!void {
+        const saved = self.enterSchema(decl.doc orelse
+            return error.InvalidSchema);
+        defer self.leaveSchema(saved);
         const node = self.document.node(decl.node);
         if (std.mem.eql(u8, node.local, "simpleType")) {
             @constCast(decl).body = .{
@@ -942,6 +1225,7 @@ const Compiler = struct {
         const decl = try self.arena.create(TypeDecl);
         decl.* = .{
             .node = id,
+            .doc = self.current_schema,
             .body = .{ .simple = try self.parseSimpleType(id) },
         };
         try self.types.append(self.arena, decl);
@@ -952,6 +1236,7 @@ const Compiler = struct {
         const decl = try self.arena.create(TypeDecl);
         decl.* = .{
             .node = id,
+            .doc = self.current_schema,
             .body = .{ .complex = try self.parseComplexType(id) },
         };
         try self.types.append(self.arena, decl);
@@ -1250,6 +1535,7 @@ const Compiler = struct {
                 .node = id,
                 .default_value = self.document.attribute(id, "default"),
                 .fixed_value = self.document.attribute(id, "fixed"),
+                .doc = self.current_schema,
             };
             attribute.type_use = try self.attributeTypeUse(id);
             try self.local_attributes.append(self.arena, attribute);
@@ -1271,7 +1557,9 @@ const Compiler = struct {
     }
 
     fn parseAnyAttribute(self: *Compiler, id: dom.NodeId) Error!Wildcard {
-        var wildcard: Wildcard = .{};
+        var wildcard: Wildcard = .{
+            .target_namespace = self.target_namespace,
+        };
         if (self.document.attribute(id, "namespace")) |value| {
             wildcard.namespace_rule = try parseNamespaceRule(value);
         }
@@ -1303,7 +1591,9 @@ const Compiler = struct {
             return particle;
         }
         if (std.mem.eql(u8, node.local, "any")) {
-            var wildcard: Wildcard = .{};
+            var wildcard: Wildcard = .{
+                .target_namespace = self.target_namespace,
+            };
             if (self.document.attribute(id, "namespace")) |value| {
                 wildcard.namespace_rule = try parseNamespaceRule(value);
             }
@@ -1416,6 +1706,7 @@ const Compiler = struct {
             .nillable = try self.booleanAttribute(id, "nillable"),
             .default_value = self.document.attribute(id, "default"),
             .fixed_value = self.document.attribute(id, "fixed"),
+            .doc = self.current_schema,
         };
         decl.type_use = try self.elementTypeUse(id, null);
         decl.identity = try self.parseIdentityConstraints(id);
@@ -1537,11 +1828,16 @@ const Compiler = struct {
             return error.InvalidSchema;
         }
         var namespace_uri: []const u8 = "";
+        var has_default = false;
         for (bindings) |binding| {
             if (binding.prefix.len == 0) {
                 namespace_uri = binding.uri;
+                has_default = true;
                 break;
             }
+        }
+        if (!has_default and self.current_schema.chameleon) {
+            namespace_uri = self.target_namespace;
         }
         return .{ .namespace_uri = namespace_uri, .local = raw };
     }
@@ -1913,6 +2209,18 @@ fn parseNamespaceRule(value: []const u8) Error!NamespaceRule {
     if (std.mem.eql(u8, value, "##other")) return .other;
     if (std.mem.eql(u8, value, "##targetNamespace")) return .target_namespace;
     if (std.mem.eql(u8, value, "##local")) return .local;
+    return error.InvalidSchema;
+}
+
+fn formDefaultFor(
+    document: *const dom.Document,
+    root: dom.NodeId,
+    attribute_name: []const u8,
+) Error!bool {
+    const value = document.attribute(root, attribute_name) orelse
+        return false;
+    if (std.mem.eql(u8, value, "qualified")) return true;
+    if (std.mem.eql(u8, value, "unqualified")) return false;
     return error.InvalidSchema;
 }
 

@@ -278,11 +278,7 @@ const Validator = struct {
             }
             if (found) continue;
             if (complex.any_attribute) |wildcard| {
-                if (wildcardAllows(
-                    wildcard,
-                    attr.ns,
-                    self.schema.target_namespace,
-                )) {
+                if (wildcardAllows(wildcard, attr.ns)) {
                     if (wildcard.process != .skip) {
                         if (self.schema.findAttribute(attr.ns, local)) |decl| {
                             try self.validateAttributeValue(id, attr, decl);
@@ -927,11 +923,7 @@ const Matcher = struct {
                 if (index >= self.children.len) return null;
                 const child_id = self.children[index];
                 const child = self.validator.document.node(child_id);
-                if (!wildcardAllows(
-                    any.wildcard,
-                    child.ns,
-                    self.validator.schema.target_namespace,
-                )) {
+                if (!wildcardAllows(any.wildcard, child.ns)) {
                     return null;
                 }
                 self.assignments.append(self.validator.allocator, .{
@@ -1057,13 +1049,16 @@ fn particleOccurs(particle: *const schema.Particle) struct {
 fn wildcardAllows(
     wildcard: schema.Wildcard,
     namespace_uri: []const u8,
-    target_namespace: []const u8,
 ) bool {
     return switch (wildcard.namespace_rule) {
         .any => true,
         .other => namespace_uri.len != 0 and
-            !std.mem.eql(u8, namespace_uri, target_namespace),
-        .target_namespace => std.mem.eql(u8, namespace_uri, target_namespace),
+            !std.mem.eql(u8, namespace_uri, wildcard.target_namespace),
+        .target_namespace => std.mem.eql(
+            u8,
+            namespace_uri,
+            wildcard.target_namespace,
+        ),
         .local => namespace_uri.len == 0,
     };
 }

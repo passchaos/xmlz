@@ -1111,6 +1111,145 @@ CASES = [
 ]
 
 
+INCLUDE_CASES = [
+    (
+        "include-basic",
+        {
+            "main.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:include schemaLocation="inc.xsd"/>
+              <xs:element name="root" type="Root"/>
+            </xs:schema>""",
+            "inc.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:complexType name="Root">
+                <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+              </xs:complexType>
+            </xs:schema>""",
+        },
+        [
+            "<root><a>x</a></root>",
+            "<root><b>x</b></root>",
+            "<root/>",
+        ],
+    ),
+    (
+        "include-namespaced",
+        {
+            "main.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+              xmlns:t="urn:t" elementFormDefault="qualified">
+              <xs:include schemaLocation="inc.xsd"/>
+              <xs:element name="root" type="t:Root"/>
+            </xs:schema>""",
+            "inc.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+              elementFormDefault="qualified">
+              <xs:complexType name="Root">
+                <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+              </xs:complexType>
+            </xs:schema>""",
+        },
+        [
+            "<root xmlns='urn:t'><a>x</a></root>",
+            "<root xmlns='urn:t'><b>x</b></root>",
+        ],
+    ),
+    (
+        "chameleon-include",
+        {
+            "main.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+              xmlns:t="urn:t" elementFormDefault="qualified">
+              <xs:include schemaLocation="inc.xsd"/>
+              <xs:element name="root" type="t:Derived"/>
+            </xs:schema>""",
+            "inc.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:complexType name="Base">
+                <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+              </xs:complexType>
+              <xs:complexType name="Derived">
+                <xs:complexContent>
+                  <xs:extension base="Base">
+                    <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+                  </xs:extension>
+                </xs:complexContent>
+              </xs:complexType>
+            </xs:schema>""",
+        },
+        [
+            "<root xmlns='urn:t'><a xmlns=''>x</a><b xmlns=''>y</b></root>",
+            "<root xmlns='urn:t'><a xmlns=''>x</a></root>",
+        ],
+    ),
+    (
+        "import-namespace",
+        {
+            "main.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+              xmlns:t="urn:t" xmlns:o="urn:other" elementFormDefault="qualified">
+              <xs:import namespace="urn:other" schemaLocation="other.xsd"/>
+              <xs:element name="root" type="o:Root"/>
+            </xs:schema>""",
+            "other.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:other">
+              <xs:complexType name="Root">
+                <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+              </xs:complexType>
+            </xs:schema>""",
+        },
+        [
+            "<root xmlns='urn:t'><a xmlns=''>x</a></root>",
+            "<root xmlns='urn:t'><b xmlns=''>x</b></root>",
+        ],
+    ),
+    (
+        "nested-include",
+        {
+            "main.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:include schemaLocation="a.xsd"/>
+              <xs:element name="root" type="Root"/>
+            </xs:schema>""",
+            "a.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:include schemaLocation="b.xsd"/>
+            </xs:schema>""",
+            "b.xsd": f"""<xs:schema xmlns:xs="{XS}">
+              <xs:complexType name="Root">
+                <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+              </xs:complexType>
+            </xs:schema>""",
+        },
+        [
+            "<root><a>x</a></root>",
+            "<root><b>x</b></root>",
+        ],
+    ),
+    (
+        "import-and-include",
+        {
+            "main.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+              xmlns:t="urn:t" xmlns:o="urn:other" elementFormDefault="qualified">
+              <xs:import namespace="urn:other" schemaLocation="other.xsd"/>
+              <xs:element name="root" type="o:Derived"/>
+            </xs:schema>""",
+            "other.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:other"
+              xmlns:o="urn:other">
+              <xs:include schemaLocation="helper.xsd"/>
+              <xs:complexType name="Derived">
+                <xs:complexContent>
+                  <xs:extension base="o:Base">
+                    <xs:sequence><xs:element name="b" type="xs:string"/></xs:sequence>
+                  </xs:extension>
+                </xs:complexContent>
+              </xs:complexType>
+            </xs:schema>""",
+            "helper.xsd": f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:other">
+              <xs:complexType name="Base">
+                <xs:sequence><xs:element name="a" type="xs:string"/></xs:sequence>
+              </xs:complexType>
+            </xs:schema>""",
+        },
+        [
+            "<root xmlns='urn:t'><a xmlns=''>x</a><b xmlns=''>y</b></root>",
+            "<root xmlns='urn:t'><a xmlns=''>x</a></root>",
+        ],
+    ),
+]
+
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True)
 
@@ -1137,6 +1276,45 @@ def main():
                 with open(instance_path, "w", encoding="utf-8") as handle:
                     handle.write(instance)
                 actual = run([validator, schema_path, instance_path])
+                if actual.returncode == 2:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: xmlz schema/validation "
+                        f"error: {actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
+                    continue
+                expected_valid = lxml_schema.validate(
+                    etree.fromstring(instance.encode())
+                )
+                actual_valid = actual.returncode == 0
+                checks += 1
+                if expected_valid != actual_valid:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: "
+                        f"libxml2={'valid' if expected_valid else 'invalid'} "
+                        f"xmlz={'valid' if actual_valid else 'invalid'}\n"
+                        f"  instance: {instance}\n"
+                        f"  lxml: {lxml_schema.error_log}\n"
+                        f"  xmlz: {actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
+    for name, files, instances in INCLUDE_CASES:
+        with tempfile.TemporaryDirectory() as directory:
+            for filename, content in files.items():
+                path = os.path.join(directory, filename)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content)
+            main_path = os.path.join(directory, "main.xsd")
+            try:
+                lxml_schema = etree.XMLSchema(etree.parse(main_path))
+            except Exception as error:  # noqa: BLE001 - report libxml2 failures
+                print(f"SKIP {name}: libxml2 schema error: {error}")
+                continue
+            for index, instance in enumerate(instances):
+                instance_path = os.path.join(directory, f"instance-{index}.xml")
+                with open(instance_path, "w", encoding="utf-8") as handle:
+                    handle.write(instance)
+                actual = run([validator, main_path, instance_path])
                 if actual.returncode == 2:
                     failures += 1
                     print(

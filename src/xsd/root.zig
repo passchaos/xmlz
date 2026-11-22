@@ -9,6 +9,10 @@ pub const schema = @import("schema.zig");
 pub const validate_mod = @import("validate.zig");
 
 pub const Schema = schema.Schema;
+pub const SchemaDocument = schema.SchemaDocument;
+pub const Options = schema.Options;
+pub const Resolver = schema.Resolver;
+pub const Resource = schema.Resource;
 pub const Error = schema.Error;
 pub const ValidationError = validate_mod.ValidationError;
 pub const ValidationResult = validate_mod.Result;
@@ -19,6 +23,15 @@ pub fn parse(
     document: *const dom.Document,
 ) Error!Schema {
     return schema.parse(allocator, document);
+}
+
+/// Compile a schema document with include/import resolution.
+pub fn parseWithOptions(
+    allocator: std.mem.Allocator,
+    document: *const dom.Document,
+    options: Options,
+) Error!Schema {
+    return schema.parseWithOptions(allocator, document, options);
 }
 
 /// Validate an instance document against a compiled schema.
@@ -592,5 +605,194 @@ test "XSD identity constraints select nested nodes" {
     try expectInvalid(
         schema_source,
         "<root><item><name>a</name></item><item><name>a</name></item></root>",
+    );
+}
+
+const SchemaResource = struct {
+    href: []const u8,
+    uri: []const u8,
+    data: []const u8,
+};
+
+const MapResolver = struct {
+    resources: []const SchemaResource,
+};
+
+fn loadResource(
+    context: ?*anyopaque,
+    href: []const u8,
+    base: []const u8,
+) ?Resource {
+    _ = base;
+    const resolver: *const MapResolver = @ptrCast(@alignCast(context.?));
+    for (resolver.resources) |resource| {
+        if (std.mem.eql(u8, resource.href, href)) {
+            return .{ .uri = resource.uri, .data = resource.data };
+        }
+    }
+    return null;
+}
+
+fn expectCompiledValid(compiled: *const Schema, instance: []const u8) !void {
+    var document = try parseDocument(instance);
+    defer document.deinit();
+    var result = try validate(compiled, testing.allocator, &document);
+    defer result.deinit();
+    try testing.expect(result.isValid());
+}
+
+fn expectCompiledInvalid(compiled: *const Schema, instance: []const u8) !void {
+    var document = try parseDocument(instance);
+    defer document.deinit();
+    var result = try validate(compiled, testing.allocator, &document);
+    defer result.deinit();
+    try testing.expect(!result.isValid());
+}
+
+test "XSD includes and imports schema documents" {
+    const resources = [_]SchemaResource{
+        .{
+            .href = "inc.xsd",
+            .uri = "inc.xsd",
+            .data = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+                "<xs:complexType name='Root'><xs:sequence>" ++
+                "<xs:element name='a' type='xs:string'/>" ++
+                "</xs:sequence></xs:complexType></xs:schema>",
+        },
+        .{
+            .href = "other.xsd",
+            .uri = "other.xsd",
+            .data = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema' " ++
+                "targetNamespace='urn:other'>" ++
+                "<xs:complexType name='Other'><xs:sequence>" ++
+                "<xs:element name='b' type='xs:string'/>" ++
+                "</xs:sequence></xs:complexType></xs:schema>",
+        },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
+
+    const include_schema =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        \\  <xs:include schemaLocation="inc.xsd"/>
+        \\  <xs:element name="root" type="Root"/>
+        \\</xs:schema>
+    ;
+    var include_document = try parseDocument(include_schema);
+    defer include_document.deinit();
+    var included = try parseWithOptions(testing.allocator, &include_document, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+        .base = "main.xsd",
+    });
+    defer included.deinit();
+    try expectCompiledValid(&included, "<root><a>x</a></root>");
+    try expectCompiledInvalid(&included, "<root><b>x</b></root>");
+
+    const import_schema =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+        \\  targetNamespace="urn:t" xmlns:t="urn:t" xmlns:o="urn:other"
+        \\  elementFormDefault="qualified">
+        \\  <xs:import namespace="urn:other" schemaLocation="other.xsd"/>
+        \\  <xs:element name="root" type="o:Other"/>
+        \\</xs:schema>
+    ;
+    var import_document = try parseDocument(import_schema);
+    defer import_document.deinit();
+    var imported = try parseWithOptions(testing.allocator, &import_document, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+        .base = "main.xsd",
+    });
+    defer imported.deinit();
+    try expectCompiledValid(
+        &imported,
+        "<root xmlns='urn:t'><b xmlns=''>x</b></root>",
+    );
+    try expectCompiledInvalid(
+        &imported,
+        "<root xmlns='urn:t'><a xmlns=''>x</a></root>",
+    );
+}
+
+test "XSD chameleon include adopts the including namespace" {
+    const resources = [_]SchemaResource{
+        .{
+            .href = "chameleon.xsd",
+            .uri = "chameleon.xsd",
+            .data = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+                "<xs:complexType name='Base'><xs:sequence>" ++
+                "<xs:element name='a' type='xs:string'/>" ++
+                "</xs:sequence></xs:complexType>" ++
+                "<xs:complexType name='Derived'><xs:complexContent>" ++
+                "<xs:extension base='Base'><xs:sequence>" ++
+                "<xs:element name='b' type='xs:string'/>" ++
+                "</xs:sequence></xs:extension></xs:complexContent>" ++
+                "</xs:complexType></xs:schema>",
+        },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+        \\  targetNamespace="urn:t" xmlns:t="urn:t"
+        \\  elementFormDefault="qualified">
+        \\  <xs:include schemaLocation="chameleon.xsd"/>
+        \\  <xs:element name="root" type="t:Derived"/>
+        \\</xs:schema>
+    ;
+    var schema_document = try parseDocument(schema_source);
+    defer schema_document.deinit();
+    var compiled = try parseWithOptions(testing.allocator, &schema_document, .{
+        .resolver = .{ .context = &resolver, .load = loadResource },
+        .base = "main.xsd",
+    });
+    defer compiled.deinit();
+    try expectCompiledValid(
+        &compiled,
+        "<root xmlns='urn:t'><a xmlns=''>x</a><b xmlns=''>y</b></root>",
+    );
+    try expectCompiledInvalid(
+        &compiled,
+        "<root xmlns='urn:t'><a xmlns=''>x</a></root>",
+    );
+}
+
+test "XSD rejects circular and missing schema includes" {
+    const resources = [_]SchemaResource{
+        .{
+            .href = "a.xsd",
+            .uri = "a.xsd",
+            .data = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+                "<xs:include schemaLocation='main.xsd'/></xs:schema>",
+        },
+        .{
+            .href = "main.xsd",
+            .uri = "main.xsd",
+            .data = "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+                "<xs:include schemaLocation='a.xsd'/></xs:schema>",
+        },
+    };
+    var resolver: MapResolver = .{ .resources = &resources };
+    const schema_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+        "<xs:include schemaLocation='a.xsd'/></xs:schema>";
+    var schema_document = try parseDocument(schema_source);
+    defer schema_document.deinit();
+    try testing.expectError(
+        error.InvalidSchema,
+        parseWithOptions(testing.allocator, &schema_document, .{
+            .resolver = .{ .context = &resolver, .load = loadResource },
+            .base = "main.xsd",
+        }),
+    );
+
+    const missing =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+        "<xs:include schemaLocation='missing.xsd'/></xs:schema>";
+    var missing_document = try parseDocument(missing);
+    defer missing_document.deinit();
+    try testing.expectError(
+        error.InvalidSchema,
+        parseWithOptions(testing.allocator, &missing_document, .{
+            .resolver = .{ .context = &resolver, .load = loadResource },
+            .base = "main.xsd",
+        }),
     );
 }

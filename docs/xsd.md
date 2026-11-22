@@ -6,7 +6,10 @@ them, collecting all errors with node paths.
 ```zig
 var schema_document = try xmlz.dom.Document.parse(allocator, schema_xml, .{});
 defer schema_document.deinit();
-var compiled = try xmlz.xsd.parse(allocator, &schema_document);
+var compiled = try xmlz.xsd.parseWithOptions(allocator, &schema_document, .{
+    .resolver = .{ .context = &loader, .load = load },
+    .base = "file:///schemas/main.xsd",
+});
 defer compiled.deinit();
 
 var instance = try xmlz.dom.Document.parse(allocator, instance_xml, .{});
@@ -41,6 +44,8 @@ for (result.errors) |validation_error| {
   `##targetNamespace`, and `##local`, and `processContents` skip/lax/strict.
 - Global `xs:group` and `xs:attributeGroup` definitions, references, nested
   attribute groups, and circular group detection.
+- `xs:include` (including chameleon includes) and `xs:import` through a
+  resolver, with per-document namespaces/forms and circular-include detection.
 - Substitution groups, including transitive members and abstract head
   elements.
 - Identity constraints: `xs:key`, `xs:unique`, and `xs:keyref`, including
@@ -55,8 +60,7 @@ for (result.errors) |validation_error| {
 
 ## Limitations
 
-- `xs:include`, `xs:import`, `xs:redefine`, and `xs:notation` are not
-  implemented.
+- `xs:redefine` and `xs:notation` are not implemented.
 - Abstract types and `block`/`final` enforcement are not implemented.
 - Substitution group members are not checked for valid type derivation from
   the head.
@@ -85,5 +89,5 @@ attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
 
 ```text
-193/193 XSD differential checks passed
+206/206 XSD differential checks passed
 ```
