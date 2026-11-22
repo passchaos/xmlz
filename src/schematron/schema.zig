@@ -27,10 +27,24 @@ pub const MessagePart = union(enum) {
 
 pub const AssertionKind = enum { assert, report };
 
+pub const Diagnostic = struct {
+    id: []const u8,
+    message: []const MessagePart = &.{},
+};
+
+pub const Property = struct {
+    id: []const u8,
+    scheme: []const u8 = "",
+    role: []const u8 = "",
+    message: []const MessagePart = &.{},
+};
+
 pub const Assertion = struct {
     kind: AssertionKind,
     test_expr: CompiledExpr,
     message: []const MessagePart = &.{},
+    diagnostic_ids: []const []const u8 = &.{},
+    property_ids: []const []const u8 = &.{},
     node: dom.NodeId = dom.null_node,
 };
 
@@ -62,6 +76,8 @@ pub const Schema = struct {
     phases: []const Phase,
     default_phase: ?[]const u8 = null,
     variables: []const Variable = &.{},
+    diagnostics: []const Diagnostic = &.{},
+    properties: []const Property = &.{},
 
     pub fn deinit(self: *Schema) void {
         self.arena.deinit();
@@ -88,6 +104,8 @@ pub fn parse(
         .phases = try compiler.phases.toOwnedSlice(compiler.arena),
         .default_phase = compiler.default_phase,
         .variables = try compiler.variables.toOwnedSlice(compiler.arena),
+        .diagnostics = try compiler.diagnostics.toOwnedSlice(compiler.arena),
+        .properties = try compiler.properties.toOwnedSlice(compiler.arena),
     };
 }
 
@@ -100,6 +118,8 @@ const Compiler = struct {
     abstract_patterns: std.StringHashMap(dom.NodeId),
     abstract_rules: std.StringHashMap(dom.NodeId),
     variables: std.ArrayList(Variable) = .empty,
+    diagnostics: std.ArrayList(Diagnostic) = .empty,
+    properties: std.ArrayList(Property) = .empty,
     default_phase: ?[]const u8 = null,
 
     fn compile(self: *Compiler) Error!void {
@@ -145,6 +165,10 @@ const Compiler = struct {
                     self.arena,
                     try self.parseVariable(child, &.{}),
                 );
+            } else if (std.mem.eql(u8, child_node.local, "diagnostics")) {
+                try self.parseDiagnostics(child);
+            } else if (std.mem.eql(u8, child_node.local, "properties")) {
+                try self.parseProperties(child);
             } else if (std.mem.eql(u8, child_node.local, "phase")) {
                 try self.phases.append(self.arena, try self.parsePhase(child));
             } else if (std.mem.eql(u8, child_node.local, "pattern")) {
@@ -314,6 +338,66 @@ const Compiler = struct {
             .id = try self.arena.dupe(u8, phase_id),
             .active = try active.toOwnedSlice(self.arena),
         };
+    }
+
+    fn parseDiagnostics(self: *Compiler, id: dom.NodeId) Error!void {
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const node = self.document.node(child);
+            if (node.kind != .element or
+                !std.mem.eql(u8, node.ns, namespace_uri) or
+                !std.mem.eql(u8, node.local, "diagnostic"))
+            {
+                continue;
+            }
+            const diagnostic_id = self.document.attribute(child, "id") orelse
+                return error.InvalidSchema;
+            try self.diagnostics.append(self.arena, .{
+                .id = try self.arena.dupe(u8, diagnostic_id),
+                .message = try self.parseMessage(child, &.{}),
+            });
+        }
+    }
+
+    fn parseProperties(self: *Compiler, id: dom.NodeId) Error!void {
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const node = self.document.node(child);
+            if (node.kind != .element or
+                !std.mem.eql(u8, node.ns, namespace_uri) or
+                !std.mem.eql(u8, node.local, "property"))
+            {
+                continue;
+            }
+            const property_id = self.document.attribute(child, "id") orelse
+                return error.InvalidSchema;
+            try self.properties.append(self.arena, .{
+                .id = try self.arena.dupe(u8, property_id),
+                .scheme = try self.arena.dupe(
+                    u8,
+                    self.document.attribute(child, "scheme") orelse "",
+                ),
+                .role = try self.arena.dupe(
+                    u8,
+                    self.document.attribute(child, "role") orelse "",
+                ),
+                .message = try self.parseMessage(child, &.{}),
+            });
+        }
+    }
+
+    fn parseIdRefs(
+        self: *Compiler,
+        id: dom.NodeId,
+        attribute: []const u8,
+    ) Error![]const []const u8 {
+        const value = self.document.attribute(id, attribute) orelse return &.{};
+        var ids: std.ArrayList([]const u8) = .empty;
+        var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n");
+        while (tokens.next()) |token| {
+            try ids.append(self.arena, try self.arena.dupe(u8, token));
+        }
+        return ids.toOwnedSlice(self.arena);
     }
 
     fn parsePattern(
@@ -486,6 +570,8 @@ const Compiler = struct {
                 try self.substitute(test_source, params),
             ),
             .message = try self.parseMessage(id, params),
+            .diagnostic_ids = try self.parseIdRefs(id, "diagnostics"),
+            .property_ids = try self.parseIdRefs(id, "properties"),
             .node = id,
         };
     }

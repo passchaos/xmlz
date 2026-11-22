@@ -44,15 +44,21 @@ for (result.failures) |failure| {
   text.
 - Message rendering with literal text, `name` (context node or `path`), and
   `value-of`.
+- Diagnostics: `diagnostics` declarations and `diagnostics` references on
+  `assert`/`report`, rendered in the triggering context node and exposed as
+  `Failure.diagnostics`. Unknown diagnostic IDs are skipped.
+- Properties: `properties` declarations with `id`/`scheme`/`role` and
+  `properties` references on `assert`/`report`, exposed as
+  `Failure.properties`.
 - Failed `assert` findings invalidate the document; successful `report`
   findings are recorded but do not affect `isValid()`.
 
 ## Limitations
 
-- Diagnostics, properties, and embedded Schematron rules in XML Schema or
-  RELAX NG are not supported.
-- The generated SVRL report format is not produced; failures are returned as
-  structured values.
+- Embedded Schematron rules in XML Schema or RELAX NG are not supported.
+- The generated SVRL report format is not produced; findings are returned as
+  structured values. The CLI `--report` mode prints a tab-separated summary
+  for differential testing.
 
 ## Differential verification
 
@@ -60,10 +66,11 @@ for (result.failures) |failure| {
 zig build schematron-diff
 ```
 
-The step compares validity with the ISO Schematron skeleton through lxml for
-assertions, reports, contexts, namespaces, lets, phases, message parts, and
-XPath functions. Expected output:
+The step compares validity and rendered findings (messages and diagnostic
+references) with the ISO Schematron skeleton through lxml for assertions,
+reports, contexts, namespaces, lets, phases, message parts, diagnostics,
+properties, and XPath functions. Expected output:
 
 ```text
-30/30 Schematron differential checks passed
+37/37 Schematron differential checks passed
 ```

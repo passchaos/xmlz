@@ -83,10 +83,11 @@ then exposes them through a pull parser and reusable lexical primitives.
   tools consume catalogs via `--catalog=FILE`, falling back from `system` to
   `uri` entries like libxml2.
 - **ISO Schematron.** `schematron.parse` compiles schemas and
-  `schematron.validate` evaluates rule contexts, assertions, reports, lets,
-  namespaces, phases, abstract rules (`extends`), and abstract patterns
-  (`is-a` with parameter substitution) with the XPath engine, with 30/30
-  differential checks against the ISO skeleton through lxml.
+  `schematron.validate` evaluates rule contexts, assertions, reports,
+  diagnostics, properties, lets, namespaces, phases, abstract rules
+  (`extends`), and abstract patterns (`is-a` with parameter substitution)
+  with the XPath engine, with 37/37 differential checks against the ISO
+  skeleton through lxml.
 - **RELAX NG.** `rng.parse` compiles XML-syntax grammars, `rng.parseCompact`
   parses the compact syntax (including `include`/`external`), and
   `rng.validate` checks instances against

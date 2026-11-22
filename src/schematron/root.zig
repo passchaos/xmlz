@@ -10,6 +10,7 @@ pub const Schema = schema.Schema;
 pub const Error = schema.Error;
 pub const Options = validate_mod.Options;
 pub const Failure = validate_mod.Failure;
+pub const Reference = validate_mod.Reference;
 pub const ValidationResult = validate_mod.Result;
 pub const namespace_uri = schema.namespace_uri;
 
@@ -276,4 +277,43 @@ test "Schematron rejects circular extends" {
         error.InvalidSchema,
         parse(testing.allocator, &schema_document),
     );
+}
+
+test "Schematron diagnostics and properties render in context" {
+    const schema_source =
+        "<schema xmlns='" ++ sch ++ "'>" ++
+        "<pattern id='p'><rule context='item'>" ++
+        "<assert test='@id' diagnostics='missing d1 d2' properties='p1'>" ++
+        "item needs id</assert>" ++
+        "</rule></pattern>" ++
+        "<diagnostics>" ++
+        "<diagnostic id='d1'>missing id</diagnostic>" ++
+        "<diagnostic id='d2'>kind is <value-of select='@kind'/></diagnostic>" ++
+        "</diagnostics>" ++
+        "<properties>" ++
+        "<property id='p1' scheme='urn:s' role='error'>" ++
+        "bad <value-of select='name()'/></property>" ++
+        "</properties></schema>";
+    var schema_document = try parseDocument(schema_source);
+    defer schema_document.deinit();
+    var compiled = try parse(testing.allocator, &schema_document);
+    defer compiled.deinit();
+
+    var document = try parseDocument("<root><item kind='k'/></root>");
+    defer document.deinit();
+    var result = try validate(&compiled, testing.allocator, &document, .{});
+    defer result.deinit();
+    try testing.expect(!result.isValid());
+    try testing.expectEqual(1, result.failures.len);
+    const failure = result.failures[0];
+    try testing.expectEqual(2, failure.diagnostics.len);
+    try testing.expectEqualStrings("d1", failure.diagnostics[0].id);
+    try testing.expectEqualStrings("missing id", failure.diagnostics[0].message);
+    try testing.expectEqualStrings("d2", failure.diagnostics[1].id);
+    try testing.expectEqualStrings("kind is k", failure.diagnostics[1].message);
+    try testing.expectEqual(1, failure.properties.len);
+    try testing.expectEqualStrings("p1", failure.properties[0].id);
+    try testing.expectEqualStrings("urn:s", failure.properties[0].scheme);
+    try testing.expectEqualStrings("error", failure.properties[0].role);
+    try testing.expectEqualStrings("bad item", failure.properties[0].message);
 }

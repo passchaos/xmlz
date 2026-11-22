@@ -14,6 +14,52 @@ except ImportError:  # pragma: no cover
     sys.exit(0)
 
 SCH = "http://purl.oclc.org/dsdl/schematron"
+SVRL = "http://purl.oclc.org/dsdl/svrl"
+
+
+def normalize(text):
+    return " ".join(text.split())
+
+
+def expected_findings(report):
+    """Extract (kind, message, diagnostics) from an SVRL report."""
+    findings = []
+    if report is None:
+        return findings
+    for element in report.iter():
+        if not isinstance(element.tag, str):
+            continue
+        local = etree.QName(element).localname
+        if local not in ("failed-assert", "successful-report"):
+            continue
+        text_element = element.find(f"{{{SVRL}}}text")
+        message = "".join(text_element.itertext()) if text_element is not None else ""
+        diagnostics = []
+        for reference in element.findall(f"{{{SVRL}}}diagnostic-reference"):
+            diagnostics.append((
+                reference.get("diagnostic"),
+                normalize("".join(reference.itertext())),
+            ))
+        findings.append((local, normalize(message), diagnostics))
+    return findings
+
+
+def actual_findings(output):
+    """Parse the tool's --report lines."""
+    findings = []
+    current = None
+    for line in output.splitlines():
+        parts = line.split("\t")
+        if parts[0] in ("failed-assert", "successful-report") and len(parts) >= 3:
+            current = (
+                parts[0],
+                normalize("\t".join(parts[2:])),
+                [],
+            )
+            findings.append(current)
+        elif parts[0] == "diagnostic" and len(parts) >= 3 and current is not None:
+            current[2].append((parts[1], normalize("\t".join(parts[2:]))))
+    return findings
 
 CASES = [
     (
@@ -202,6 +248,62 @@ CASES = [
         None,
     ),
     (
+        "diagnostics",
+        f"""<schema xmlns="{SCH}">
+          <pattern id="p">
+            <rule context="item">
+              <assert test="@id" diagnostics="d1 d2">item needs id</assert>
+            </rule>
+          </pattern>
+          <diagnostics>
+            <diagnostic id="d1">missing id</diagnostic>
+            <diagnostic id="d2">kind is <value-of select="@kind"/></diagnostic>
+          </diagnostics>
+        </schema>""",
+        [
+            "<root><item id='1' kind='k'/></root>",
+            "<root><item kind='k'/></root>",
+            "<root><item/></root>",
+        ],
+        None,
+    ),
+    (
+        "diagnostics-report",
+        f"""<schema xmlns="{SCH}">
+          <pattern id="p">
+            <rule context="item">
+              <report test="@id='bad'" diagnostics="d3">bad id</report>
+            </rule>
+          </pattern>
+          <diagnostics>
+            <diagnostic id="d3">value is <value-of select="@id"/></diagnostic>
+          </diagnostics>
+        </schema>""",
+        [
+            "<root><item id='ok'/></root>",
+            "<root><item id='bad'/></root>",
+        ],
+        None,
+    ),
+    (
+        "properties",
+        f"""<schema xmlns="{SCH}">
+          <pattern id="p">
+            <rule context="item">
+              <assert test="@id" properties="p1">item needs id</assert>
+            </rule>
+          </pattern>
+          <properties>
+            <property id="p1" scheme="urn:s" role="error">bad <value-of select="name()"/></property>
+          </properties>
+        </schema>""",
+        [
+            "<root><item id='1'/></root>",
+            "<root><item/></root>",
+        ],
+        None,
+    ),
+    (
         "abstract-pattern-params",
         f"""<schema xmlns="{SCH}">
           <ns prefix="h" uri="urn:h"/>
@@ -240,6 +342,7 @@ def main():
             schematron = Schematron(
                 etree.fromstring(schema_source.encode()),
                 phase=phase,
+                store_report=True,
             )
         except Exception as error:  # noqa: BLE001 - report lxml failures
             print(f"SKIP {name}: libxml2 schema error: {error}")
@@ -252,7 +355,7 @@ def main():
                 instance_path = os.path.join(directory, f"instance-{index}.xml")
                 with open(instance_path, "w", encoding="utf-8") as handle:
                     handle.write(instance)
-                command = [validator, schema_path, instance_path]
+                command = [validator, "--report", schema_path, instance_path]
                 if phase is not None:
                     command.append(f"--phase={phase}")
                 actual = run(command)
@@ -277,6 +380,17 @@ def main():
                         f"  instance: {instance}\n"
                         f"  lxml: {[e.message for e in schematron.error_log]}\n"
                         f"  xmlz: {actual.stderr.strip()}"
+                    )
+                    continue
+                expected = expected_findings(schematron.validation_report)
+                found = actual_findings(actual.stdout + actual.stderr)
+                if expected != found:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: findings differ\n"
+                        f"  instance: {instance}\n"
+                        f"  lxml: {expected}\n"
+                        f"  xmlz: {found}"
                     )
     print(f"{checks - failures}/{checks} Schematron differential checks passed")
     return 1 if failures else 0

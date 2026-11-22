@@ -16,11 +16,20 @@ pub const Options = struct {
     phase: ?[]const u8 = null,
 };
 
+pub const Reference = struct {
+    id: []const u8,
+    scheme: []const u8 = "",
+    role: []const u8 = "",
+    message: []const u8,
+};
+
 pub const Failure = struct {
     node: dom.NodeId,
     pattern_id: []const u8,
     kind: schema_mod.AssertionKind,
     message: []const u8,
+    diagnostics: []const Reference = &.{},
+    properties: []const Reference = &.{},
 };
 
 pub const Result = struct {
@@ -99,7 +108,6 @@ const Validator = struct {
         compiled: *const schema_mod.Schema,
         pattern: *const schema_mod.Pattern,
     ) Error!void {
-        _ = compiled;
         var variables: std.ArrayList(xpath_value.Variable) = .empty;
         try variables.appendSlice(self.allocator, self.schema_variables.items);
         for (pattern.variables) |variable| {
@@ -117,13 +125,14 @@ const Validator = struct {
                 else => return error.InvalidSchema,
             };
             for (nodes) |node| {
-                try self.runRule(pattern, rule, node, variables.items);
+                try self.runRule(compiled, pattern, rule, node, variables.items);
             }
         }
     }
 
     fn runRule(
         self: *Validator,
+        compiled: *const schema_mod.Schema,
         pattern: *const schema_mod.Pattern,
         rule: *const schema_mod.Rule,
         node: xpath_value.NodeRef,
@@ -148,9 +157,77 @@ const Validator = struct {
                 .node = refNodeId(node),
                 .pattern_id = pattern.id,
                 .kind = assertion.kind,
-                .message = try self.renderMessage(assertion, node, local.items),
+                .message = try self.renderParts(
+                    assertion.message,
+                    node,
+                    local.items,
+                ),
+                .diagnostics = try self.renderDiagnostics(
+                    compiled,
+                    assertion.diagnostic_ids,
+                    node,
+                    local.items,
+                ),
+                .properties = try self.renderProperties(
+                    compiled,
+                    assertion.property_ids,
+                    node,
+                    local.items,
+                ),
             });
         }
+    }
+
+    fn renderDiagnostics(
+        self: *Validator,
+        compiled: *const schema_mod.Schema,
+        ids: []const []const u8,
+        node: xpath_value.NodeRef,
+        variables: []const xpath_value.Variable,
+    ) Error![]const Reference {
+        var out: std.ArrayList(Reference) = .empty;
+        for (ids) |id| {
+            for (compiled.diagnostics) |diagnostic| {
+                if (!std.mem.eql(u8, diagnostic.id, id)) continue;
+                try out.append(self.allocator, .{
+                    .id = diagnostic.id,
+                    .message = try self.renderParts(
+                        diagnostic.message,
+                        node,
+                        variables,
+                    ),
+                });
+                break;
+            }
+        }
+        return out.toOwnedSlice(self.allocator);
+    }
+
+    fn renderProperties(
+        self: *Validator,
+        compiled: *const schema_mod.Schema,
+        ids: []const []const u8,
+        node: xpath_value.NodeRef,
+        variables: []const xpath_value.Variable,
+    ) Error![]const Reference {
+        var out: std.ArrayList(Reference) = .empty;
+        for (ids) |id| {
+            for (compiled.properties) |property| {
+                if (!std.mem.eql(u8, property.id, id)) continue;
+                try out.append(self.allocator, .{
+                    .id = property.id,
+                    .scheme = property.scheme,
+                    .role = property.role,
+                    .message = try self.renderParts(
+                        property.message,
+                        node,
+                        variables,
+                    ),
+                });
+                break;
+            }
+        }
+        return out.toOwnedSlice(self.allocator);
     }
 
     fn defineVariable(
@@ -201,14 +278,14 @@ const Validator = struct {
         };
     }
 
-    fn renderMessage(
+    fn renderParts(
         self: *Validator,
-        assertion: *const schema_mod.Assertion,
+        parts: []const schema_mod.MessagePart,
         node: xpath_value.NodeRef,
         variables: []const xpath_value.Variable,
     ) Error![]const u8 {
         var out: std.ArrayList(u8) = .empty;
-        for (assertion.message) |part| {
+        for (parts) |part| {
             switch (part) {
                 .text => |text| try out.appendSlice(self.allocator, text),
                 .value_of => |expression| {
