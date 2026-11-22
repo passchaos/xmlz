@@ -47,8 +47,9 @@ then exposes them through a pull parser and reusable lexical primitives.
   extracted from `zsvg` remain available and are used by the pull parser's
   fast paths.
 - **Measured performance.** On a 16 MiB SVG-like document the pull parser
-  reaches 738 MB/s (672 MB/s with namespaces), 4.8x faster than expat and 5.0x
-  faster than libxml2's reader; see `docs/benchmarks.md`.
+  reaches 652 MB/s (587 MB/s with namespaces) and 824 MB/s in opt-in trusted
+  mode, 5.3x faster than expat and 6.1x faster than libxml2's reader; see
+  `docs/benchmarks.md`.
 
 ## Status
 
@@ -106,6 +107,13 @@ defer parser.deinit();
 The resolver owns the returned bytes and must keep them valid for the parser's
 lifetime. Without a resolver, external references remain declared-but-opaque
 and external subsets are not read.
+
+## Trusted fast mode
+
+`Parser.Options.trusted = true` skips character, name, duplicate-attribute,
+and namespace-constraint validation for inputs the caller has already verified.
+It is intended for trusted internal pipelines and never affects the default
+validating behavior or the conformance suite.
 
 ## XML 1.1
 

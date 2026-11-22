@@ -183,6 +183,111 @@ pub const Resolver = struct {
         return null;
     }
 
+    pub fn splitQNameUnchecked(raw: []const u8) QName {
+        if (std.mem.indexOfScalar(u8, raw, ':')) |colon| {
+            return .{
+                .prefix = raw[0..colon],
+                .local = raw[colon + 1 ..],
+                .raw = raw,
+            };
+        }
+        return .{ .prefix = "", .local = raw, .raw = raw };
+    }
+
+    /// Trusted-input variant of `push`: records declarations without checking
+    /// reserved prefixes or URI constraints.
+    pub fn pushUnchecked(self: *Resolver, attrs: anytype) Error!void {
+        try self.enter();
+        for (attrs) |attr| {
+            if (std.mem.eql(u8, attr.name, "xmlns")) {
+                try self.addBinding("", attr.value);
+            } else if (std.mem.startsWith(u8, attr.name, "xmlns:")) {
+                try self.addBinding(attr.name["xmlns:".len..], attr.value);
+            }
+        }
+    }
+
+    pub fn resolveElementNameUncheckedColon(
+        self: *const Resolver,
+        raw: []const u8,
+        colon: u16,
+    ) ResolvedName {
+        if (colon == 0xFFFF) {
+            return .{
+                .raw = raw,
+                .prefix = "",
+                .local = raw,
+                .uri = self.default_ns,
+            };
+        }
+        const prefix = raw[0..colon];
+        return .{
+            .raw = raw,
+            .prefix = prefix,
+            .local = raw[colon + 1 ..],
+            .uri = self.resolve(prefix) orelse "",
+        };
+    }
+
+    pub fn resolveAttributeNameUncheckedColon(
+        self: *const Resolver,
+        raw: []const u8,
+        colon: u16,
+    ) ResolvedName {
+        if (colon == 0xFFFF) {
+            return .{ .raw = raw, .prefix = "", .local = raw, .uri = "" };
+        }
+        const prefix = raw[0..colon];
+        return .{
+            .raw = raw,
+            .prefix = prefix,
+            .local = raw[colon + 1 ..],
+            .uri = self.resolve(prefix) orelse "",
+        };
+    }
+
+    pub fn resolveElementNameUnchecked(
+        self: *const Resolver,
+        raw: []const u8,
+    ) ResolvedName {
+        const qname = splitQNameUnchecked(raw);
+        if (qname.prefix.len == 0) {
+            return .{
+                .raw = raw,
+                .prefix = "",
+                .local = qname.local,
+                .uri = self.default_ns,
+            };
+        }
+        return .{
+            .raw = raw,
+            .prefix = qname.prefix,
+            .local = qname.local,
+            .uri = self.resolve(qname.prefix) orelse "",
+        };
+    }
+
+    pub fn resolveAttributeNameUnchecked(
+        self: *const Resolver,
+        raw: []const u8,
+    ) ResolvedName {
+        const qname = splitQNameUnchecked(raw);
+        if (qname.prefix.len == 0) {
+            return .{
+                .raw = raw,
+                .prefix = "",
+                .local = qname.local,
+                .uri = "",
+            };
+        }
+        return .{
+            .raw = raw,
+            .prefix = qname.prefix,
+            .local = qname.local,
+            .uri = self.resolve(qname.prefix) orelse "",
+        };
+    }
+
     pub fn resolveElementName(
         self: *const Resolver,
         raw: []const u8,

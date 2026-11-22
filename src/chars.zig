@@ -276,6 +276,45 @@ pub fn scanNameInfo(bytes: []const u8) NameInfo {
     return info;
 }
 
+/// Fast name scan for trusted, already-well-formed input. Stops at markup
+/// delimiters and records the first colon. Non-ASCII bytes are treated as name
+/// bytes; the caller has promised valid UTF-8 names.
+pub fn scanNameInfoFast(bytes: []const u8) NameInfo {
+    var info: NameInfo = .{ .len = 0 };
+    var index: usize = 0;
+    while (index < bytes.len) : (index += 1) {
+        const byte = bytes[index];
+        switch (byte) {
+            ' ',
+            '\t',
+            '\r',
+            '\n',
+            '/',
+            '>',
+            '=',
+            '\'',
+            '"',
+            '<',
+            '&',
+            '[',
+            ']',
+            '(',
+            ')',
+            '?',
+            '!',
+            => break,
+            ':' => {
+                if (info.colon == 0xFFFF and index < 0xFFFF) {
+                    info.colon = @intCast(index);
+                }
+            },
+            else => {},
+        }
+    }
+    info.len = index;
+    return info;
+}
+
 /// Scan the longest valid XML `Name` prefix. Returns 0 when the first byte
 /// cannot start a name.
 pub fn scanName(bytes: []const u8) usize {

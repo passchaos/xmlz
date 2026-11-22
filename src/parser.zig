@@ -125,6 +125,10 @@ pub const Options = struct {
     /// Validate Namespaces in XML 1.0 constraints and resolve names. Disabled
     /// by default so permissive legacy documents can be scanned as raw XML.
     namespaces: bool = false,
+    /// Assume the input is already well-formed XML. Skips name, character,
+    /// duplicate-attribute, and namespace constraint validation. Never use
+    /// this for untrusted input.
+    trusted: bool = false,
     /// Allocator used only when a DTD needs parameter-entity expansion or an
     /// external subset/entity must be loaded. Without it those features report
     /// `UnsupportedParameterEntity`.
@@ -405,6 +409,13 @@ pub const Parser = struct {
         return chars.findInvalidLiteralCharVersion(bytes, self.xml_version);
     }
 
+    inline fn nameInfo(self: *const Parser, bytes: []const u8) chars.NameInfo {
+        return if (self.options.trusted)
+            chars.scanNameInfoFast(bytes)
+        else
+            chars.scanNameInfo(bytes);
+    }
+
     /// Entity declarations collected from the DOCTYPE internal subset.
     pub fn entityTable(self: *const Parser) *const entities.Table {
         return &self.entity_table;
@@ -632,7 +643,7 @@ pub const Parser = struct {
         self.pos += 1;
 
         const name_start = self.pos;
-        const name_info = chars.scanNameInfo(self.input[name_start..]);
+        const name_info = self.nameInfo(self.input[name_start..]);
         if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
         const name = self.input[name_start .. name_start + name_info.len];
         self.pos = name_start + name_info.len;
@@ -671,21 +682,27 @@ pub const Parser = struct {
             if (attr_count == self.options.max_attributes) {
                 return self.fail(error.AttributeLimitExceeded, self.pos);
             }
-            try self.scanAttributeInto(&self.attrs[attr_count]);
+            if (self.options.trusted) {
+                try self.scanAttributeIntoTrusted(&self.attrs[attr_count]);
+            } else {
+                try self.scanAttributeInto(&self.attrs[attr_count]);
+            }
             const attr = &self.attrs[attr_count];
             if (self.options.namespaces and
                 namespace.Resolver.isNamespaceDeclaration(attr.name))
             {
                 has_namespace_decls = true;
             }
-            for (self.attrs[0..attr_count]) |existing| {
-                if (existing.name_key == attr.name_key and
-                    std.mem.eql(u8, existing.name, attr.name))
-                {
-                    return self.fail(
-                        error.DuplicateAttribute,
-                        attr.name_range.start,
-                    );
+            if (!self.options.trusted) {
+                for (self.attrs[0..attr_count]) |existing| {
+                    if (existing.name_key == attr.name_key and
+                        std.mem.eql(u8, existing.name, attr.name))
+                    {
+                        return self.fail(
+                            error.DuplicateAttribute,
+                            attr.name_range.start,
+                        );
+                    }
                 }
             }
             attr_count += 1;
@@ -740,12 +757,24 @@ pub const Parser = struct {
                     };
                     namespace_attr_count += 1;
                 }
-                try self.ns.push(namespace_attrs[0..namespace_attr_count]);
+                if (self.options.trusted) {
+                    try self.ns.pushUnchecked(
+                        namespace_attrs[0..namespace_attr_count],
+                    );
+                } else {
+                    try self.ns.push(namespace_attrs[0..namespace_attr_count]);
+                }
             } else {
                 try self.ns.enter();
             }
 
-            const resolved_element = try self.ns.resolveElementNameValidated(name);
+            const resolved_element = if (self.options.trusted)
+                self.ns.resolveElementNameUncheckedColon(
+                    name,
+                    name_info.colon,
+                )
+            else
+                try self.ns.resolveElementNameValidated(name);
             element_namespace = resolved_element.uri;
 
             var prefixed: [max_attributes]namespace.ResolvedName = undefined;
@@ -754,7 +783,13 @@ pub const Parser = struct {
             for (self.attrs[0..attr_count]) |*attr| {
                 if (attr.namespace_uri.len != 0) continue; // xmlns declaration
                 if (attr.colon == 0xFFFF) continue;
-                const resolved_attr = try self.ns.resolveAttributeNameValidated(attr.name);
+                const resolved_attr = if (self.options.trusted)
+                    self.ns.resolveAttributeNameUncheckedColon(
+                        attr.name,
+                        attr.colon,
+                    )
+                else
+                    try self.ns.resolveAttributeNameValidated(attr.name);
                 attr.namespace_uri = resolved_attr.uri;
                 prefixed[prefixed_count] = resolved_attr;
                 prefixed_keys[prefixed_count] = resolvedNameKey(
@@ -763,7 +798,7 @@ pub const Parser = struct {
                 );
                 prefixed_count += 1;
             }
-            if (prefixed_count >= 2) {
+            if (prefixed_count >= 2 and !self.options.trusted) {
                 for (prefixed[0..prefixed_count], 0..) |current, index| {
                     for (prefixed[0..index]) |previous| {
                         if (std.mem.eql(u8, previous.uri, current.uri) and
@@ -820,7 +855,7 @@ pub const Parser = struct {
 
     fn scanAttributeInto(self: *Parser, out: *Attribute) Error!void {
         const name_start = self.pos;
-        const name_info = chars.scanNameInfo(self.input[name_start..]);
+        const name_info = self.nameInfo(self.input[name_start..]);
         if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
         const name = self.input[name_start .. name_start + name_info.len];
         self.pos = name_start + name_info.len;
@@ -847,11 +882,21 @@ pub const Parser = struct {
 
         while (self.pos < self.input.len and self.input[self.pos] != quote) {
             const byte = self.input[self.pos];
-            if (byte == '<') {
-                return self.fail(error.InvalidAttributeValue, self.pos);
-            }
             if (byte == '&') {
                 needs_decode = true;
+                if (self.options.trusted) {
+                    const semicolon = std.mem.indexOfScalarPos(
+                        u8,
+                        self.input,
+                        self.pos + 1,
+                        ';',
+                    ) orelse return self.fail(
+                        error.UnexpectedEndOfInput,
+                        self.pos,
+                    );
+                    self.pos = semicolon + 1;
+                    continue;
+                }
                 if (self.pos + 1 < self.input.len and
                     self.input[self.pos + 1] == '#')
                 {
@@ -880,14 +925,23 @@ pub const Parser = struct {
                 self.pos = try self.validateReference(self.pos, true);
                 continue;
             }
-            if (byte < 0x20) {
+            if (self.options.trusted) {
                 if (byte == '\t' or byte == '\n' or byte == '\r') {
                     needs_decode = true;
-                } else {
-                    return self.fail(error.InvalidCharacter, self.pos);
                 }
-            } else if (byte >= 0x80) {
-                has_non_ascii = true;
+            } else {
+                if (byte == '<') {
+                    return self.fail(error.InvalidAttributeValue, self.pos);
+                }
+                if (byte < 0x20) {
+                    if (byte == '\t' or byte == '\n' or byte == '\r') {
+                        needs_decode = true;
+                    } else {
+                        return self.fail(error.InvalidCharacter, self.pos);
+                    }
+                } else if (byte >= 0x80) {
+                    has_non_ascii = true;
+                }
             }
             self.pos += 1;
         }
@@ -896,7 +950,7 @@ pub const Parser = struct {
         }
 
         const value = self.input[value_start..self.pos];
-        if (has_non_ascii) {
+        if (!self.options.trusted and has_non_ascii) {
             if (self.findInvalidLiteral(value)) |bad| {
                 return self.fail(error.InvalidCharacter, value_start + bad);
             }
@@ -922,11 +976,83 @@ pub const Parser = struct {
         };
     }
 
+    fn scanAttributeIntoTrusted(self: *Parser, out: *Attribute) Error!void {
+        const name_start = self.pos;
+        const name_info = chars.scanNameInfoFast(self.input[name_start..]);
+        if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
+        const name = self.input[name_start .. name_start + name_info.len];
+        self.pos = name_start + name_info.len;
+
+        self.skipSpaces();
+        if (self.pos >= self.input.len or self.input[self.pos] != '=') {
+            return self.fail(error.InvalidStartTag, self.pos);
+        }
+        self.pos += 1;
+        self.skipSpaces();
+        if (self.pos >= self.input.len) {
+            return self.fail(error.UnexpectedEndOfInput, self.pos);
+        }
+
+        const quote = self.input[self.pos];
+        if (quote != '"' and quote != '\'') {
+            return self.fail(error.InvalidAttributeValue, self.pos);
+        }
+        self.pos += 1;
+        const value_start = self.pos;
+        var needs_decode = false;
+        while (self.pos < self.input.len and self.input[self.pos] != quote) {
+            const byte = self.input[self.pos];
+            if (byte == '&') {
+                needs_decode = true;
+                const semicolon = std.mem.indexOfScalarPos(
+                    u8,
+                    self.input,
+                    self.pos + 1,
+                    ';',
+                ) orelse return self.fail(
+                    error.UnexpectedEndOfInput,
+                    self.pos,
+                );
+                self.pos = semicolon + 1;
+                continue;
+            }
+            if (byte == '\t' or byte == '\n' or byte == '\r') {
+                needs_decode = true;
+            }
+            self.pos += 1;
+        }
+        if (self.pos >= self.input.len) {
+            return self.fail(error.UnexpectedEndOfInput, self.pos);
+        }
+
+        const value = self.input[value_start..self.pos];
+        self.pos += 1;
+        out.* = .{
+            .name = name,
+            .value = value,
+            .name_range = .{
+                .start = @intCast(name_start),
+                .end = @intCast(name_start + name_info.len),
+            },
+            .value_range = .{
+                .start = @intCast(value_start),
+                .end = @intCast(value_start + value.len),
+            },
+            .namespace_uri = "",
+            .colon = name_info.colon,
+            .name_key = 0,
+            .needs_decode = needs_decode,
+            .whitespace_char_ref = false,
+            .tokenized = false,
+        };
+    }
+
     fn scanEndTag(self: *Parser) Error!EndElement {
         std.debug.assert(self.startsWith("</"));
         self.pos += 2;
         const name_start = self.pos;
-        const name_len = chars.scanName(self.input[name_start..]);
+        const name_info = self.nameInfo(self.input[name_start..]);
+        const name_len = name_info.len;
         if (name_len == 0) return self.fail(error.InvalidName, name_start);
         const name = self.input[name_start .. name_start + name_len];
         self.pos = name_start + name_len;
@@ -975,7 +1101,7 @@ pub const Parser = struct {
             if (index >= self.input.len) break;
             switch (self.input[index]) {
                 '&' => {
-                    if (index + 1 < self.input.len and
+                    if (!self.options.trusted and index + 1 < self.input.len and
                         self.input[index + 1] == '#')
                     {
                         const semicolon = std.mem.indexOfScalarPos(
@@ -1011,14 +1137,19 @@ pub const Parser = struct {
                         if (index > start) {
                             self.pos = index;
                             const span = self.input[start..index];
-                            if (self.findInvalidLiteral(span)) |bad| {
-                                return self.fail(error.InvalidCharacter, start + bad);
+                            if (!self.options.trusted) {
+                                if (self.findInvalidLiteral(span)) |bad| {
+                                    return self.fail(
+                                        error.InvalidCharacter,
+                                        start + bad,
+                                    );
+                                }
+                                self.text_whitespace_char_ref = whitespace_char_ref;
+                                self.text_has_nel_ls = hasXml11LineSeparator(
+                                    span,
+                                    self.xml_version,
+                                );
                             }
-                            self.text_whitespace_char_ref = whitespace_char_ref;
-                            self.text_has_nel_ls = hasXml11LineSeparator(
-                                span,
-                                self.xml_version,
-                            );
                             return span;
                         }
                         self.pos = reference.end;
@@ -1050,11 +1181,16 @@ pub const Parser = struct {
         }
         self.pos = index;
         const span = self.input[start..index];
-        if (self.findInvalidLiteral(span)) |bad| {
-            return self.fail(error.InvalidCharacter, start + bad);
+        if (!self.options.trusted) {
+            if (self.findInvalidLiteral(span)) |bad| {
+                return self.fail(error.InvalidCharacter, start + bad);
+            }
+            self.text_whitespace_char_ref = whitespace_char_ref;
+            self.text_has_nel_ls = hasXml11LineSeparator(
+                span,
+                self.xml_version,
+            );
         }
-        self.text_whitespace_char_ref = whitespace_char_ref;
-        self.text_has_nel_ls = hasXml11LineSeparator(span, self.xml_version);
         return span;
     }
 
@@ -1070,6 +1206,31 @@ pub const Parser = struct {
             return self.fail(error.InvalidEntityReference, amp);
         };
         const body = self.input[amp + 1 .. semicolon];
+        if (self.options.trusted) {
+            const end = semicolon + 1;
+            if (body.len == 0 or body[0] == '#' or
+                entities.isPredefined(body))
+            {
+                return .{ .kind = .plain, .end = end };
+            }
+            const entity = self.entity_table.find(body) orelse
+                return .{ .kind = .plain, .end = end };
+            if (entity.unparsed) {
+                return self.fail(error.UnparsedEntityReference, amp + 1);
+            }
+            if (entity.external and
+                (self.options.resolver == null or
+                    self.options.allocator == null))
+            {
+                return .{ .kind = .plain, .end = end };
+            }
+            return .{
+                .kind = .entity,
+                .end = end,
+                .name = body,
+                .entity = entity,
+            };
+        }
         try self.validateReferenceSyntax(body, amp);
         const end = semicolon + 1;
         if (body.len == 0 or body[0] == '#' or entities.isPredefined(body)) {
@@ -2894,7 +3055,19 @@ pub const Parser = struct {
         return std.mem.startsWith(u8, self.input[self.pos..], prefix);
     }
 
-    fn skipWhitespace(self: *Parser) void {
+    inline fn skipSpaces(self: *Parser) void {
+        while (self.pos < self.input.len and self.input[self.pos] == ' ') {
+            self.pos += 1;
+        }
+        if (self.pos < self.input.len) {
+            const byte = self.input[self.pos];
+            if (byte == '\t' or byte == '\n' or byte == '\r') {
+                self.skipWhitespace();
+            }
+        }
+    }
+
+    inline fn skipWhitespace(self: *Parser) void {
         while (self.pos < self.input.len and
             chars.isWhitespace(self.input[self.pos]))
         {

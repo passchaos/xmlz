@@ -23,14 +23,24 @@ pub fn main(init: std.process.Init) !void {
     const mb = @as(f64, @floatFromInt(source.len)) / (1024.0 * 1024.0);
 
     if (std.mem.eql(u8, mode, "all") or std.mem.eql(u8, mode, "pull")) {
-        try runPull(io, source, mb, false);
-        try runPull(io, source, mb, true);
+        try runPull(io, source, mb, false, false);
+        try runPull(io, source, mb, true, false);
+    }
+    if (std.mem.eql(u8, mode, "all") or std.mem.eql(u8, mode, "fast") or
+        std.mem.eql(u8, mode, "pull-fast"))
+    {
+        try runPull(io, source, mb, true, true);
     }
     if (std.mem.eql(u8, mode, "all") or std.mem.eql(u8, mode, "dom")) {
-        try runDom(init.gpa, io, source, mb, true);
+        try runDom(init.gpa, io, source, mb, true, false);
+    }
+    if (std.mem.eql(u8, mode, "all") or std.mem.eql(u8, mode, "fast") or
+        std.mem.eql(u8, mode, "dom-fast"))
+    {
+        try runDom(init.gpa, io, source, mb, true, true);
     }
     if (std.mem.eql(u8, mode, "dom-raw")) {
-        try runDom(init.gpa, io, source, mb, false);
+        try runDom(init.gpa, io, source, mb, false, false);
     }
 }
 
@@ -39,11 +49,15 @@ fn runPull(
     source: []const u8,
     mb: f64,
     namespaces: bool,
+    trusted: bool,
 ) !void {
     var best: f64 = std.math.inf(f64);
     for (0..iterations) |iteration| {
         const start = std.Io.Clock.Timestamp.now(io, .awake);
-        var parser = xmlz.parser.Parser.init(source, .{ .namespaces = namespaces });
+        var parser = xmlz.parser.Parser.init(source, .{
+            .namespaces = namespaces,
+            .trusted = trusted,
+        });
         while (try parser.next()) |_| {}
         parser.deinit();
         const elapsed = start.raw.durationTo(
@@ -54,7 +68,11 @@ fn runPull(
     }
     std.debug.print(
         "xmlz,pull-{s},{d:.2},{d}\n",
-        .{ if (namespaces) "ns" else "raw", mb / best, rssKilobytes() },
+        .{
+            if (trusted) "fast" else if (namespaces) "ns" else "raw",
+            mb / best,
+            rssKilobytes(),
+        },
     );
 }
 
@@ -64,12 +82,16 @@ fn runDom(
     source: []const u8,
     mb: f64,
     namespaces: bool,
+    trusted: bool,
 ) !void {
     var best: f64 = std.math.inf(f64);
     for (0..iterations) |iteration| {
         const start = std.Io.Clock.Timestamp.now(io, .awake);
         var doc = try xmlz.dom.Document.parse(allocator, source, .{
-            .parser = .{ .namespaces = namespaces },
+            .parser = .{
+                .namespaces = namespaces,
+                .trusted = trusted,
+            },
         });
         doc.deinit();
         const elapsed = start.raw.durationTo(
@@ -80,7 +102,11 @@ fn runDom(
     }
     std.debug.print(
         "xmlz,dom-{s},{d:.2},{d}\n",
-        .{ if (namespaces) "ns" else "raw", mb / best, rssKilobytes() },
+        .{
+            if (trusted) "fast" else if (namespaces) "ns" else "raw",
+            mb / best,
+            rssKilobytes(),
+        },
     );
 }
 

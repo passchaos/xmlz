@@ -18,23 +18,29 @@ libxml2.
 
 | Parser | Mode | MB/s | Peak RSS |
 | --- | --- | ---: | ---: |
-| xmlz | pull, no namespaces | 738.26 | 17 MiB |
-| xmlz | pull, namespaces | 672.49 | 17 MiB |
-| xmlz | DOM, namespaces | 271.42 | 108 MiB |
-| expat | SAX | 155.32 | 33 MiB |
-| libxml2 | reader | 134.09 | 340 MiB |
-| libxml2 | DOM | 95.01 | 340 MiB |
-| pugixml | DOM | 543.67 | 87 MiB |
+| xmlz | pull, trusted fast mode | 824.28 | 17 MiB |
+| xmlz | pull, no namespaces | 652.51 | 17 MiB |
+| xmlz | pull, namespaces | 587.22 | 17 MiB |
+| xmlz | DOM, trusted fast mode | 285.18 | 107 MiB |
+| xmlz | DOM, namespaces | 244.63 | 107 MiB |
+| expat | SAX | 156.32 | 33 MiB |
+| libxml2 | reader | 134.80 | 340 MiB |
+| libxml2 | DOM | 67.78 | 340 MiB |
+| pugixml | DOM | 539.44 | 87 MiB |
 
 ## Interpretation
 
 - The pull parser is the apples-to-apples streaming comparison. xmlz is
-  **4.8x faster than expat** and **5.0x faster than libxml2's reader** while
+  **5.3x faster than expat** and **6.1x faster than libxml2's reader** while
   performing full XML 1.0/1.1 and namespace well-formedness checking.
+- `trusted` mode assumes the input is already well-formed and skips character,
+  name, duplicate-attribute, and namespace-constraint validation. It is opt-in
+  and never used for the conformance suite.
 - The DOM is fully validating and namespace-aware. pugixml is faster but does
   not enforce every XML well-formedness and namespace constraint, and it uses
-  in-situ mutation of the input buffer. xmlz's DOM still beats libxml2's DOM
-  by about **2.9x**.
+  in-situ mutation of the input buffer. xmlz's DOM beats libxml2's DOM by
+  about **3.6x** in validating mode and is within **1.9x** of pugixml in
+  trusted mode.
 - xmlz's peak RSS includes the input buffer, the tree, decoded text, and
   namespace state. It is within roughly 25% of pugixml on this attribute-heavy
   document.
