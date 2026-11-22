@@ -37,9 +37,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   content queries. The writer round-trips documents with correct escaping and
   optional safe pretty printing. A mutable `dom_builder.Builder` supports
   programmatic construction with namespace-aware elements and attributes.
-- **XPath 1.0.** Location paths, all core axes, predicates, operators,
-  variables, and the core function library are implemented over the DOM, with
-  namespace-aware name tests and 65/65 differential checks against libxml2.
+- **XPath 1.0.** Location paths, all core axes including `namespace`,
+  predicates, operators, variables, and the core function library are
+  implemented over the DOM, with namespace-aware name tests and 82/82
+  differential checks against libxml2.
 - **XInclude 1.0.** `xinclude.process` expands includes with XML/text modes,
   fallback, nested resources, circular detection, and namespace inheritance.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
@@ -68,9 +69,9 @@ then exposes them through a pull parser and reusable lexical primitives.
 | DOM tree | Complete |
 | DOM builder | Complete |
 | Writer/serializer | Complete |
-| XPath 1.0 | Complete (core library + differential checks) |
+| XPath 1.0 | Complete (all axes, core library, differential checks) |
 | XInclude 1.0 | Complete (XML/text, fallback, nesting) |
-| XPath / XSD / XSLT | Out of scope for the core engine |
+| XSD / XSLT | Out of scope for the core engine |
 
 ## Quick start
 
