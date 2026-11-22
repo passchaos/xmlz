@@ -91,6 +91,8 @@ pub const NamespaceRule = enum { any, other, target_namespace, local };
 
 pub const Wildcard = struct {
     namespace_rule: NamespaceRule = .any,
+    /// Explicit namespace URI list; takes precedence over `namespace_rule`.
+    namespaces: []const []const u8 = &.{},
     process: enum { skip, lax, strict } = .strict,
     target_namespace: []const u8 = "",
 };
@@ -1767,12 +1769,34 @@ const Compiler = struct {
         uses.* = try list.toOwnedSlice(self.arena);
     }
 
+    fn applyWildcardNamespace(
+        self: *Compiler,
+        wildcard: *Wildcard,
+        value: []const u8,
+    ) Error!void {
+        var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n");
+        var uris: std.ArrayList([]const u8) = .empty;
+        var count: usize = 0;
+        while (tokens.next()) |token| {
+            if (std.mem.startsWith(u8, token, "##")) {
+                if (count != 0) return error.InvalidSchema;
+                wildcard.namespace_rule = try parseNamespaceRule(token);
+                if (tokens.next() != null) return error.InvalidSchema;
+                return;
+            }
+            try uris.append(self.arena, try self.arena.dupe(u8, token));
+            count += 1;
+        }
+        if (uris.items.len == 0) return error.InvalidSchema;
+        wildcard.namespaces = try uris.toOwnedSlice(self.arena);
+    }
+
     fn parseAnyAttribute(self: *Compiler, id: dom.NodeId) Error!Wildcard {
         var wildcard: Wildcard = .{
             .target_namespace = self.target_namespace,
         };
         if (self.document.attribute(id, "namespace")) |value| {
-            wildcard.namespace_rule = try parseNamespaceRule(value);
+            try self.applyWildcardNamespace(&wildcard, value);
         }
         if (self.document.attribute(id, "processContents")) |value| {
             if (std.mem.eql(u8, value, "skip")) {
@@ -1806,7 +1830,7 @@ const Compiler = struct {
                 .target_namespace = self.target_namespace,
             };
             if (self.document.attribute(id, "namespace")) |value| {
-                wildcard.namespace_rule = try parseNamespaceRule(value);
+                try self.applyWildcardNamespace(&wildcard, value);
             }
             if (self.document.attribute(id, "processContents")) |value| {
                 if (std.mem.eql(u8, value, "skip")) {

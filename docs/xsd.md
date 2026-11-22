@@ -41,7 +41,8 @@ for (result.errors) |validation_error| {
   `hexBinary`, and `base64Binary`.
 - Complex content: `xs:sequence`, `xs:choice`, `xs:all`, occurrence ranges,
   `mixed`, `xs:any` / `xs:anyAttribute` wildcards with `##any`, `##other`,
-  `##targetNamespace`, and `##local`, and `processContents` skip/lax/strict.
+  `##targetNamespace`, `##local`, explicit namespace URI lists, and
+  `processContents` skip/lax/strict.
 - Global `xs:group` and `xs:attributeGroup` definitions, references, nested
   attribute groups, and circular group detection.
 - `xs:include` (including chameleon includes) and `xs:import` through a
@@ -62,7 +63,6 @@ for (result.errors) |validation_error| {
 ## Limitations
 
 - `xs:redefine` and `xs:notation` are not implemented.
-- Wildcard namespace lists (as opposed to the `##` tokens) are not supported.
 - Unicode category coverage in `\p{...}` is approximate for non-ASCII scripts.
 - Duration ordering is a partial order; facets on durations use a simplified
   comparison.
@@ -85,5 +85,5 @@ attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
 
 ```text
-217/217 XSD differential checks passed
+225/225 XSD differential checks passed
 ```

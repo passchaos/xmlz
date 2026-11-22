@@ -1194,6 +1194,35 @@ CASES = [
             "<root xmlns='urn:t'><member><a>x</a><b>y</b></member></root>",
         ],
     ),
+    (
+        "wildcard-namespace-list",
+        f"""<xs:schema xmlns:xs="{XS}">
+          <xs:element name="root"><xs:complexType><xs:sequence>
+            <xs:any namespace="urn:a urn:b" processContents="lax"
+              minOccurs="0" maxOccurs="unbounded"/>
+          </xs:sequence></xs:complexType></xs:element>
+        </xs:schema>""",
+        [
+            "<root><a xmlns='urn:a'/><b xmlns='urn:b'/></root>",
+            "<root/>",
+            "<root><c xmlns='urn:c'/></root>",
+            "<root><c/></root>",
+        ],
+    ),
+    (
+        "any-attribute-namespace-list",
+        f"""<xs:schema xmlns:xs="{XS}">
+          <xs:element name="root"><xs:complexType>
+            <xs:anyAttribute namespace="urn:a urn:b" processContents="lax"/>
+          </xs:complexType></xs:element>
+        </xs:schema>""",
+        [
+            "<root xmlns:x='urn:a' x:attr='1'/>",
+            "<root xmlns:x='urn:b' x:attr='1'/>",
+            "<root xmlns:x='urn:c' x:attr='1'/>",
+            "<root attr='1'/>",
+        ],
+    ),
 ]
 
 

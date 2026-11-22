@@ -1100,6 +1100,12 @@ fn wildcardAllows(
     wildcard: schema.Wildcard,
     namespace_uri: []const u8,
 ) bool {
+    if (wildcard.namespaces.len != 0) {
+        for (wildcard.namespaces) |uri| {
+            if (std.mem.eql(u8, uri, namespace_uri)) return true;
+        }
+        return false;
+    }
     return switch (wildcard.namespace_rule) {
         .any => true,
         .other => namespace_uri.len != 0 and

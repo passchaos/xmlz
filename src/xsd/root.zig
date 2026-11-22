@@ -959,3 +959,34 @@ test "XSD enforces block substitution" {
         "<root xmlns='urn:t'><member>x</member></root>",
     );
 }
+
+test "XSD wildcard namespace lists" {
+    const schema_source =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+        "<xs:element name='root'><xs:complexType><xs:sequence>" ++
+        "<xs:any namespace='urn:a urn:b' processContents='lax' " ++
+        "minOccurs='0' maxOccurs='unbounded'/>" ++
+        "</xs:sequence></xs:complexType></xs:element></xs:schema>";
+    try expectValid(
+        schema_source,
+        "<root><a xmlns='urn:a'/><b xmlns='urn:b'/></root>",
+    );
+    try expectInvalid(schema_source, "<root><c xmlns='urn:c'/></root>");
+    try expectInvalid(schema_source, "<root><c/></root>");
+
+    const attribute_schema =
+        "<xs:schema xmlns:xs='http://www.w3.org/2001/XMLSchema'>" ++
+        "<xs:element name='root'><xs:complexType>" ++
+        "<xs:anyAttribute namespace='urn:a urn:b' " ++
+        "processContents='lax'/>" ++
+        "</xs:complexType></xs:element></xs:schema>";
+    try expectValid(
+        attribute_schema,
+        "<root xmlns:x='urn:a' x:attr='1'/>",
+    );
+    try expectInvalid(
+        attribute_schema,
+        "<root xmlns:x='urn:c' x:attr='1'/>",
+    );
+    try expectInvalid(attribute_schema, "<root attr='1'/>");
+}
