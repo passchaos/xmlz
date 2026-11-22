@@ -11,6 +11,7 @@ const chars = @import("chars.zig");
 pub const xml_uri = "http://www.w3.org/XML/1998/namespace";
 pub const xmlns_uri = "http://www.w3.org/2000/xmlns/";
 pub const xsl_uri = "http://www.w3.org/1999/XSL/Transform";
+pub const exslt_uri = "http://exslt.org/common";
 
 pub const max_depth = 512;
 pub const max_bindings = 256;

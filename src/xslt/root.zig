@@ -1237,7 +1237,7 @@ test "XSLT element-available and function-available" {
             "<unprefixed-element>false</unprefixed-element>" ++
             "<core>true</core><xslt-plain>true</xslt-plain>" ++
             "<xslt-prefixed>true</xslt-prefixed><unknown>false</unknown>" ++
-            "<extension>false</extension></out>",
+            "<extension>true</extension></out>",
         output,
     );
 }
@@ -1513,6 +1513,38 @@ test "XSLT falls back to UTF-8 for unsupported output encodings" {
     defer testing.allocator.free(output);
     try testing.expectEqualStrings(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<out>caf\xC3\xA9</out>",
+        output,
+    );
+}
+
+test "XSLT exsl:node-set exposes result tree fragments" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:exsl="http://exslt.org/common"
+        \\  exclude-result-prefixes="exsl">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/">
+        \\    <xsl:variable name="v"><items><item>a</item><item>b</item></items></xsl:variable>
+        \\    <out>
+        \\      <count><xsl:value-of select="count(exsl:node-set($v))"/></count>
+        \\      <children><xsl:value-of select="count(exsl:node-set($v)/*)"/></children>
+        \\      <items><xsl:value-of select="count(exsl:node-set($v)/items/item)"/></items>
+        \\      <first><xsl:value-of select="string(exsl:node-set($v)/items/item[1])"/></first>
+        \\      <identity><xsl:value-of select="count(exsl:node-set(/root))"/></identity>
+        \\      <twice><xsl:value-of select="count(exsl:node-set(exsl:node-set($v))/items/item)"/></twice>
+        \\      <apply><xsl:apply-templates select="exsl:node-set($v)/items/item"/></apply>
+        \\    </out>
+        \\  </xsl:template>
+        \\  <xsl:template match="item"><i><xsl:value-of select="."/></i></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><count>1</count><children>1</children><items>2</items>" ++
+            "<first>a</first><identity>1</identity><twice>2</twice>" ++
+            "<apply><i>a</i><i>b</i></apply></out>",
         output,
     );
 }

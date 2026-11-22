@@ -1164,6 +1164,13 @@ const Evaluator = struct {
                     qname.local,
                 ) };
             }
+            if (std.mem.eql(u8, qname.uri, namespace.exslt_uri)) {
+                return .{ .boolean = std.mem.eql(
+                    u8,
+                    qname.local,
+                    "node-set",
+                ) };
+            }
             return .{ .boolean = false };
         }
         if (std.mem.eql(u8, name, "unparsed-entity-uri")) {
@@ -1175,6 +1182,26 @@ const Evaluator = struct {
                 return .{ .string = "" };
             if (!entity.unparsed) return .{ .string = "" };
             return .{ .string = entity.system_id };
+        }
+        if (isExsltNodeSet(context, name)) {
+            if (!context.xslt_functions) return error.UnknownFunction;
+            if (items.len != 1) return error.InvalidArgument;
+            switch (items[0]) {
+                .node_set => return items[0],
+                .tree => |tree| {
+                    const converter = context.tree_converter orelse
+                        return error.InvalidArgument;
+                    const converted = try converter.convert(
+                        converter.context,
+                        self.allocator,
+                        tree,
+                    ) orelse return error.InvalidArgument;
+                    const nodes = try self.allocator.alloc(value.NodeRef, 1);
+                    nodes[0] = converted;
+                    return .{ .node_set = nodes };
+                },
+                else => return error.InvalidArgument,
+            }
         }
         if (std.mem.eql(u8, name, "document")) {
             if (!context.xslt_functions) return error.UnknownFunction;
@@ -1475,6 +1502,17 @@ const xslt_elements = [_][]const u8{
     "otherwise",
     "decimal-format",
 };
+
+fn isExsltNodeSet(
+    context: *const value.Context,
+    raw: []const u8,
+) bool {
+    const qname = namespace.splitQName(raw) catch return false;
+    if (qname.prefix.len == 0) return false;
+    const uri = context.resolvePrefix(qname.prefix) orelse return false;
+    return std.mem.eql(u8, uri, namespace.exslt_uri) and
+        std.mem.eql(u8, qname.local, "node-set");
+}
 
 fn nameInTable(table: []const []const u8, name: []const u8) bool {
     for (table) |candidate| {

@@ -120,6 +120,17 @@ pub const NodeIdGenerator = struct {
 
 pub const DocumentError = error{ OutOfMemory, LoadFailed };
 
+/// EXSLT `node-set()` hook: materialize a result tree fragment as a node in
+/// the shared document view.
+pub const TreeConverter = struct {
+    context: ?*anyopaque = null,
+    convert: *const fn (
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        tree: *const TreeFragment,
+    ) error{OutOfMemory}!?NodeRef,
+};
+
 /// XSLT `document()` hook. Returns the document nodes for `href`, resolved
 /// against `base`.
 pub const DocumentResolver = struct {
@@ -145,6 +156,8 @@ pub const Context = struct {
     node_id_generator: ?NodeIdGenerator = null,
     /// XSLT `document()` resolver.
     document_resolver: ?DocumentResolver = null,
+    /// EXSLT `node-set()` converter.
+    tree_converter: ?TreeConverter = null,
     /// Base URI used by `document()` when no second argument is given.
     document_base: []const u8 = "",
     /// Enables XSLT-specific functions such as `generate-id()`,
@@ -191,6 +204,7 @@ pub const Context = struct {
             .number_formatter = self.number_formatter,
             .node_id_generator = self.node_id_generator,
             .document_resolver = self.document_resolver,
+            .tree_converter = self.tree_converter,
             .document_base = self.document_base,
             .xslt_functions = self.xslt_functions,
             .position = position,
@@ -203,6 +217,9 @@ pub const Context = struct {
 
 pub const TreeFragment = struct {
     document: *const dom.Document,
+    /// Node id of the fragment's document node after it has been merged into
+    /// the transformation's shared document view by `exsl:node-set`.
+    merged_root: ?dom.NodeId = null,
 };
 
 pub const Value = union(enum) {

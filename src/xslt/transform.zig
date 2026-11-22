@@ -755,6 +755,10 @@ const Runtime = struct {
                 .context = self,
                 .resolve = resolveDocument,
             },
+            .tree_converter = .{
+                .context = self,
+                .convert = convertTree,
+            },
             .document_base = self.base_uri,
         };
         var result = xpath_eval.evaluate(
@@ -847,6 +851,10 @@ const Runtime = struct {
             .document_resolver = .{
                 .context = self,
                 .resolve = resolveDocument,
+            },
+            .tree_converter = .{
+                .context = self,
+                .convert = convertTree,
             },
             .document_base = self.base_uri,
         };
@@ -1776,6 +1784,10 @@ const Runtime = struct {
                 .context = self,
                 .resolve = resolveDocument,
             },
+            .tree_converter = .{
+                .context = self,
+                .convert = convertTree,
+            },
             .document_base = self.base_uri,
         };
         var result = xpath_eval.evaluate(
@@ -2598,6 +2610,26 @@ fn lookupKey(
         return list.items;
     }
     return &.{};
+}
+
+fn convertTree(
+    context: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    tree: *const xpath_value.TreeFragment,
+) error{OutOfMemory}!?xpath.NodeRef {
+    _ = allocator;
+    const runtime: *Runtime = @ptrCast(@alignCast(context.?));
+    if (tree.merged_root) |root| return .{ .node = root };
+    const root = runtime.appendDocumentNodes(tree.document) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    @constCast(tree).merged_root = root;
+    runtime.refreshAfterDocumentLoad() catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+    return .{ .node = root };
 }
 
 fn resolveDocument(

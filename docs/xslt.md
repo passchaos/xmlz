@@ -70,6 +70,9 @@ defer result.deinit();
 - Result tree fragments from `xsl:variable`/`xsl:param` bodies: `copy-of`
   copies fragment markup, and string/number/boolean conversions use the
   fragment text.
+- The EXSLT `exsl:node-set()` function, converting result tree fragments into
+  node-sets in the shared document view. Conversions are cached per fragment,
+  and converted nodes participate in template matching.
 - `xsl:namespace-alias` for literal result elements and attributes, including
   result-prefix rewriting and namespace declarations.
 - XSLT-specific functions `generate-id()`, `system-property()`,
@@ -97,9 +100,9 @@ template priority its specified default behavior.
 
 ## Limitations
 
-- XPath node-set operations on result tree fragments (for example `$v/foo`
-  or `count($v)`) are not supported; XSLT 1.0 requires an extension for those.
-  Fragment markup is supported through `copy-of`.
+- XPath node-set operations directly on result tree fragments require the
+  EXSLT `exsl:node-set()` extension; after conversion, normal node-set
+  operations and template matching work.
 - HTML output is compact and does not insert a Content-Type `meta` element.
 - `document()` merges loaded documents into the source view: `key()` indexes
   the principal source document only, and `id()` searches all merged
@@ -120,5 +123,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-84/84 XSLT differential checks passed
+85/85 XSLT differential checks passed
 ```

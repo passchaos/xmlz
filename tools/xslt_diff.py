@@ -605,7 +605,8 @@ STYLESHEETS = [
     ),
     (
         "availability",
-        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+          xmlns:exsl="http://exslt.org/common" exclude-result-prefixes="exsl">
         <xsl:output method="xml" omit-xml-declaration="yes"/>
         <xsl:template match="/"><out>
           <e1><xsl:value-of select="element-available('xsl:apply-templates')"/></e1>
@@ -626,7 +627,30 @@ STYLESHEETS = [
           <f8><xsl:value-of select="function-available('node-set')"/></f8>
           <f9><xsl:value-of select="function-available('document')"/></f9>
           <f10><xsl:value-of select="function-available('unparsed-entity-uri')"/></f10>
+          <f11><xsl:value-of select="function-available('exsl:node-set')"/></f11>
         </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "exsl-node-set",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+          xmlns:exsl="http://exslt.org/common" exclude-result-prefixes="exsl">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:template match="/">
+          <xsl:variable name="v"><items><item>a</item><item>b</item></items></xsl:variable>
+          <out>
+            <count><xsl:value-of select="count(exsl:node-set($v))"/></count>
+            <children><xsl:value-of select="count(exsl:node-set($v)/*)"/></children>
+            <items><xsl:value-of select="count(exsl:node-set($v)/items/item)"/></items>
+            <first><xsl:value-of select="string(exsl:node-set($v)/items/item[1])"/></first>
+            <identity><xsl:value-of select="count(exsl:node-set(/root))"/></identity>
+            <twice><xsl:value-of select="count(exsl:node-set(exsl:node-set($v))/items/item)"/></twice>
+            <apply><xsl:apply-templates select="exsl:node-set($v)/items/item"/></apply>
+          </out>
+        </xsl:template>
+        <xsl:template match="item"><i><xsl:value-of select="."/></i></xsl:template>
         </xsl:stylesheet>""",
         b"<root/>",
         {},
