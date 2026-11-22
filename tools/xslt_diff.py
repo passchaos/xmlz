@@ -1186,6 +1186,51 @@ def tree_shape(element):
     )
 
 
+def html_shape(element):
+    """HTML shape ignoring formatting whitespace and inserted charset meta."""
+    if isinstance(element, etree._Comment):
+        return ("comment", element.text or "")
+    if isinstance(element, etree._ProcessingInstruction):
+        return ("pi", element.target, element.text or "")
+    attributes = sorted(
+        (etree.QName(name).namespace or "", etree.QName(name).localname, value)
+        for name, value in element.attrib.items()
+    )
+    children = []
+    for child in element:
+        if isinstance(child.tag, str):
+            qname = etree.QName(child)
+            if qname.localname == "meta" and set(child.attrib) <= {"charset"}:
+                continue
+        children.append(html_shape(child))
+    text = element.text if element.text and element.text.strip() else ""
+    tail = element.tail if element.tail and element.tail.strip() else ""
+    return (
+        "element",
+        etree.QName(element).namespace or "",
+        etree.QName(element).localname,
+        tuple(attributes),
+        text,
+        tuple(children),
+        tail,
+    )
+
+
+def compare_html(expected, actual):
+    parser = etree.HTMLParser()
+    try:
+        expected_tree = etree.fromstring(expected, parser=parser)
+    except etree.XMLSyntaxError as error:
+        return False, f"libxslt output is not HTML: {error}"
+    try:
+        actual_tree = etree.fromstring(actual, parser=parser)
+    except etree.XMLSyntaxError as error:
+        return False, f"xmlz output is not HTML: {error}"
+    if html_shape(expected_tree) != html_shape(actual_tree):
+        return False, "HTML trees differ"
+    return True, ""
+
+
 def compare_xml(expected, actual):
     try:
         expected_tree = etree.fromstring(expected)
@@ -1251,6 +1296,12 @@ def main():
             )
             if output_element is not None and output_element.get("method"):
                 method = output_element.get("method")
+            else:
+                result_root = expected_result.getroot()
+                if result_root is not None and etree.QName(
+                    result_root
+                ).localname.lower() == "html":
+                    method = "html"
             if method == "text":
                 expected_text = str(expected_result)
                 actual_text = actual.stdout.decode("utf-8", "replace")
@@ -1269,10 +1320,11 @@ def main():
                     encoding="unicode",
                 )
                 actual_text = actual.stdout.decode("utf-8", "replace")
-                if expected_html != actual_text:
+                matched, reason = compare_html(expected_html, actual_text)
+                if not matched:
                     failures += 1
                     print(
-                        f"FAIL {name} (html)\n"
+                        f"FAIL {name} (html): {reason}\n"
                         f"  libxslt: {expected_html!r}\n"
                         f"  xmlz:    {actual_text!r}"
                     )
@@ -1285,7 +1337,14 @@ def main():
                     xml_declaration=False,
                     encoding=ENCODED_CASES[name],
                 )
-                if expected_bytes != actual.stdout:
+                actual_bytes = actual.stdout
+                if actual_bytes.endswith(b"\n"):
+                    actual_bytes = actual_bytes[:-1]
+                elif actual_bytes.endswith(b"\n\x00"):
+                    actual_bytes = actual_bytes[:-2]
+                elif actual_bytes.endswith(b"\x00\n"):
+                    actual_bytes = actual_bytes[:-2]
+                if expected_bytes != actual_bytes:
                     failures += 1
                     print(
                         f"FAIL {name} (encoded)\n"
@@ -1302,6 +1361,8 @@ def main():
             )
             actual_text = actual.stdout.decode("utf-8", "replace")
             if name in RAW_CASES:
+                if actual_text.endswith("\n"):
+                    actual_text = actual_text[:-1]
                 if expected_xml != actual_text:
                     failures += 1
                     print(

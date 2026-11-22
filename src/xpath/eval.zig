@@ -335,6 +335,18 @@ const Evaluator = struct {
             {},
             namespace.bindingLessThan,
         );
+        // libxml2 places the implicit xml binding first on the axis.
+        for (bindings, 0..) |binding, index| {
+            if (!std.mem.eql(u8, binding.prefix, "xml")) continue;
+            if (index == 0) break;
+            const xml_binding = binding;
+            var move = index;
+            while (move > 0) : (move -= 1) {
+                bindings[move] = bindings[move - 1];
+            }
+            bindings[0] = xml_binding;
+            break;
+        }
         for (bindings, 0..) |binding, index| {
             try out.append(self.allocator, .{ .namespace_node = .{
                 .element = id,
@@ -1140,7 +1152,15 @@ const Evaluator = struct {
             const raw = try self.toString(items[0], context);
             const qname = (try self.resolveQName(context, raw)) orelse
                 return .{ .boolean = false };
-            if (!std.mem.eql(u8, qname.uri, namespace.xsl_uri)) {
+            var uri = qname.uri;
+            if (uri.len == 0 and
+                std.mem.indexOfScalar(u8, raw, ':') == null)
+            {
+                // An unprefixed instruction name resolves through the
+                // default namespace, matching libxslt.
+                uri = context.resolvePrefix("") orelse "";
+            }
+            if (!std.mem.eql(u8, uri, namespace.xsl_uri)) {
                 return .{ .boolean = false };
             }
             return .{ .boolean = nameInTable(&xslt_elements, qname.local) };
@@ -1435,17 +1455,31 @@ const Evaluator = struct {
             @min(range.end, context.document.nodes.len)
         else
             context.document.nodes.len;
+        const dtd = context.document.dtd;
         var tokens = std.mem.tokenizeAny(u8, text, " \t\r\n");
         while (tokens.next()) |token| {
             for (context.document.nodes[range_start..range_end], range_start..) |node, index| {
                 if (node.kind != .element) continue;
                 const id = @as(dom.NodeId, @intCast(index));
-                if (context.document.attribute(id, "id")) |id_value| {
-                    if (std.mem.eql(u8, id_value, token)) {
-                        try out.append(self.allocator, .{ .node = id });
-                        continue;
+                var matched = false;
+                if (dtd) |view| {
+                    // XPath IDs are the attributes declared ID in the DTD,
+                    // matched by their raw (possibly prefixed) names.
+                    for (view.attributes) |decl| {
+                        if (decl.attr_type != .id) continue;
+                        if (!std.mem.eql(u8, decl.element, node.name)) continue;
+                        const id_value = context.document.attribute(
+                            id,
+                            decl.name,
+                        ) orelse continue;
+                        if (std.mem.eql(u8, id_value, token)) {
+                            try out.append(self.allocator, .{ .node = id });
+                            matched = true;
+                            break;
+                        }
                     }
                 }
+                if (matched) continue;
                 if (context.document.attributeNs(id, namespace.xml_uri, "id")) |xml_id| {
                     if (xmlbase.xmlIdEquals(xml_id, token)) {
                         try out.append(self.allocator, .{ .node = id });

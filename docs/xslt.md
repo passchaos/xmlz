@@ -100,12 +100,29 @@ the source document. This reuses the full XPath engine, including `//`,
 predicates, attribute axes, and namespace-aware name tests, and gives XSLT
 template priority its specified default behavior.
 
+## libxslt regression suite
+
+The libxslt `tests/general` corpus is vendored under
+`testdata/libxslt-general` and run with:
+
+```sh
+zig build xslt-suite
+```
+
+Each stylesheet is applied to its companion document and compared with the
+reference output (structurally for XML, exactly for text). The current
+baseline is **170 passed, 35 known differences, 28 include-only skips**.
+Known differences are tracked in `tools/libxslt_suite.py`; unexpected
+failures or newly fixed tests fail the gate. Most remaining differences need
+EXSLT extension functions or libxslt-specific formatting details.
+
 ## Limitations
 
 - XPath node-set operations directly on result tree fragments require the
   EXSLT `exsl:node-set()` extension; after conversion, normal node-set
   operations and template matching work.
-- HTML output is compact and does not insert a Content-Type `meta` element.
+- EXSLT modules other than `exsl:node-set()` (regexp, strings, math, date,
+  functions) are not implemented.
 - `function-available()` reports XSLT functions in the XSLT namespace as
   available, as required by XSLT 1.0; libxslt reports them as unavailable
   unless registered as extensions.

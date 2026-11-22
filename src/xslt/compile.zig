@@ -47,6 +47,9 @@ pub const AttributeSet = struct {
     raw_instructions: []const Instruction,
     expanded: ?[]const Instruction = null,
     visiting: bool = false,
+    /// Import precedence; lower values are applied first so higher-precedence
+    /// declarations override attributes of the same name.
+    precedence: usize = 0,
 };
 
 pub const SpaceRule = struct {
@@ -131,10 +134,16 @@ pub const OutputMethod = enum { xml, html, text };
 
 pub const Output = struct {
     method: OutputMethod = .xml,
+    /// True when `method` came from an explicit `xsl:output` attribute.
+    method_specified: bool = false,
     omit_xml_declaration: bool = false,
     indent: bool = false,
+    /// True when `indent` came from an explicit `xsl:output` attribute.
+    indent_specified: bool = false,
     version: ?[]const u8 = null,
-    encoding: []const u8 = "UTF-8",
+    /// Explicit `encoding` attribute; empty means the default UTF-8 output
+    /// without an encoding pseudo-attribute in the XML declaration.
+    encoding: []const u8 = "",
     doctype_public: ?[]const u8 = null,
     doctype_system: ?[]const u8 = null,
     cdata_elements: []const writer_mod.ExpandedName = &.{},
@@ -821,11 +830,6 @@ const Compiler = struct {
     fn compileAttributeSet(self: *Compiler, id: dom.NodeId) Error!void {
         const name = self.document.attribute(id, "name") orelse
             return error.InvalidStylesheet;
-        for (self.attribute_sets.items) |existing| {
-            if (std.mem.eql(u8, existing.name, name)) {
-                return error.InvalidStylesheet;
-            }
-        }
         var uses: []const []const u8 = &.{};
         if (self.document.attribute(id, "use-attribute-sets")) |value| {
             uses = try self.parseNames(value);
@@ -846,6 +850,7 @@ const Compiler = struct {
         }
         try self.attribute_sets.append(self.arena, .{
             .name = name,
+            .precedence = self.current_precedence,
             .uses = uses,
             .raw_instructions = try instructions.toOwnedSlice(self.arena),
         });
@@ -860,17 +865,29 @@ const Compiler = struct {
         return names.toOwnedSlice(self.arena);
     }
 
-    fn findAttributeSet(self: *Compiler, name: []const u8) ?usize {
-        for (self.attribute_sets.items, 0..) |set, index| {
-            if (std.mem.eql(u8, set.name, name)) return index;
-        }
-        return null;
-    }
-
     fn expandAttributeSets(self: *Compiler) Error!void {
         for (self.attribute_sets.items, 0..) |_, index| {
             _ = try self.expandAttributeSet(index);
         }
+    }
+
+    /// Expand every declaration with `name`, in ascending import precedence
+    /// (declarations are appended in that order). Higher-precedence
+    /// declarations therefore run last and override earlier attributes.
+    fn expandNamedAttributeSet(
+        self: *Compiler,
+        name: []const u8,
+    ) Error![]const Instruction {
+        var list: std.ArrayList(Instruction) = .empty;
+        for (self.attribute_sets.items, 0..) |set, index| {
+            if (!std.mem.eql(u8, set.name, name)) continue;
+            try list.appendSlice(
+                self.arena,
+                try self.expandAttributeSet(index),
+            );
+        }
+        if (list.items.len == 0) return error.InvalidStylesheet;
+        return list.toOwnedSlice(self.arena);
     }
 
     fn expandAttributeSet(
@@ -881,24 +898,23 @@ const Compiler = struct {
         if (set.expanded) |expanded| return expanded;
         if (set.visiting) return error.InvalidStylesheet;
         set.visiting = true;
+        defer set.visiting = false;
         var list: std.ArrayList(Instruction) = .empty;
         for (set.uses) |name| {
-            const used_index = self.findAttributeSet(name) orelse
-                return error.InvalidStylesheet;
             try list.appendSlice(
                 self.arena,
-                try self.expandAttributeSet(used_index),
+                try self.expandNamedAttributeSet(name),
             );
         }
         try list.appendSlice(self.arena, set.raw_instructions);
         set.expanded = try list.toOwnedSlice(self.arena);
-        set.visiting = false;
         return set.expanded.?;
     }
 
     fn compileOutput(self: *Compiler, id: dom.NodeId) Error!void {
         if (!self.principal) return;
         if (self.document.attribute(id, "method")) |method| {
+            self.output.method_specified = true;
             if (std.mem.eql(u8, method, "xml")) {
                 self.output.method = .xml;
             } else if (std.mem.eql(u8, method, "html")) {
@@ -914,6 +930,7 @@ const Compiler = struct {
         }
         if (self.document.attribute(id, "indent")) |value| {
             self.output.indent = isYes(value);
+            self.output.indent_specified = true;
         }
         if (self.document.attribute(id, "version")) |value| {
             self.output.version = value;

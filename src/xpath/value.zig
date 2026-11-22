@@ -289,12 +289,94 @@ pub fn parseNumber(text: []const u8) f64 {
     return if (negative) -parsed else parsed;
 }
 
-/// Format a number using the XPath 1.0 string conversion rules.
+/// Format a number using the XPath 1.0 string conversion rules as
+/// implemented by libxml2: integers print without a decimal point, other
+/// values use 15 significant digits, and magnitudes outside [1e-5, 1e9]
+/// switch to scientific notation.
 pub fn formatNumber(allocator: std.mem.Allocator, number: f64) ![]const u8 {
     if (std.math.isNan(number)) return "NaN";
     if (std.math.isInf(number)) {
         return if (number < 0) "-Infinity" else "Infinity";
     }
     if (number == 0) return "0";
-    return std.fmt.allocPrint(allocator, "{d}", .{number});
+    const magnitude = @abs(number);
+    if (number == @trunc(number) and
+        number > -2147483648.0 and number < 2147483647.0)
+    {
+        var integer_buffer: [32]u8 = undefined;
+        const text = std.fmt.bufPrint(
+            &integer_buffer,
+            "{d}",
+            .{@as(i64, @intFromFloat(number))},
+        ) catch return error.OutOfMemory;
+        return allocator.dupe(u8, text);
+    }
+    var buffer: [400]u8 = undefined;
+    if (magnitude > 1e9 or magnitude < 1e-5) {
+        const scientific = std.fmt.float.render(
+            &buffer,
+            number,
+            .{ .mode = .scientific, .precision = 14 },
+        ) catch return error.OutOfMemory;
+        const exponent_at = std.mem.indexOfScalar(u8, scientific, 'e') orelse
+            return allocator.dupe(u8, scientific);
+        const mantissa = trimFractionZeros(scientific[0..exponent_at]);
+        const exponent = std.fmt.parseInt(
+            i32,
+            scientific[exponent_at + 1 ..],
+            10,
+        ) catch 0;
+        var out: [400]u8 = undefined;
+        const sign: u8 = if (exponent < 0) '-' else '+';
+        const digits: u32 = @intCast(@abs(exponent));
+        const text = std.fmt.bufPrint(
+            &out,
+            "{s}e{c}{d:0>2}",
+            .{ mantissa, sign, digits },
+        ) catch return error.OutOfMemory;
+        return allocator.dupe(u8, text);
+    }
+    const integer_place: i32 = @intFromFloat(@trunc(std.math.log10(magnitude)));
+    const fraction_places: usize = if (integer_place > 0)
+        @intCast(15 - integer_place - 1)
+    else
+        @intCast(15 - integer_place);
+    const fixed = std.fmt.float.render(
+        &buffer,
+        number,
+        .{ .mode = .decimal, .precision = fraction_places },
+    ) catch return error.OutOfMemory;
+    return allocator.dupe(u8, trimFractionZeros(fixed));
+}
+
+fn trimFractionZeros(text: []const u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, text, '.') == null) return text;
+    var end = text.len;
+    while (end > 0 and text[end - 1] == '0') end -= 1;
+    if (end > 0 and text[end - 1] == '.') end -= 1;
+    return text[0..end];
+}
+
+test "XPath number formatting matches libxml2 conventions" {
+    const testing = std.testing;
+    const Case = struct { expected: []const u8, number: f64 };
+    const cases = [_]Case{
+        .{ .expected = "0", .number = 0 },
+        .{ .expected = "0.64", .number = 3.14 - 2 - 0.5 },
+        .{ .expected = "0.3", .number = 0.1 + 0.2 },
+        .{ .expected = "0.333333333333333", .number = 1.0 / 3.0 },
+        .{ .expected = "123456789.123457", .number = 123456789.123456789 },
+        .{ .expected = "1e-06", .number = 0.000001 },
+        .{ .expected = "1.0000000005e+09", .number = 1000000000.5 },
+        .{ .expected = "3e+09", .number = 3000000000.0 },
+        .{ .expected = "2147483646", .number = 2147483646.0 },
+        .{ .expected = "2.147483647e+09", .number = 2147483647.0 },
+        .{ .expected = "-0.5", .number = -0.5 },
+    };
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    for (cases) |case| {
+        const text = try formatNumber(arena.allocator(), case.number);
+        try testing.expectEqualStrings(case.expected, text);
+    }
 }

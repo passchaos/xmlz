@@ -37,8 +37,9 @@ pub const Options = struct {
     escape_gt: bool = true,
     /// Elements whose text children are serialized as CDATA sections.
     cdata_elements: []const ExpandedName = &.{},
-    /// Encoding name written into the XML declaration.
-    encoding_label: []const u8 = "UTF-8",
+    /// Encoding name written into the XML declaration; null omits the
+    /// encoding pseudo-attribute (libxslt omits it for default UTF-8 output).
+    encoding_label: ?[]const u8 = null,
 };
 
 pub const Error = std.Io.Writer.Error || error{
@@ -61,9 +62,12 @@ pub fn writeDocument(
         } else {
             try writer.writeAll("1.0");
         }
-        try writer.writeAll("\" encoding=\"");
-        try writer.writeAll(options.encoding_label);
         try writer.writeByte('"');
+        if (options.encoding_label) |label| {
+            try writer.writeAll(" encoding=\"");
+            try writer.writeAll(label);
+            try writer.writeByte('"');
+        }
         if (doc.declaration) |declaration| {
             if (declaration.standalone) |standalone| {
                 try writer.writeAll(if (standalone)
@@ -84,16 +88,20 @@ pub fn writeDocument(
             try writer.writeByte('\n');
         }
     }
-    const root = doc.root();
-    if (root != dom.null_node) {
+    // Serialize every document child, not just the root element: an XSLT
+    // result can consist solely of text, comments, or processing
+    // instructions.
+    var child = doc.node(doc.documentNode()).first_child;
+    while (child != dom.null_node) : (child = doc.node(child).next_sibling) {
         try writeNode(
             writer,
             doc,
-            root,
+            child,
             0,
             options,
             options.indent != null,
             version,
+            "",
         );
     }
 }
@@ -167,6 +175,7 @@ fn writeNode(
     options: Options,
     pretty: bool,
     version: chars.Version,
+    default_ns: []const u8,
 ) Error!void {
     const node = doc.node(id);
     switch (node.kind) {
@@ -178,6 +187,7 @@ fn writeNode(
             options,
             pretty,
             version,
+            default_ns,
         ),
         .text => {
             if (node.raw_text) {
@@ -213,12 +223,31 @@ fn writeElement(
     options: Options,
     pretty: bool,
     version: chars.Version,
+    default_ns: []const u8,
 ) Error!void {
     const node = doc.node(id);
     if (pretty) try writeIndent(writer, depth, options.indent.?);
 
     try writer.writeByte('<');
     try writer.writeAll(node.name);
+    const prefixed = std.mem.indexOfScalar(u8, node.name, ':') != null;
+    var declared_default: ?[]const u8 = null;
+    for (doc.attributesOf(id)) |attr| {
+        if (std.mem.eql(u8, attr.name, "xmlns")) declared_default = attr.value;
+    }
+    var child_default = default_ns;
+    if (!prefixed) {
+        if (declared_default) |value| {
+            child_default = value;
+        } else if (!std.mem.eql(u8, node.ns, default_ns)) {
+            // An unprefixed element in no namespace under a default namespace
+            // needs an undeclaration; a namespaced element needs a binding.
+            try writer.writeAll(" xmlns=\"");
+            try escapeAttributeVersion(writer, node.ns, version);
+            try writer.writeByte('"');
+            child_default = node.ns;
+        }
+    }
     for (doc.attributesOf(id)) |attr| {
         try writer.writeByte(' ');
         try writer.writeAll(attr.name);
@@ -259,6 +288,7 @@ fn writeElement(
                 options,
                 block,
                 version,
+                child_default,
             );
         }
         if (block and child_node.kind == .text) try writer.writeByte('\n');

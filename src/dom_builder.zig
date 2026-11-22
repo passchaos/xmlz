@@ -26,6 +26,9 @@ pub const Builder = struct {
     declaration: ?parser_mod.Declaration = null,
     doctype: ?parser_mod.Doctype = null,
     finished: bool = false,
+    /// Allow more than one element child at the document node. XSLT result
+    /// trees are fragments and may contain several top-level elements.
+    allow_multiple_roots: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Error!Builder {
         var builder: Builder = .{ .arena = std.heap.ArenaAllocator.init(allocator) };
@@ -185,7 +188,9 @@ pub const Builder = struct {
         }
         if (parent == child) return error.InvalidTree;
         if (self.isAncestor(child, parent)) return error.InvalidTree;
-        if (parent == 0 and self.nodes.items[child].kind == .element) {
+        if (!self.allow_multiple_roots and parent == 0 and
+            self.nodes.items[child].kind == .element)
+        {
             if (self.firstElementChild(0) != dom.null_node) {
                 return error.MultipleRoots;
             }
@@ -219,7 +224,9 @@ pub const Builder = struct {
         if (new_child == parent or self.isAncestor(new_child, parent)) {
             return error.InvalidTree;
         }
-        if (parent == 0 and self.nodes.items[new_child].kind == .element) {
+        if (!self.allow_multiple_roots and parent == 0 and
+            self.nodes.items[new_child].kind == .element)
+        {
             if (self.firstElementChild(0) != dom.null_node) {
                 return error.MultipleRoots;
             }

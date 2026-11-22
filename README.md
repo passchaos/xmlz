@@ -68,7 +68,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   sections, DOCTYPE declarations, HTML output, and output encodings,
   and the core instruction set, reusing the XPath engine for match patterns
   and expressions, with 87/87 differential checks against libxslt (including
-  catalog-aware includes and `document()`).
+  catalog-aware includes and `document()`), plus the libxslt general
+  regression suite (`zig build xslt-suite`, 170 passed with 35 tracked
+  differences). HTML output matches libxslt's method auto-detection, charset
+  meta element, URI escaping, and formatting.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,
@@ -277,6 +280,7 @@ zig build bench         # parser/DOM benchmarks vs expat, pugixml, libxml2
 zig build xpath-diff    # XPath differential checks vs libxml2 xmllint
 zig build c14n-diff     # canonicalization differential checks vs libxml2
 zig build xslt-diff     # XSLT differential checks vs libxslt (needs lxml)
+zig build xslt-suite    # libxslt general regression suite (needs lxml)
 zig build xsd-diff      # XML Schema differential checks vs libxml2 (needs lxml)
 zig build rng-diff      # RELAX NG differential checks vs libxml2 (needs lxml)
 zig build rng-compact-diff # RELAX NG compact syntax checks vs XML twins (needs lxml)

@@ -12,6 +12,7 @@ const xpath_value = @import("../xpath/value.zig");
 const xpath_eval = @import("../xpath/eval.zig");
 const writer_mod = @import("../writer.zig");
 const compile = @import("compile.zig");
+const unicode_categories = @import("../xsd/unicode_categories.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -40,15 +41,38 @@ pub const Result = struct {
         self.* = undefined;
     }
 
+    pub const WriteOptions = struct {
+        /// Match libxslt's file serialization: HTML method auto-detection,
+        /// charset meta insertion, HTML formatting, and a trailing newline.
+        libxslt_compat: bool = false,
+    };
+
     pub fn write(self: *const Result, out: *std.Io.Writer) !void {
+        return self.writeWithOptions(out, .{});
+    }
+
+    pub fn writeWithOptions(
+        self: *const Result,
+        out: *std.Io.Writer,
+        options: WriteOptions,
+    ) !void {
         const target = encoding.outputEncoding(self.output.encoding);
         if (target == null or target.? == .utf8) {
-            return self.writeUtf8(out, "UTF-8");
+            var label: ?[]const u8 = null;
+            if (target != null) {
+                // Explicit, supported UTF-8 output keeps its label.
+                label = self.output.encoding;
+            } else if (!options.libxslt_compat) {
+                // The library default declares UTF-8; libxslt omits the
+                // encoding pseudo-attribute unless one was requested.
+                label = "UTF-8";
+            }
+            return self.writeUtf8(out, label, options);
         }
         const allocator = self.arena.child_allocator;
         var buffer: std.Io.Writer.Allocating = .init(allocator);
         defer buffer.deinit();
-        try self.writeUtf8(&buffer.writer, self.output.encoding);
+        try self.writeUtf8(&buffer.writer, self.output.encoding, options);
         const encoded = encoding.encodeAlloc(
             allocator,
             buffer.written(),
@@ -64,34 +88,67 @@ pub const Result = struct {
     fn writeUtf8(
         self: *const Result,
         out: *std.Io.Writer,
-        encoding_label: []const u8,
+        encoding_label: ?[]const u8,
+        options: WriteOptions,
     ) !void {
-        if (self.output.method == .text) {
+        // libxslt auto-detects HTML output when no method was specified and
+        // the result element is `html`.
+        var method = self.output.method;
+        if (options.libxslt_compat and !self.output.method_specified and
+            method == .xml)
+        {
+            const root = self.document.root();
+            if (root != dom.null_node and std.ascii.eqlIgnoreCase(
+                self.document.node(root).local,
+                "html",
+            )) {
+                method = .html;
+            }
+        }
+        if (method == .text) {
             try writeTextNode(out, &self.document, self.document.documentNode());
             return;
         }
         const doctype = self.outputDoctype();
-        if (self.output.method == .html) {
+        if (method == .html) {
             if (doctype) |value| {
                 try writer_mod.writeDoctype(out, value);
                 try out.writeByte('\n');
             }
+            const charset = if (self.output.encoding.len != 0)
+                self.output.encoding
+            else
+                "UTF-8";
+            // libxslt formats HTML output unless indent="no" was explicit.
+            const format = options.libxslt_compat and
+                (if (self.output.indent_specified)
+                    self.output.indent
+                else
+                    true);
             try writeHtmlNode(
                 out,
                 &self.document,
                 self.document.documentNode(),
                 false,
+                charset,
+                format,
+                options.libxslt_compat,
+                "",
             );
             return;
         }
         try writer_mod.writeDocument(out, &self.document, .{
-            .xml_declaration = self.output.method == .xml and
+            .xml_declaration = method == .xml and
                 !self.output.omit_xml_declaration,
             .indent = if (self.output.indent) "  " else null,
             .doctype = doctype,
             .cdata_elements = self.output.cdata_elements,
             .encoding_label = encoding_label,
         });
+        // libxslt's XML serialization ends with a newline.
+        if (options.libxslt_compat and !self.output.indent) {
+            try out.writeByte('\n');
+        }
     }
 
     fn outputDoctype(self: *const Result) ?writer_mod.Doctype {
@@ -113,9 +170,17 @@ pub const Result = struct {
         self: *const Result,
         allocator: std.mem.Allocator,
     ) ![]u8 {
+        return self.toOwnedSliceWithOptions(allocator, .{});
+    }
+
+    pub fn toOwnedSliceWithOptions(
+        self: *const Result,
+        allocator: std.mem.Allocator,
+        options: WriteOptions,
+    ) ![]u8 {
         var allocating: std.Io.Writer.Allocating = .init(allocator);
         defer allocating.deinit();
-        try self.write(&allocating.writer);
+        try self.writeWithOptions(&allocating.writer, options);
         return allocating.toOwnedSlice();
     }
 };
@@ -137,6 +202,7 @@ pub fn apply(
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidStylesheet,
     };
+    builder.allow_multiple_roots = true;
     errdefer builder.deinit();
 
     var runtime: Runtime = .{
@@ -161,6 +227,7 @@ pub fn apply(
     try runtime.buildTemplateMatches();
     runtime.suppress_refresh = false;
     try runtime.evaluateGlobals(options.parameters);
+    runtime.global_count = runtime.variables.items.len;
     try runtime.applyTemplates(&.{.{ .node = 0 }}, null, &.{});
     runtime.deinitMergedSource();
     runtime.deinitLoadedDocuments();
@@ -308,6 +375,9 @@ const Runtime = struct {
     builder: *dom_builder.Builder,
     parent: dom.NodeId = 0,
     variables: std.ArrayList(xpath.Variable) = .empty,
+    /// Number of leading entries in `variables` that are global bindings.
+    /// Templates only see these plus their own parameters and locals.
+    global_count: usize = 0,
     template_states: []TemplateState = &.{},
     messages: std.ArrayList([]const u8) = .empty,
     key_map: KeyMap,
@@ -707,7 +777,26 @@ const Runtime = struct {
             .document = self.source,
             .node = node,
             .namespaces = key_def.namespaces,
+            .variables = self.variables.items,
             .document_range = self.documentRange(node),
+            .key_resolver = if (self.keys_ready) .{
+                .context = self,
+                .lookup = lookupKey,
+            } else null,
+            .xslt_functions = true,
+            .node_id_generator = .{
+                .context = self,
+                .generate = generateNodeId,
+            },
+            .document_resolver = .{
+                .context = self,
+                .resolve = resolveDocument,
+            },
+            .tree_converter = .{
+                .context = self,
+                .convert = convertTree,
+            },
+            .document_base = self.base_uri,
         };
         var selected = xpath_eval.evaluate(
             self.allocator,
@@ -787,6 +876,7 @@ const Runtime = struct {
             .document = self.source,
             .node = node,
             .namespaces = self.template_states[index].template.namespaces,
+            .variables = self.variables.items,
             .document_range = self.documentRange(node),
             .key_resolver = if (self.keys_ready) .{
                 .context = self,
@@ -986,8 +1076,41 @@ const Runtime = struct {
         const saved_template = self.current_template;
         self.current_template = template;
         defer self.current_template = saved_template;
-        const mark = self.variables.items.len;
-        defer self.variables.shrinkRetainingCapacity(mark);
+        // A called or applied template sees global variables and its own
+        // parameters, never the caller's local bindings. Hide the caller's
+        // locals while the template runs, then restore them.
+        const saved_variables = self.variables.items.len;
+        var hidden: []xpath.Variable = &.{};
+        if (saved_variables > self.global_count) {
+            hidden = try self.allocator.dupe(
+                xpath.Variable,
+                self.variables.items[self.global_count..saved_variables],
+            );
+            self.variables.shrinkRetainingCapacity(self.global_count);
+        }
+        const result = self.runTemplateBody(
+            template,
+            node,
+            position,
+            size,
+            params,
+        );
+        self.variables.shrinkRetainingCapacity(self.global_count);
+        self.variables.appendSlice(self.allocator, hidden) catch |restore_err| {
+            result catch |body_err| return body_err;
+            return restore_err;
+        };
+        return result;
+    }
+
+    fn runTemplateBody(
+        self: *Runtime,
+        template: *const compile.Template,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+        params: []const xpath.Variable,
+    ) Error!void {
         for (template.params) |param| {
             var supplied: ?xpath.Value = null;
             for (params) |candidate| {
@@ -1457,6 +1580,14 @@ const Runtime = struct {
                     },
                 }
             }
+            if (current == .namespace_node) {
+                try self.addNamespaceDecl(
+                    self.parent,
+                    current.namespace_node.prefix,
+                    current.namespace_node.uri,
+                );
+                continue;
+            }
             try self.copyDeepNode(current);
             if (current == .node and
                 self.source.node(current.node).kind == .element)
@@ -1596,8 +1727,10 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!void {
+        var found = false;
         for (self.stylesheet.attribute_sets) |set| {
             if (!std.mem.eql(u8, set.name, name)) continue;
+            found = true;
             const instructions = set.expanded orelse set.raw_instructions;
             try self.executeInstructions(
                 instructions,
@@ -1605,9 +1738,8 @@ const Runtime = struct {
                 position,
                 size,
             );
-            return;
         }
-        return error.InvalidStylesheet;
+        if (!found) return error.InvalidStylesheet;
     }
 
     fn executeAttribute(
@@ -1640,10 +1772,16 @@ const Runtime = struct {
             uri = resolvePrefix(instruction.namespaces, qname.prefix) orelse
                 return error.UndefinedPrefix;
         }
-        if (uri.len != 0 and qname.prefix.len == 0) {
-            // Serializing an unprefixed namespaced attribute would lose its
-            // namespace; require a prefix.
-            return error.InvalidArgument;
+        var prefix = qname.prefix;
+        if (uri.len != 0 and prefix.len == 0) {
+            if (std.mem.eql(u8, uri, namespace.xml_uri)) {
+                // The xml namespace always uses the implicit xml prefix.
+                prefix = "xml";
+            } else {
+                // Serializing an unprefixed namespaced attribute would lose
+                // its namespace; require a prefix.
+                return error.InvalidArgument;
+            }
         }
         const value = try self.captureString(
             instruction.body,
@@ -1651,7 +1789,7 @@ const Runtime = struct {
             position,
             size,
         );
-        try self.appendAttribute(name, qname.prefix, qname.local, uri, value);
+        try self.appendAttribute(name, prefix, qname.local, uri, value);
     }
 
     fn executeNumber(
@@ -1680,15 +1818,7 @@ const Runtime = struct {
                 try self.appendText(if (number < 0) "-Infinity" else "Infinity");
                 return;
             }
-            const rounded = std.math.floor(number + 0.5);
-            if (rounded < 1) {
-                try self.appendText(try std.fmt.allocPrint(
-                    self.allocator,
-                    "{d}",
-                    .{rounded},
-                ));
-                return;
-            }
+            const rounded = @max(std.math.floor(number + 0.5), 0);
             try self.appendText(try self.formatPositions(
                 &.{@intFromFloat(rounded)},
                 format_text,
@@ -1813,11 +1943,15 @@ const Runtime = struct {
         self: *Runtime,
         selector: compile.CompiledExpr,
     ) Error!*SelectorEntry {
-        if (self.selector_cache.get(selector.node)) |entry| return entry;
+        const cacheable = self.variables.items.len == self.global_count;
+        if (cacheable) {
+            if (self.selector_cache.get(selector.node)) |entry| return entry;
+        }
         var context: xpath.Context = .{
             .document = self.source,
             .node = .{ .node = 0 },
             .namespaces = selector.namespaces,
+            .variables = self.variables.items,
             .document_range = self.documentRange(.{ .node = 0 }),
             .key_resolver = if (self.keys_ready) .{
                 .context = self,
@@ -1859,7 +1993,7 @@ const Runtime = struct {
         for (nodes) |candidate| {
             try entry.map.put(nodeKey(candidate), {});
         }
-        try self.selector_cache.put(selector.node, entry);
+        if (cacheable) try self.selector_cache.put(selector.node, entry);
         return entry;
     }
 
@@ -1959,12 +2093,15 @@ const Runtime = struct {
                 parsed.tokens[token_index],
             );
             if (index + 1 < numbers.len) {
-                if (index < parsed.separators.len) {
-                    try out.appendSlice(
-                        self.allocator,
-                        parsed.separators[index],
-                    );
-                }
+                // Repeat the last separator when there are more numbers than
+                // format tokens; a format without separators uses ".".
+                const separator = if (index < parsed.separators.len)
+                    parsed.separators[index]
+                else if (parsed.separators.len != 0)
+                    parsed.separators[parsed.separators.len - 1]
+                else
+                    ".";
+                try out.appendSlice(self.allocator, separator);
             }
         }
         try out.appendSlice(self.allocator, parsed.suffix);
@@ -2147,6 +2284,7 @@ const Runtime = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidStylesheet,
         };
+        temp.allow_multiple_roots = true;
         const saved_builder = self.builder;
         const saved_parent = self.parent;
         self.builder = &temp;
@@ -2189,6 +2327,7 @@ const Runtime = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidStylesheet,
         };
+        temp.allow_multiple_roots = true;
         const saved_builder = self.builder;
         const saved_parent = self.parent;
         self.builder = &temp;
@@ -3057,6 +3196,8 @@ const NumberToken = struct {
     kind: NumberTokenKind,
     width: usize = 1,
     upper: bool = false,
+    /// Zero digit for decimal tokens; non-ASCII digit runs carry their own.
+    zero: u21 = '0',
 };
 
 const ParsedNumberFormat = struct {
@@ -3066,6 +3207,51 @@ const ParsedNumberFormat = struct {
     separators: []const []const u8,
 };
 
+fn isUnicodeDecimalDigit(codepoint: u21) bool {
+    return digitValue(codepoint) != null;
+}
+
+fn digitValue(codepoint: u21) ?u8 {
+    if (codepoint < 0x80) {
+        return if (std.ascii.isDigit(@intCast(codepoint)))
+            @intCast(codepoint - '0')
+        else
+            null;
+    }
+    var low: usize = 0;
+    var high: usize = unicode_categories.ranges.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        const range = unicode_categories.ranges[mid];
+        if (codepoint < range.start) {
+            high = mid;
+        } else if (codepoint > range.end) {
+            low = mid + 1;
+        } else {
+            if (range.category != .nd) return null;
+            return @intCast((codepoint - range.start) % 10);
+        }
+    }
+    return null;
+}
+
+fn isUnicodeLetter(codepoint: u21) bool {
+    if (codepoint < 0x80) {
+        return std.ascii.isAlphabetic(@intCast(codepoint));
+    }
+    return switch (unicode_categories.categoryOf(codepoint)) {
+        .lu, .ll, .lt, .lm, .lo => true,
+        else => false,
+    };
+}
+
+fn isFormatAlphanumeric(codepoint: u21) bool {
+    return isUnicodeDecimalDigit(codepoint) or isUnicodeLetter(codepoint);
+}
+
+/// Tokenize an xsl:number format string following libxslt's rules: a digit
+/// run uses its zero digit and width, letters select alphabetic or Roman
+/// numbering, and other alphanumerics fall back to decimal.
 fn parseNumberFormat(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -3078,37 +3264,63 @@ fn parseNumberFormat(
     var spans: std.ArrayList(Span) = .empty;
     var index: usize = 0;
     while (index < text.len) {
-        const byte = text[index];
-        if (byte == '0' or byte == '1') {
-            const start = index;
-            while (index < text.len and
-                (text[index] == '0' or text[index] == '1'))
-            {
-                index += 1;
+        const current = decodeAt(text, index) orelse break;
+        if (isFormatAlphanumeric(current.cp)) break;
+        index = current.end;
+    }
+    while (index < text.len) {
+        const start = index;
+        const current = decodeAt(text, index) orelse break;
+        var token: NumberToken = .{ .kind = .decimal };
+        const initial_value = digitValue(current.cp);
+        if (initial_value != null) {
+            var cursor = index;
+            var value = initial_value.?;
+            var width: usize = 1;
+            var zero: u21 = '0';
+            while (value == 0) {
+                width += 1;
+                const digit = decodeAt(text, cursor) orelse break;
+                cursor = digit.end;
+                const next = decodeAt(text, cursor) orelse break;
+                value = digitValue(next.cp) orelse 99;
             }
-            try spans.append(allocator, .{
-                .start = start,
-                .end = index,
-                .token = .{ .kind = .decimal, .width = index - start },
-            });
-        } else if (byte == 'a' or byte == 'A' or byte == 'i' or byte == 'I') {
-            const start = index;
-            while (index < text.len and text[index] == byte) index += 1;
-            const kind: NumberTokenKind = if (byte == 'a' or byte == 'A')
-                .alphabetic
-            else
-                .roman;
-            try spans.append(allocator, .{
-                .start = start,
-                .end = index,
-                .token = .{
-                    .kind = kind,
-                    .width = index - start,
-                    .upper = byte == 'A' or byte == 'I',
-                },
-            });
-        } else {
-            index += 1;
+            if (value == 1) {
+                const one = decodeAt(text, cursor) orelse break;
+                zero = one.cp - 1;
+                cursor = one.end;
+            } else {
+                width = 1;
+                zero = '0';
+            }
+            token = .{ .kind = .decimal, .width = width, .zero = zero };
+            index = cursor;
+        } else if (current.cp == 'a' or current.cp == 'A' or
+            current.cp == 'i' or current.cp == 'I')
+        {
+            token = .{
+                .kind = if (current.cp == 'a' or current.cp == 'A')
+                    .alphabetic
+                else
+                    .roman,
+                .upper = current.cp == 'A' or current.cp == 'I',
+            };
+            index = current.end;
+        }
+        while (index < text.len) {
+            const next = decodeAt(text, index) orelse break;
+            if (!isFormatAlphanumeric(next.cp)) break;
+            index = next.end;
+        }
+        try spans.append(allocator, .{
+            .start = start,
+            .end = index,
+            .token = token,
+        });
+        while (index < text.len) {
+            const next = decodeAt(text, index) orelse break;
+            if (isFormatAlphanumeric(next.cp)) break;
+            index = next.end;
         }
     }
     if (spans.items.len == 0) {
@@ -3149,10 +3361,16 @@ fn appendFormattedNumber(
     token: NumberToken,
 ) Error!void {
     switch (token.kind) {
-        .decimal => try appendDecimal(allocator, out, number, token.width),
+        .decimal => try appendDecimal(
+            allocator,
+            out,
+            number,
+            token.width,
+            token.zero,
+        ),
         .alphabetic => {
             if (number == 0) {
-                try appendDecimal(allocator, out, number, token.width);
+                try appendDecimal(allocator, out, number, token.width, '0');
                 return;
             }
             var buffer: [32]u8 = undefined;
@@ -3172,7 +3390,7 @@ fn appendFormattedNumber(
         },
         .roman => {
             if (number == 0 or number >= 4000) {
-                try appendDecimal(allocator, out, number, token.width);
+                try appendDecimal(allocator, out, number, token.width, '0');
                 return;
             }
             const roman = [_]struct { usize, []const u8 }{
@@ -3203,6 +3421,7 @@ fn appendDecimal(
     out: *std.ArrayList(u8),
     number: usize,
     width: usize,
+    zero: u21,
 ) Error!void {
     var buffer: [32]u8 = undefined;
     const digits = std.fmt.bufPrint(&buffer, "{d}", .{number}) catch
@@ -3210,10 +3429,23 @@ fn appendDecimal(
     if (digits.len < width) {
         var padding = digits.len;
         while (padding < width) : (padding += 1) {
-            try out.append(allocator, '0');
+            try appendNumberDigit(allocator, out, zero);
         }
     }
-    try out.appendSlice(allocator, digits);
+    for (digits) |byte| {
+        try appendNumberDigit(allocator, out, zero + (byte - '0'));
+    }
+}
+
+fn appendNumberDigit(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    codepoint: u21,
+) Error!void {
+    var encoded: [4]u8 = undefined;
+    const length = std.unicode.utf8Encode(codepoint, &encoded) catch
+        return error.InvalidArgument;
+    try out.appendSlice(allocator, encoded[0..length]);
 }
 
 fn defaultCountMatches(
@@ -3344,16 +3576,38 @@ fn writeHtmlNode(
     document: *const dom.Document,
     id: dom.NodeId,
     raw_text: bool,
+    charset: []const u8,
+    format: bool,
+    compat: bool,
+    default_ns: []const u8,
 ) std.Io.Writer.Error!void {
     const node_value = document.node(id);
     switch (node_value.kind) {
         .document => {
             var child = node_value.first_child;
             while (child != dom.null_node) : (child = document.node(child).next_sibling) {
-                try writeHtmlNode(out, document, child, false);
+                try writeHtmlNode(
+                    out,
+                    document,
+                    child,
+                    false,
+                    charset,
+                    format,
+                    compat,
+                    "",
+                );
             }
+            if (compat) try out.writeByte('\n');
         },
-        .element => try writeHtmlElement(out, document, id),
+        .element => try writeHtmlElement(
+            out,
+            document,
+            id,
+            charset,
+            format,
+            compat,
+            default_ns,
+        ),
         .text => {
             if (raw_text or node_value.raw_text) {
                 try out.writeAll(node_value.value);
@@ -3373,7 +3627,7 @@ fn writeHtmlNode(
                 try out.writeByte(' ');
                 try out.writeAll(node_value.value);
             }
-            try out.writeAll("?>");
+            try out.writeByte('>');
         },
     }
 }
@@ -3382,10 +3636,41 @@ fn writeHtmlElement(
     out: *std.Io.Writer,
     document: *const dom.Document,
     id: dom.NodeId,
+    charset: []const u8,
+    format: bool,
+    compat: bool,
+    default_ns: []const u8,
 ) std.Io.Writer.Error!void {
     const node_value = document.node(id);
+    const info = if (node_value.ns.len == 0)
+        htmlTagInfo(node_value.local)
+    else
+        null;
+    const is_p = node_value.local.len != 0 and node_value.local[0] == 'p';
+    const prefixed = std.mem.indexOfScalar(u8, node_value.name, ':') != null;
+    var declared_default: ?[]const u8 = null;
+    for (document.attributesOf(id)) |attr| {
+        if (std.mem.eql(u8, attr.name, "xmlns")) {
+            declared_default = attr.value;
+        }
+    }
+    var child_default = default_ns;
+    var synthesize_default = false;
+    if (!prefixed) {
+        if (declared_default) |value| {
+            child_default = value;
+        } else if (!std.mem.eql(u8, node_value.ns, default_ns)) {
+            synthesize_default = true;
+            child_default = node_value.ns;
+        }
+    }
     try out.writeByte('<');
     try out.writeAll(node_value.name);
+    if (synthesize_default) {
+        try out.writeAll(" xmlns=\"");
+        try writeHtmlAttribute(out, node_value.ns);
+        try out.writeByte('"');
+    }
     for (document.attributesOf(id)) |attr| {
         try out.writeByte(' ');
         try out.writeAll(attr.name);
@@ -3393,23 +3678,282 @@ fn writeHtmlElement(
             continue;
         }
         try out.writeAll("=\"");
-        try writeHtmlAttribute(out, attr.value);
+        if (isHtmlUriAttribute(attr.name)) {
+            try writeHtmlUriAttribute(out, attr.value);
+        } else {
+            try writeHtmlAttribute(out, attr.value);
+        }
         try out.writeByte('"');
     }
-    try out.writeByte('>');
-    if (node_value.ns.len == 0 and isHtmlVoidElement(node_value.local)) {
-        return;
+    if (info) |tag| {
+        if (tag.empty) {
+            try out.writeByte('>');
+            return;
+        }
     }
-    const raw_text = node_value.ns.len == 0 and
-        (std.ascii.eqlIgnoreCase(node_value.local, "script") or
-            std.ascii.eqlIgnoreCase(node_value.local, "style"));
-    var child = node_value.first_child;
+    if (node_value.first_child == dom.null_node and
+        !(compat and isHtmlHeadWithMeta(document, id)))
+    {
+        if (info != null and info.?.save_end and !is_p and
+            !std.ascii.eqlIgnoreCase(node_value.local, "html") and
+            !std.ascii.eqlIgnoreCase(node_value.local, "body"))
+        {
+            try out.writeByte('>');
+        } else {
+            try out.writeAll("></");
+            try out.writeAll(node_value.name);
+            try out.writeByte('>');
+        }
+    } else {
+        try out.writeByte('>');
+        const insert_meta = compat and isHtmlHeadWithMeta(document, id);
+        const first = if (node_value.first_child != dom.null_node)
+            document.node(node_value.first_child)
+        else
+            null;
+        const last = if (node_value.last_child != dom.null_node)
+            document.node(node_value.last_child)
+        else
+            null;
+        var child_count: usize = if (insert_meta) 1 else 0;
+        var real_count: usize = 0;
+        var child = node_value.first_child;
+        while (child != dom.null_node) : (child = document.node(child).next_sibling) {
+            real_count += 1;
+            child_count += 1;
+        }
+        const first_is_text = if (insert_meta)
+            false
+        else if (first) |value|
+            value.kind == .text
+        else
+            false;
+        if (format and info != null and !info.?.is_inline and
+            !first_is_text and child_count > 1 and !is_p)
+        {
+            try out.writeByte('\n');
+        }
+        if (insert_meta) {
+            const prefix = node_value.name[0 .. node_value.name.len - node_value.local.len];
+            try out.writeByte('<');
+            try out.writeAll(prefix);
+            try out.writeAll("meta charset=\"");
+            try writeHtmlAttribute(out, charset);
+            try out.writeAll("\">");
+            if (format and info != null and !info.?.is_inline and
+                real_count != 0 and child_count > 1 and !is_p)
+            {
+                if (first) |value| {
+                    if (value.kind != .text) try out.writeByte('\n');
+                }
+            }
+        }
+        const raw_text = node_value.ns.len == 0 and
+            (std.ascii.eqlIgnoreCase(node_value.local, "script") or
+                std.ascii.eqlIgnoreCase(node_value.local, "style"));
+        child = node_value.first_child;
+        while (child != dom.null_node) : (child = document.node(child).next_sibling) {
+            try writeHtmlNode(
+                out,
+                document,
+                child,
+                raw_text,
+                charset,
+                format,
+                compat,
+                child_default,
+            );
+        }
+        const last_is_text = if (last) |value| value.kind == .text else false;
+        if (format and info != null and !info.?.is_inline and
+            !last_is_text and child_count > 1 and !is_p)
+        {
+            try out.writeByte('\n');
+        }
+        try out.writeAll("</");
+        try out.writeAll(node_value.name);
+        try out.writeByte('>');
+    }
+    if (format and info != null and !info.?.is_inline and
+        node_value.next_sibling != dom.null_node)
+    {
+        const next = document.node(node_value.next_sibling);
+        if (next.kind != .text and node_value.parent != dom.null_node) {
+            const parent = document.node(node_value.parent);
+            if (parent.kind == .element and
+                (parent.local.len == 0 or parent.local[0] != 'p'))
+            {
+                try out.writeByte('\n');
+            }
+        }
+    }
+}
+
+fn isHtmlHeadWithMeta(document: *const dom.Document, id: dom.NodeId) bool {
+    const node_value = document.node(id);
+    if (!std.ascii.eqlIgnoreCase(node_value.local, "head")) return false;
+    return !hasHtmlCharsetMeta(document, id);
+}
+
+fn hasHtmlCharsetMeta(document: *const dom.Document, id: dom.NodeId) bool {
+    var child = document.node(id).first_child;
     while (child != dom.null_node) : (child = document.node(child).next_sibling) {
-        try writeHtmlNode(out, document, child, raw_text);
+        const node_value = document.node(child);
+        if (node_value.kind != .element) continue;
+        if (!std.ascii.eqlIgnoreCase(node_value.local, "meta")) continue;
+        if (document.attribute(child, "charset") != null or
+            document.attribute(child, "http-equiv") != null)
+        {
+            return true;
+        }
     }
-    try out.writeAll("</");
-    try out.writeAll(node_value.name);
-    try out.writeByte('>');
+    return false;
+}
+
+const HtmlTagInfo = struct {
+    name: []const u8,
+    empty: bool = false,
+    save_end: bool = false,
+    is_inline: bool = false,
+};
+
+const html_tag_table = [_]HtmlTagInfo{
+    .{ .name = "a", .is_inline = true },
+    .{ .name = "abbr", .is_inline = true },
+    .{ .name = "acronym", .is_inline = true },
+    .{ .name = "address" },
+    .{ .name = "applet" },
+    .{ .name = "area", .empty = true },
+    .{ .name = "b", .is_inline = true },
+    .{ .name = "base", .empty = true },
+    .{ .name = "basefont", .empty = true, .is_inline = true },
+    .{ .name = "bdo", .is_inline = true },
+    .{ .name = "big", .is_inline = true },
+    .{ .name = "blockquote" },
+    .{ .name = "body" },
+    .{ .name = "br", .empty = true, .is_inline = true },
+    .{ .name = "button" },
+    .{ .name = "caption" },
+    .{ .name = "center" },
+    .{ .name = "cite", .is_inline = true },
+    .{ .name = "code", .is_inline = true },
+    .{ .name = "col", .empty = true },
+    .{ .name = "colgroup" },
+    .{ .name = "dd" },
+    .{ .name = "del" },
+    .{ .name = "dfn", .is_inline = true },
+    .{ .name = "dir" },
+    .{ .name = "div" },
+    .{ .name = "dl" },
+    .{ .name = "dt" },
+    .{ .name = "em", .is_inline = true },
+    .{ .name = "embed", .is_inline = true },
+    .{ .name = "fieldset" },
+    .{ .name = "font", .is_inline = true },
+    .{ .name = "form" },
+    .{ .name = "frame", .empty = true },
+    .{ .name = "frameset" },
+    .{ .name = "h1" },
+    .{ .name = "h2" },
+    .{ .name = "h3" },
+    .{ .name = "h4" },
+    .{ .name = "h5" },
+    .{ .name = "h6" },
+    .{ .name = "head" },
+    .{ .name = "hr", .empty = true },
+    .{ .name = "html" },
+    .{ .name = "i", .is_inline = true },
+    .{ .name = "iframe" },
+    .{ .name = "img", .empty = true, .is_inline = true },
+    .{ .name = "input", .empty = true, .is_inline = true },
+    .{ .name = "ins" },
+    .{ .name = "isindex", .empty = true },
+    .{ .name = "kbd", .is_inline = true },
+    .{ .name = "label", .is_inline = true },
+    .{ .name = "legend" },
+    .{ .name = "li", .save_end = true },
+    .{ .name = "link", .empty = true },
+    .{ .name = "map" },
+    .{ .name = "menu" },
+    .{ .name = "meta", .empty = true },
+    .{ .name = "noframes" },
+    .{ .name = "noscript" },
+    .{ .name = "object" },
+    .{ .name = "ol" },
+    .{ .name = "optgroup" },
+    .{ .name = "option" },
+    .{ .name = "p" },
+    .{ .name = "param", .empty = true },
+    .{ .name = "pre" },
+    .{ .name = "q", .is_inline = true },
+    .{ .name = "s", .is_inline = true },
+    .{ .name = "samp", .is_inline = true },
+    .{ .name = "script" },
+    .{ .name = "select", .is_inline = true },
+    .{ .name = "small", .is_inline = true },
+    .{ .name = "span", .is_inline = true },
+    .{ .name = "strike", .is_inline = true },
+    .{ .name = "strong", .is_inline = true },
+    .{ .name = "style" },
+    .{ .name = "sub", .is_inline = true },
+    .{ .name = "sup", .is_inline = true },
+    .{ .name = "table" },
+    .{ .name = "tbody" },
+    .{ .name = "td" },
+    .{ .name = "textarea", .is_inline = true },
+    .{ .name = "tfoot" },
+    .{ .name = "th" },
+    .{ .name = "thead" },
+    .{ .name = "title" },
+    .{ .name = "tr" },
+    .{ .name = "tt", .is_inline = true },
+    .{ .name = "u", .is_inline = true },
+    .{ .name = "ul" },
+    .{ .name = "var", .is_inline = true },
+};
+
+fn htmlTagInfo(name: []const u8) ?HtmlTagInfo {
+    for (html_tag_table) |info| {
+        if (std.mem.eql(u8, info.name, name)) return info;
+    }
+    return null;
+}
+
+fn isHtmlUriAttribute(name: []const u8) bool {
+    const uri_attributes = [_][]const u8{
+        "href",     "src",    "action",     "name",    "cite",
+        "longdesc", "usemap", "background", "profile", "classid",
+        "codebase", "data",   "formaction", "icon",    "manifest",
+        "poster",
+    };
+    for (uri_attributes) |candidate| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
+    }
+    return false;
+}
+
+fn writeHtmlUriAttribute(
+    out: *std.Io.Writer,
+    value: []const u8,
+) std.Io.Writer.Error!void {
+    const hex = "0123456789ABCDEF";
+    for (value) |byte| {
+        switch (byte) {
+            '&' => try out.writeAll("&amp;"),
+            '<' => try out.writeAll("&lt;"),
+            '>' => try out.writeAll("&gt;"),
+            '"' => try out.writeAll("&quot;"),
+            else => {
+                if (byte >= 0x80) {
+                    try out.writeByte('%');
+                    try out.writeByte(hex[byte >> 4]);
+                    try out.writeByte(hex[byte & 0x0F]);
+                } else {
+                    try out.writeByte(byte);
+                }
+            },
+        }
+    }
 }
 
 fn writeHtmlText(

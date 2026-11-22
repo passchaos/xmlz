@@ -100,7 +100,10 @@ pub fn main(init: std.process.Init) !void {
     );
     defer result.deinit();
 
-    const output = try result.toOwnedSlice(init.gpa);
+    const output = try result.toOwnedSliceWithOptions(
+        init.gpa,
+        .{ .libxslt_compat = true },
+    );
     defer init.gpa.free(output);
     try std.Io.File.stdout().writeStreamingAll(init.io, output);
 }

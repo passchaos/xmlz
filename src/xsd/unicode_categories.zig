@@ -3348,6 +3348,24 @@ pub const ranges = [_]Range{
     .{ .start = 0x100000, .end = 0x10FFFD, .category = .co },
 };
 
+/// General category of a codepoint; unlisted codepoints are Cn.
+pub fn categoryOf(codepoint: u21) Category {
+    var low: usize = 0;
+    var high: usize = ranges.len;
+    while (low < high) {
+        const mid = low + (high - low) / 2;
+        const range = ranges[mid];
+        if (codepoint < range.start) {
+            high = mid;
+        } else if (codepoint > range.end) {
+            low = mid + 1;
+        } else {
+            return range.category;
+        }
+    }
+    return .cn;
+}
+
 pub const Block = struct {
     name: []const u8,
     start: u21,
