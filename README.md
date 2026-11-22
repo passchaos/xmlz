@@ -76,8 +76,9 @@ then exposes them through a pull parser and reusable lexical primitives.
   `xsi:type` / `xsi:nil`, with 248/248 differential checks against libxml2.
 - **ISO Schematron.** `schematron.parse` compiles schemas and
   `schematron.validate` evaluates rule contexts, assertions, reports, lets,
-  namespaces, and phases with the XPath engine, with 25/25 differential
-  checks against the ISO skeleton through lxml.
+  namespaces, phases, abstract rules (`extends`), and abstract patterns
+  (`is-a` with parameter substitution) with the XPath engine, with 30/30
+  differential checks against the ISO skeleton through lxml.
 - **RELAX NG.** `rng.parse` compiles XML-syntax grammars, `rng.parseCompact`
   parses the compact syntax (including `include`/`external`), and
   `rng.validate` checks instances against
@@ -119,7 +120,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | XSLT 1.0 | Core engine (templates, modes, params, sorting, copy, AVTs) |
 | XML Schema 1.0 | Core validation (structures, datatypes, facets, groups, identity) |
 | RELAX NG | XML and compact syntax (patterns, datatypes, includes, external refs) |
-| ISO Schematron | Core rules, assertions/reports, lets, namespaces, phases |
+| ISO Schematron | Core rules, assertions/reports, lets, namespaces, phases, abstract patterns/rules |
 
 ## Quick start
 

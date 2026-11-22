@@ -181,6 +181,46 @@ CASES = [
         ],
         None,
     ),
+    (
+        "abstract-rule-extends",
+        f"""<schema xmlns="{SCH}">
+          <pattern id="p">
+            <rule abstract="true" id="base">
+              <assert test="@id">id required</assert>
+            </rule>
+            <rule context="item">
+              <extends rule="base"/>
+              <assert test="@kind">kind required</assert>
+            </rule>
+          </pattern>
+        </schema>""",
+        [
+            "<root><item id='1' kind='a'/></root>",
+            "<root><item kind='a'/></root>",
+            "<root><item id='1'/></root>",
+        ],
+        None,
+    ),
+    (
+        "abstract-pattern-params",
+        f"""<schema xmlns="{SCH}">
+          <ns prefix="h" uri="urn:h"/>
+          <pattern abstract="true" id="table">
+            <rule context="$row">
+              <assert test="@$attr">attribute required</assert>
+            </rule>
+          </pattern>
+          <pattern is-a="table" id="htmlTable">
+            <param name="row" value="h:row"/>
+            <param name="attr" value="id"/>
+          </pattern>
+        </schema>""",
+        [
+            "<root xmlns:h='urn:h'><h:row id='1'/></root>",
+            "<root xmlns:h='urn:h'><h:row/></root>",
+        ],
+        None,
+    ),
 ]
 
 

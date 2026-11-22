@@ -184,3 +184,96 @@ test "Schematron phases select patterns" {
     defer first_phase.deinit();
     try testing.expect(first_phase.isValid());
 }
+
+test "Schematron abstract rules and extends" {
+    const schema_source =
+        "<schema xmlns='" ++ sch ++ "'>" ++
+        "<pattern id='p'>" ++
+        "<rule abstract='true' id='base'>" ++
+        "<assert test='@id'>id required</assert></rule>" ++
+        "<rule context='item'><extends rule='base'/>" ++
+        "<assert test='@kind'>kind required</assert></rule>" ++
+        "</pattern></schema>";
+    var schema_document = try parseDocument(schema_source);
+    defer schema_document.deinit();
+    var compiled = try parse(testing.allocator, &schema_document);
+    defer compiled.deinit();
+
+    var valid_document = try parseDocument(
+        "<root><item id='1' kind='a'/></root>",
+    );
+    defer valid_document.deinit();
+    var valid = try validate(&compiled, testing.allocator, &valid_document, .{});
+    defer valid.deinit();
+    try testing.expect(valid.isValid());
+
+    var missing_id = try parseDocument("<root><item kind='a'/></root>");
+    defer missing_id.deinit();
+    var no_id = try validate(&compiled, testing.allocator, &missing_id, .{});
+    defer no_id.deinit();
+    try testing.expect(!no_id.isValid());
+
+    var missing_kind = try parseDocument("<root><item id='1'/></root>");
+    defer missing_kind.deinit();
+    var no_kind = try validate(
+        &compiled,
+        testing.allocator,
+        &missing_kind,
+        .{},
+    );
+    defer no_kind.deinit();
+    try testing.expect(!no_kind.isValid());
+}
+
+test "Schematron abstract patterns substitute parameters" {
+    const schema_source =
+        "<schema xmlns='" ++ sch ++ "'>" ++
+        "<ns prefix='h' uri='urn:h'/>" ++
+        "<pattern abstract='true' id='table'>" ++
+        "<rule context='$row'><assert test='@$attr'>attribute required</assert></rule>" ++
+        "</pattern>" ++
+        "<pattern is-a='table' id='htmlTable'>" ++
+        "<param name='row' value='h:row'/>" ++
+        "<param name='attr' value='id'/>" ++
+        "</pattern></schema>";
+    var schema_document = try parseDocument(schema_source);
+    defer schema_document.deinit();
+    var compiled = try parse(testing.allocator, &schema_document);
+    defer compiled.deinit();
+
+    var valid_document = try parseDocument(
+        "<root xmlns:h='urn:h'><h:row id='1'/></root>",
+    );
+    defer valid_document.deinit();
+    var valid = try validate(&compiled, testing.allocator, &valid_document, .{});
+    defer valid.deinit();
+    try testing.expect(valid.isValid());
+
+    var invalid_document = try parseDocument(
+        "<root xmlns:h='urn:h'><h:row/></root>",
+    );
+    defer invalid_document.deinit();
+    var invalid = try validate(
+        &compiled,
+        testing.allocator,
+        &invalid_document,
+        .{},
+    );
+    defer invalid.deinit();
+    try testing.expect(!invalid.isValid());
+}
+
+test "Schematron rejects circular extends" {
+    const schema_source =
+        "<schema xmlns='" ++ sch ++ "'>" ++
+        "<pattern id='p'>" ++
+        "<rule abstract='true' id='a'><extends rule='a'/></rule>" ++
+        "<rule context='item'><extends rule='a'/></rule>" ++
+        "</pattern></schema>";
+    var schema_document = try parseDocument(schema_source);
+    defer schema_document.deinit();
+    try testing.expectError(
+        error.InvalidSchema,
+        parse(testing.allocator, &schema_document),
+    );
+}

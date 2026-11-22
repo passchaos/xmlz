@@ -39,6 +39,9 @@ for (result.failures) |failure| {
   evaluated per context node.
 - Phases: `defaultPhase`, `phase`/`active`, and an explicit phase selection.
   Patterns not selected by the phase are skipped.
+- Abstract rules with `extends`, and abstract patterns with `is-a` and
+  `param` substitution in `context`, `test`, `select`, `path`, and message
+  text.
 - Message rendering with literal text, `name` (context node or `path`), and
   `value-of`.
 - Failed `assert` findings invalidate the document; successful `report`
@@ -46,9 +49,8 @@ for (result.failures) |failure| {
 
 ## Limitations
 
-- Abstract patterns/rules, `extends`, `is-a` parameters, diagnostics,
-  properties, and embedded Schematron rules in XML Schema or RELAX NG are not
-  supported.
+- Diagnostics, properties, and embedded Schematron rules in XML Schema or
+  RELAX NG are not supported.
 - The generated SVRL report format is not produced; failures are returned as
   structured values.
 
@@ -63,5 +65,5 @@ assertions, reports, contexts, namespaces, lets, phases, message parts, and
 XPath functions. Expected output:
 
 ```text
-25/25 Schematron differential checks passed
+30/30 Schematron differential checks passed
 ```

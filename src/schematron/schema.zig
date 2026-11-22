@@ -78,6 +78,8 @@ pub fn parse(
     var compiler: Compiler = .{
         .arena = arena.allocator(),
         .document = document,
+        .abstract_patterns = std.StringHashMap(dom.NodeId).init(arena.allocator()),
+        .abstract_rules = std.StringHashMap(dom.NodeId).init(arena.allocator()),
     };
     try compiler.compile();
     return .{
@@ -95,6 +97,8 @@ const Compiler = struct {
     patterns: std.ArrayList(Pattern) = .empty,
     phases: std.ArrayList(Phase) = .empty,
     schema_namespaces: std.ArrayList(namespace.Binding) = .empty,
+    abstract_patterns: std.StringHashMap(dom.NodeId),
+    abstract_rules: std.StringHashMap(dom.NodeId),
     variables: std.ArrayList(Variable) = .empty,
     default_phase: ?[]const u8 = null,
 
@@ -126,6 +130,8 @@ const Compiler = struct {
             }
         }
 
+        try self.collectAbstracts(root);
+
         child = node.first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
@@ -137,17 +143,140 @@ const Compiler = struct {
             if (std.mem.eql(u8, child_node.local, "let")) {
                 try self.variables.append(
                     self.arena,
-                    try self.parseVariable(child),
+                    try self.parseVariable(child, &.{}),
                 );
             } else if (std.mem.eql(u8, child_node.local, "phase")) {
                 try self.phases.append(self.arena, try self.parsePhase(child));
             } else if (std.mem.eql(u8, child_node.local, "pattern")) {
-                try self.patterns.append(
-                    self.arena,
-                    try self.parsePattern(child),
-                );
+                if (self.document.attribute(child, "abstract")) |value| {
+                    if (isYes(value)) continue;
+                }
+                if (self.document.attribute(child, "is-a")) |abstract_id| {
+                    const abstract_node = self.abstract_patterns.get(
+                        abstract_id,
+                    ) orelse return error.InvalidSchema;
+                    const params = try self.parseParams(child);
+                    var pattern = try self.parsePattern(
+                        abstract_node,
+                        params,
+                    );
+                    if (self.document.attribute(child, "id")) |value| {
+                        pattern.id = try self.arena.dupe(u8, value);
+                    }
+                    try self.appendPatternContent(child, params, &pattern);
+                    try self.patterns.append(self.arena, pattern);
+                } else {
+                    try self.patterns.append(
+                        self.arena,
+                        try self.parsePattern(child, &.{}),
+                    );
+                }
             }
         }
+    }
+
+    fn collectAbstracts(self: *Compiler, schema_id: dom.NodeId) Error!void {
+        var child = self.document.node(schema_id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const node = self.document.node(child);
+            if (node.kind != .element or
+                !std.mem.eql(u8, node.ns, namespace_uri) or
+                !std.mem.eql(u8, node.local, "pattern"))
+            {
+                continue;
+            }
+            if (self.document.attribute(child, "abstract")) |value| {
+                if (isYes(value)) {
+                    const id = self.document.attribute(child, "id") orelse
+                        return error.InvalidSchema;
+                    try self.abstract_patterns.put(
+                        try self.arena.dupe(u8, id),
+                        child,
+                    );
+                }
+            }
+            var rule_child = node.first_child;
+            while (rule_child != dom.null_node) : (rule_child = self.document.node(rule_child).next_sibling) {
+                const rule_node = self.document.node(rule_child);
+                if (rule_node.kind != .element or
+                    !std.mem.eql(u8, rule_node.ns, namespace_uri) or
+                    !std.mem.eql(u8, rule_node.local, "rule"))
+                {
+                    continue;
+                }
+                if (self.document.attribute(rule_child, "abstract")) |value| {
+                    if (isYes(value)) {
+                        const id = self.document.attribute(
+                            rule_child,
+                            "id",
+                        ) orelse return error.InvalidSchema;
+                        try self.abstract_rules.put(
+                            try self.arena.dupe(u8, id),
+                            rule_child,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    const Param = struct {
+        name: []const u8,
+        value: []const u8,
+    };
+
+    fn parseParams(self: *Compiler, id: dom.NodeId) Error![]const Param {
+        var params: std.ArrayList(Param) = .empty;
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const node = self.document.node(child);
+            if (node.kind != .element or
+                !std.mem.eql(u8, node.ns, namespace_uri) or
+                !std.mem.eql(u8, node.local, "param"))
+            {
+                continue;
+            }
+            const name = self.document.attribute(child, "name") orelse
+                return error.InvalidSchema;
+            const value = self.document.attribute(child, "value") orelse
+                return error.InvalidSchema;
+            try params.append(self.arena, .{ .name = name, .value = value });
+        }
+        return params.toOwnedSlice(self.arena);
+    }
+
+    fn substitute(
+        self: *Compiler,
+        text: []const u8,
+        params: []const Param,
+    ) Error![]const u8 {
+        if (params.len == 0) return text;
+        var out: std.ArrayList(u8) = .empty;
+        var index: usize = 0;
+        while (index < text.len) {
+            if (text[index] == '$') {
+                var end = index + 1;
+                while (end < text.len and isParamNameChar(text[end])) end += 1;
+                if (end > index + 1) {
+                    const name = text[index + 1 .. end];
+                    var replaced = false;
+                    for (params) |param| {
+                        if (std.mem.eql(u8, param.name, name)) {
+                            try out.appendSlice(self.arena, param.value);
+                            replaced = true;
+                            break;
+                        }
+                    }
+                    if (replaced) {
+                        index = end;
+                        continue;
+                    }
+                }
+            }
+            try out.append(self.arena, text[index]);
+            index += 1;
+        }
+        return out.toOwnedSlice(self.arena);
     }
 
     fn collectNamespace(self: *Compiler, id: dom.NodeId) Error!void {
@@ -187,15 +316,11 @@ const Compiler = struct {
         };
     }
 
-    fn parsePattern(self: *Compiler, id: dom.NodeId) Error!Pattern {
-        if (self.document.attribute(id, "abstract") != null and
-            isYes(self.document.attribute(id, "abstract").?))
-        {
-            return error.InvalidSchema;
-        }
-        if (self.document.attribute(id, "is-a") != null) {
-            return error.InvalidSchema;
-        }
+    fn parsePattern(
+        self: *Compiler,
+        id: dom.NodeId,
+        params: []const Param,
+    ) Error!Pattern {
         var pattern: Pattern = .{};
         if (self.document.attribute(id, "id")) |value| {
             pattern.id = try self.arena.dupe(u8, value);
@@ -211,9 +336,15 @@ const Compiler = struct {
                 continue;
             }
             if (std.mem.eql(u8, node.local, "let")) {
-                try variables.append(self.arena, try self.parseVariable(child));
+                try variables.append(
+                    self.arena,
+                    try self.parseVariable(child, params),
+                );
             } else if (std.mem.eql(u8, node.local, "rule")) {
-                try rules.append(self.arena, try self.parseRule(child));
+                if (self.document.attribute(child, "abstract")) |value| {
+                    if (isYes(value)) continue;
+                }
+                try rules.append(self.arena, try self.parseRule(child, params));
             }
         }
         pattern.variables = try variables.toOwnedSlice(self.arena);
@@ -221,19 +352,16 @@ const Compiler = struct {
         return pattern;
     }
 
-    fn parseRule(self: *Compiler, id: dom.NodeId) Error!Rule {
-        if (self.document.attribute(id, "abstract") != null and
-            isYes(self.document.attribute(id, "abstract").?))
-        {
-            return error.InvalidSchema;
-        }
-        const context_source = self.document.attribute(id, "context") orelse
-            return error.InvalidSchema;
-        var rule: Rule = .{
-            .context = try self.compilePattern(id, context_source),
-        };
+    fn appendPatternContent(
+        self: *Compiler,
+        id: dom.NodeId,
+        params: []const Param,
+        pattern: *Pattern,
+    ) Error!void {
         var variables: std.ArrayList(Variable) = .empty;
-        var assertions: std.ArrayList(Assertion) = .empty;
+        try variables.appendSlice(self.arena, pattern.variables);
+        var rules: std.ArrayList(Rule) = .empty;
+        try rules.appendSlice(self.arena, pattern.rules);
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
@@ -243,24 +371,108 @@ const Compiler = struct {
                 continue;
             }
             if (std.mem.eql(u8, node.local, "let")) {
-                try variables.append(self.arena, try self.parseVariable(child));
+                try variables.append(
+                    self.arena,
+                    try self.parseVariable(child, params),
+                );
+            } else if (std.mem.eql(u8, node.local, "rule")) {
+                try rules.append(self.arena, try self.parseRule(child, params));
+            }
+        }
+        pattern.variables = try variables.toOwnedSlice(self.arena);
+        pattern.rules = try rules.toOwnedSlice(self.arena);
+    }
+
+    fn parseRule(
+        self: *Compiler,
+        id: dom.NodeId,
+        params: []const Param,
+    ) Error!Rule {
+        if (self.document.attribute(id, "abstract") != null and
+            isYes(self.document.attribute(id, "abstract").?))
+        {
+            return error.InvalidSchema;
+        }
+        const context_source = self.document.attribute(id, "context") orelse
+            return error.InvalidSchema;
+        var variables: std.ArrayList(Variable) = .empty;
+        var assertions: std.ArrayList(Assertion) = .empty;
+        var extensions: std.ArrayList([]const u8) = .empty;
+        try self.parseRuleContent(
+            id,
+            params,
+            &variables,
+            &assertions,
+            &extensions,
+        );
+        return .{
+            .context = try self.compilePattern(
+                id,
+                try self.substitute(context_source, params),
+            ),
+            .variables = try variables.toOwnedSlice(self.arena),
+            .assertions = try assertions.toOwnedSlice(self.arena),
+        };
+    }
+
+    fn parseRuleContent(
+        self: *Compiler,
+        id: dom.NodeId,
+        params: []const Param,
+        variables: *std.ArrayList(Variable),
+        assertions: *std.ArrayList(Assertion),
+        extensions: *std.ArrayList([]const u8),
+    ) Error!void {
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const node = self.document.node(child);
+            if (node.kind != .element or
+                !std.mem.eql(u8, node.ns, namespace_uri))
+            {
+                continue;
+            }
+            if (std.mem.eql(u8, node.local, "let")) {
+                try variables.append(
+                    self.arena,
+                    try self.parseVariable(child, params),
+                );
             } else if (std.mem.eql(u8, node.local, "assert") or
                 std.mem.eql(u8, node.local, "report"))
             {
                 try assertions.append(
                     self.arena,
-                    try self.parseAssertion(child),
+                    try self.parseAssertion(child, params),
                 );
             } else if (std.mem.eql(u8, node.local, "extends")) {
-                return error.InvalidSchema;
+                const reference = self.document.attribute(
+                    child,
+                    "rule",
+                ) orelse return error.InvalidSchema;
+                for (extensions.items) |active| {
+                    if (std.mem.eql(u8, active, reference)) {
+                        return error.InvalidSchema;
+                    }
+                }
+                const abstract_node = self.abstract_rules.get(reference) orelse
+                    return error.InvalidSchema;
+                try extensions.append(self.arena, reference);
+                defer _ = extensions.pop();
+                try self.parseRuleContent(
+                    abstract_node,
+                    &.{},
+                    variables,
+                    assertions,
+                    extensions,
+                );
             }
         }
-        rule.variables = try variables.toOwnedSlice(self.arena);
-        rule.assertions = try assertions.toOwnedSlice(self.arena);
-        return rule;
     }
 
-    fn parseAssertion(self: *Compiler, id: dom.NodeId) Error!Assertion {
+    fn parseAssertion(
+        self: *Compiler,
+        id: dom.NodeId,
+        params: []const Param,
+    ) Error!Assertion {
         const node = self.document.node(id);
         const test_source = self.document.attribute(id, "test") orelse
             return error.InvalidSchema;
@@ -269,20 +481,27 @@ const Compiler = struct {
                 .assert
             else
                 .report,
-            .test_expr = try self.compileExpression(id, test_source),
-            .message = try self.parseMessage(id),
+            .test_expr = try self.compileExpression(
+                id,
+                try self.substitute(test_source, params),
+            ),
+            .message = try self.parseMessage(id, params),
             .node = id,
         };
     }
 
-    fn parseMessage(self: *Compiler, id: dom.NodeId) Error![]const MessagePart {
+    fn parseMessage(
+        self: *Compiler,
+        id: dom.NodeId,
+        params: []const Param,
+    ) Error![]const MessagePart {
         var parts: std.ArrayList(MessagePart) = .empty;
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             switch (node.kind) {
                 .text => try parts.append(self.arena, .{
-                    .text = try self.arena.dupe(u8, node.value),
+                    .text = try self.substitute(node.value, params),
                 }),
                 .element => {
                     if (std.mem.eql(u8, node.ns, namespace_uri) and
@@ -295,7 +514,7 @@ const Compiler = struct {
                         try parts.append(self.arena, .{
                             .value_of = try self.compileExpression(
                                 child,
-                                select,
+                                try self.substitute(select, params),
                             ),
                         });
                     } else if (std.mem.eql(u8, node.ns, namespace_uri) and
@@ -304,13 +523,18 @@ const Compiler = struct {
                         const path = self.document.attribute(child, "path");
                         try parts.append(self.arena, .{
                             .name = if (path) |source|
-                                try self.compileExpression(child, source)
+                                try self.compileExpression(
+                                    child,
+                                    try self.substitute(source, params),
+                                )
                             else
                                 null,
                         });
                     } else {
                         const text = try self.textContent(child);
-                        try parts.append(self.arena, .{ .text = text });
+                        try parts.append(self.arena, .{
+                            .text = try self.substitute(text, params),
+                        });
                     }
                 },
                 else => {},
@@ -319,14 +543,21 @@ const Compiler = struct {
         return parts.toOwnedSlice(self.arena);
     }
 
-    fn parseVariable(self: *Compiler, id: dom.NodeId) Error!Variable {
+    fn parseVariable(
+        self: *Compiler,
+        id: dom.NodeId,
+        params: []const Param,
+    ) Error!Variable {
         const name = self.document.attribute(id, "name") orelse
             return error.InvalidSchema;
         const value = self.document.attribute(id, "value") orelse
             return error.InvalidSchema;
         return .{
             .name = try self.arena.dupe(u8, name),
-            .value = try self.compileExpression(id, value),
+            .value = try self.compileExpression(
+                id,
+                try self.substitute(value, params),
+            ),
         };
     }
 
@@ -463,6 +694,11 @@ fn patternSelector(
         },
         else => return error.InvalidSchema,
     }
+}
+
+fn isParamNameChar(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-' or
+        byte == '.' or byte >= 0x80;
 }
 
 fn isYes(value: []const u8) bool {
