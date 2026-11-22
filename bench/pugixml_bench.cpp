@@ -33,11 +33,14 @@ int main(int argc, char **argv) {
     double best = 1e30;
     for (int i = 0; i < iterations; i++) {
         double start = now_sec();
-        pugi::xml_document doc;
-        pugi::xml_parse_result result = doc.load_buffer(data, static_cast<size_t>(size));
-        if (!result) {
-            std::fprintf(stderr, "pugixml: %s\n", result.description());
-            return 1;
+        {
+            pugi::xml_document doc;
+            pugi::xml_parse_result result =
+                doc.load_buffer(data, static_cast<size_t>(size));
+            if (!result) {
+                std::fprintf(stderr, "pugixml: %s\n", result.description());
+                return 1;
+            }
         }
         double elapsed = now_sec() - start;
         if (i != 0 && elapsed < best) best = elapsed;

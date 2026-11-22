@@ -42,6 +42,12 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, mode, "dom-raw")) {
         try runDom(init.gpa, io, source, mb, false, false);
     }
+    if (std.mem.eql(u8, mode, "all") or std.mem.eql(u8, mode, "dom-pool")) {
+        try runDomPool(init.gpa, io, source, mb, true, false);
+    }
+    if (std.mem.eql(u8, mode, "dom-pool-fast")) {
+        try runDomPool(init.gpa, io, source, mb, true, true);
+    }
 }
 
 fn runPull(
@@ -112,4 +118,40 @@ fn runDom(
 
 fn rssKilobytes() c_long {
     return @intCast(std.posix.getrusage(0).maxrss);
+}
+
+fn runDomPool(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    mb: f64,
+    namespaces: bool,
+    trusted: bool,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var best: f64 = std.math.inf(f64);
+    for (0..iterations) |iteration| {
+        const start = std.Io.Clock.Timestamp.now(io, .awake);
+        var doc = try xmlz.dom.Document.parseIn(&arena, source, .{
+            .parser = .{
+                .namespaces = namespaces,
+                .trusted = trusted,
+            },
+        });
+        doc.deinit();
+        const elapsed = start.raw.durationTo(
+            std.Io.Clock.Timestamp.now(io, .awake).raw,
+        );
+        const seconds = @as(f64, @floatFromInt(elapsed.nanoseconds)) / std.time.ns_per_s;
+        if (iteration != 0 and seconds < best) best = seconds;
+    }
+    std.debug.print(
+        "xmlz,dom-pool-{s},{d:.2},{d}\n",
+        .{
+            if (trusted) "fast" else "ns",
+            mb / best,
+            rssKilobytes(),
+        },
+    );
 }

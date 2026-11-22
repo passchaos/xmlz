@@ -42,7 +42,11 @@ prefix/local/URI metadata for elements and attributes.
 using 32-bit indices and ranges. It is built from parser events with namespace
 processing enabled, decoded/normalized text and attribute values, DTD attribute
 defaults, and optional comments/PIs. The document owns an arena; input slices
-remain borrowed, so the input must outlive the document.
+remain borrowed, so the input must outlive the document. `Document.parseIn`
+parses into a caller-owned arena that is reset with retained capacity, which
+avoids re-faulting pages when parsing many similarly sized documents. On Linux,
+large node/attribute arrays request transparent huge pages as a best-effort
+hint to reduce first-touch page-fault overhead.
 
 `dom_builder.Builder` is the mutable counterpart. It copies names and values
 into its arena, supports element/text/comment/PI creation, namespace-aware

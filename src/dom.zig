@@ -11,6 +11,7 @@
 //! are released by `deinit`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const chars = @import("chars.zig");
 const parser_mod = @import("parser.zig");
 const entities = @import("entities.zig");
@@ -86,6 +87,8 @@ pub const Error = parser_mod.Error || entities.DecodeError || error{OutOfMemory}
 
 pub const Document = struct {
     arena: std.heap.ArenaAllocator,
+    /// False for documents parsed into a caller-owned arena via `parseIn`.
+    owns_arena: bool = true,
     nodes: []Node,
     attributes: []Attribute,
     declaration: ?parser_mod.Declaration = null,
@@ -116,8 +119,35 @@ pub const Document = struct {
         };
     }
 
+    /// Parse into a caller-owned arena that is reset (retaining capacity)
+    /// before parsing. Reusing the arena across parses avoids re-faulting
+    /// pages for similarly sized documents. The returned document borrows the
+    /// arena: `deinit()` does not release it, and resetting or deinitializing
+    /// the arena invalidates the document.
+    pub fn parseIn(
+        arena: *std.heap.ArenaAllocator,
+        input: []const u8,
+        options: Options,
+    ) Error!Document {
+        _ = arena.reset(.retain_capacity);
+        const arena_allocator = arena.allocator();
+
+        var builder = Builder.init(arena_allocator, input, options);
+        try builder.run();
+
+        return .{
+            .arena = undefined,
+            .owns_arena = false,
+            .nodes = builder.nodes.items,
+            .attributes = builder.attributes.items,
+            .declaration = builder.declaration,
+            .doctype = builder.doctype,
+            .dtd = builder.parser.dtd(),
+        };
+    }
+
     pub fn deinit(self: *Document) void {
-        self.arena.deinit();
+        if (self.owns_arena) self.arena.deinit();
         self.* = undefined;
     }
 
@@ -345,6 +375,11 @@ const Builder = struct {
             self.allocator,
             counts.eq + 16,
         );
+        hintHugePages(@ptrCast(self.nodes.items.ptr), self.nodes.capacity * @sizeOf(Node));
+        hintHugePages(
+            @ptrCast(self.attributes.items.ptr),
+            self.attributes.capacity * @sizeOf(Attribute),
+        );
         // Keep the parser's DTD scratch arena alive for the document lifetime:
         // resolved namespace URIs may point into it. Its allocations come from
         // the document arena, so they are released with the document.
@@ -474,6 +509,8 @@ const Builder = struct {
         literal: bool,
     ) Error!void {
         if (self.stack_len == 0) return;
+        // Entity decoding also normalizes XML line endings, so only CDATA
+        // needs the separate normalization pass.
         const decoded = if (literal)
             try normalizeLineEndings(
                 self.allocator,
@@ -530,6 +567,21 @@ const Builder = struct {
         parent_node.last_child = child;
     }
 };
+
+/// Best-effort Linux hint so large node/attribute arrays use transparent
+/// huge pages, which cuts page-fault overhead on first touch.
+fn hintHugePages(pointer: [*]const u8, length: usize) void {
+    if (builtin.os.tag != .linux or length < 2 * 1024 * 1024) return;
+    const page_size = std.heap.page_size_min;
+    const start = @intFromPtr(pointer) & ~(page_size - 1);
+    const end = std.mem.alignForward(
+        usize,
+        @intFromPtr(pointer) + length,
+        page_size,
+    );
+    const aligned: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(start);
+    std.posix.madvise(aligned, end - start, std.posix.MADV.HUGEPAGE) catch {};
+}
 
 fn countStructural(input: []const u8) struct { lt: usize, eq: usize } {
     const Vec = @Vector(32, u8);
@@ -759,4 +811,33 @@ test "DOM applies DTD attribute defaults with type normalization" {
     const root = doc.root();
     try testing.expectEqualStrings("x", doc.attribute(root, "a").?);
     try testing.expectEqualStrings("y z", doc.attribute(root, "b").?);
+}
+
+test "DOM parses into a reusable arena" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var first = try Document.parseIn(
+        &arena,
+        "<root><item id='a'>one</item></root>",
+        .{},
+    );
+    defer first.deinit();
+    const first_root = first.root();
+    try testing.expectEqualStrings("root", first.node(first_root).local);
+    const first_item = first.findChild(first_root, "item").?;
+    try testing.expectEqualStrings("a", first.attribute(first_item, "id").?);
+    try testing.expectEqualStrings("one", first.node(first.node(first_item).first_child).value);
+
+    // Resetting the arena invalidates the first document; parse a new one.
+    var second = try Document.parseIn(
+        &arena,
+        "<other><entry>two</entry></other>",
+        .{},
+    );
+    defer second.deinit();
+    const second_root = second.root();
+    try testing.expectEqualStrings("other", second.node(second_root).local);
+    const entry = second.findChild(second_root, "entry").?;
+    try testing.expectEqualStrings("two", second.node(second.node(entry).first_child).value);
 }
