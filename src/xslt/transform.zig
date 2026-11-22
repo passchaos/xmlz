@@ -1924,13 +1924,19 @@ const Runtime = struct {
                 return error.UndefinedPrefix;
         }
         var prefix = qname.prefix;
-        if (uri.len != 0 and prefix.len == 0) {
-            if (std.mem.eql(u8, uri, namespace.xml_uri)) {
-                // The xml namespace always uses the implicit xml prefix.
-                prefix = "xml";
-            } else {
-                // libxslt synthesizes an ns_N prefix for unprefixed
-                // namespaced attributes.
+        if (uri.len != 0) {
+            if (prefix.len == 0) {
+                if (std.mem.eql(u8, uri, namespace.xml_uri)) {
+                    // The xml namespace always uses the implicit xml prefix.
+                    prefix = "xml";
+                } else {
+                    // libxslt synthesizes an ns_N prefix for unprefixed
+                    // namespaced attributes.
+                    prefix = try self.generatedPrefix(uri);
+                }
+            } else if (std.mem.eql(u8, prefix, "xmlns")) {
+                // "xmlns" is reserved for namespace declarations; libxslt
+                // keeps the local name and synthesizes a fresh prefix.
                 prefix = try self.generatedPrefix(uri);
             }
         }
@@ -1954,6 +1960,31 @@ const Runtime = struct {
             try self.evaluateAvt(format, node, position, size)
         else
             "1";
+        var grouping: ?NumberGrouping = null;
+        if (instruction.grouping_size) |size_avt| {
+            const size_text = try self.evaluateAvt(
+                size_avt,
+                node,
+                position,
+                size,
+            );
+            const digits = parseGroupingSize(size_text);
+            if (digits > 0) {
+                const separator = if (instruction.grouping_separator) |sep_avt|
+                    try self.evaluateAvt(sep_avt, node, position, size)
+                else
+                    "";
+                if (separator.len != 0) {
+                    const length = std.unicode.utf8ByteSequenceLength(
+                        separator[0],
+                    ) catch 1;
+                    grouping = .{
+                        .separator = separator[0..@min(length, separator.len)],
+                        .size = digits,
+                    };
+                }
+            }
+        }
         if (instruction.value) |value| {
             const number = try self.toNumber(try self.evalOwned(
                 value,
@@ -1980,13 +2011,29 @@ const Runtime = struct {
             try self.appendText(try self.formatPositions(
                 &.{@intFromFloat(rounded)},
                 format_text,
+                grouping,
             ));
             return;
         }
         switch (instruction.level) {
-            .single => try self.numberSingle(instruction, node, format_text),
-            .multiple => try self.numberMultiple(instruction, node, format_text),
-            .any => try self.numberAny(instruction, node, format_text),
+            .single => try self.numberSingle(
+                instruction,
+                node,
+                format_text,
+                grouping,
+            ),
+            .multiple => try self.numberMultiple(
+                instruction,
+                node,
+                format_text,
+                grouping,
+            ),
+            .any => try self.numberAny(
+                instruction,
+                node,
+                format_text,
+                grouping,
+            ),
         }
     }
 
@@ -1995,6 +2042,7 @@ const Runtime = struct {
         instruction: compile.NumberInstruction,
         node: xpath.NodeRef,
         format_text: []const u8,
+        grouping: ?NumberGrouping,
     ) Error!void {
         var target: ?xpath.NodeRef = null;
         var current = node;
@@ -2018,6 +2066,7 @@ const Runtime = struct {
         try self.appendText(try self.formatPositions(
             &.{sibling_position},
             format_text,
+            grouping,
         ));
     }
 
@@ -2026,6 +2075,7 @@ const Runtime = struct {
         instruction: compile.NumberInstruction,
         node: xpath.NodeRef,
         format_text: []const u8,
+        grouping: ?NumberGrouping,
     ) Error!void {
         var positions: std.ArrayList(usize) = .empty;
         var current = node;
@@ -2050,6 +2100,7 @@ const Runtime = struct {
         try self.appendText(try self.formatPositions(
             positions.items,
             format_text,
+            grouping,
         ));
     }
 
@@ -2058,6 +2109,7 @@ const Runtime = struct {
         instruction: compile.NumberInstruction,
         node: xpath.NodeRef,
         format_text: []const u8,
+        grouping: ?NumberGrouping,
     ) Error!void {
         // Walk backwards in document order like libxslt: attributes collapse
         // to their element, and attribute nodes of other elements are never
@@ -2077,6 +2129,7 @@ const Runtime = struct {
             try self.appendText(try self.formatPositions(
                 &.{count},
                 format_text,
+                grouping,
             ));
         }
     }
@@ -2271,6 +2324,7 @@ const Runtime = struct {
         self: *Runtime,
         numbers: []const usize,
         format_text: []const u8,
+        grouping: ?NumberGrouping,
     ) Error![]const u8 {
         const parsed = try parseNumberFormat(self.allocator, format_text);
         var out: std.ArrayList(u8) = .empty;
@@ -2282,6 +2336,7 @@ const Runtime = struct {
                 &out,
                 number,
                 parsed.tokens[token_index],
+                grouping,
             );
             if (index + 1 < numbers.len) {
                 // Repeat the last separator when there are more numbers than
@@ -3232,13 +3287,40 @@ fn generateNodeId(
     node: xpath.NodeRef,
 ) error{OutOfMemory}![]const u8 {
     const runtime: *Runtime = @ptrCast(@alignCast(context.?));
+    // libxslt derives namespace ids from their element's id and appends
+    // "ns" plus the hex-encoded prefix.
+    var target = node;
+    var prefix: ?[]const u8 = null;
+    switch (node) {
+        .namespace_node => |namespace_node| {
+            target = .{ .node = namespace_node.element };
+            prefix = namespace_node.prefix;
+        },
+        else => {},
+    }
     const entry = try runtime.node_ids.getOrPut(.{
         .document = document,
-        .node = node,
+        .node = target,
     });
     if (!entry.found_existing) {
         runtime.next_node_id += 1;
         entry.value_ptr.* = runtime.next_node_id;
+    }
+    if (prefix) |bytes| {
+        var buffer: [32]u8 = undefined;
+        const base = std.fmt.bufPrint(
+            &buffer,
+            "id{d}ns",
+            .{entry.value_ptr.*},
+        ) catch return error.OutOfMemory;
+        var out: std.ArrayList(u8) = .empty;
+        try out.appendSlice(allocator, base);
+        const hex = "0123456789ABCDEF";
+        for (bytes) |byte| {
+            try out.append(allocator, hex[byte >> 4]);
+            try out.append(allocator, hex[byte & 0x0F]);
+        }
+        return out.toOwnedSlice(allocator);
     }
     return std.fmt.allocPrint(allocator, "id{d}", .{entry.value_ptr.*});
 }
@@ -3692,11 +3774,41 @@ fn parseNumberFormat(
     };
 }
 
+const NumberGrouping = struct {
+    separator: []const u8,
+    size: usize,
+};
+
+/// libxslt reads `grouping-size` with `sscanf("%d")`: leading whitespace and
+/// a sign are accepted, and trailing junk is ignored. Values that don't
+/// parse disable grouping.
+fn parseGroupingSize(text: []const u8) usize {
+    var index: usize = 0;
+    while (index < text.len and std.ascii.isWhitespace(text[index])) {
+        index += 1;
+    }
+    var negative = false;
+    if (index < text.len and (text[index] == '+' or text[index] == '-')) {
+        negative = text[index] == '-';
+        index += 1;
+    }
+    var value: usize = 0;
+    var saw_digit = false;
+    while (index < text.len and std.ascii.isDigit(text[index])) : (index += 1) {
+        saw_digit = true;
+        value = value * 10 + (text[index] - '0');
+        if (value > 100000) break;
+    }
+    if (!saw_digit or negative) return 0;
+    return value;
+}
+
 fn appendFormattedNumber(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
     number: usize,
     token: NumberToken,
+    grouping: ?NumberGrouping,
 ) Error!void {
     switch (token.kind) {
         .decimal => try appendDecimal(
@@ -3705,10 +3817,18 @@ fn appendFormattedNumber(
             number,
             token.width,
             token.zero,
+            grouping,
         ),
         .alphabetic => {
             if (number == 0) {
-                try appendDecimal(allocator, out, number, token.width, '0');
+                try appendDecimal(
+                    allocator,
+                    out,
+                    number,
+                    token.width,
+                    '0',
+                    grouping,
+                );
                 return;
             }
             var buffer: [32]u8 = undefined;
@@ -3728,7 +3848,14 @@ fn appendFormattedNumber(
         },
         .roman => {
             if (number == 0 or number >= 4000) {
-                try appendDecimal(allocator, out, number, token.width, '0');
+                try appendDecimal(
+                    allocator,
+                    out,
+                    number,
+                    token.width,
+                    '0',
+                    grouping,
+                );
                 return;
             }
             const roman = [_]struct { usize, []const u8 }{
@@ -3760,18 +3887,27 @@ fn appendDecimal(
     number: usize,
     width: usize,
     zero: u21,
+    grouping: ?NumberGrouping,
 ) Error!void {
     var buffer: [32]u8 = undefined;
     const digits = std.fmt.bufPrint(&buffer, "{d}", .{number}) catch
         return error.InvalidArgument;
-    if (digits.len < width) {
-        var padding = digits.len;
-        while (padding < width) : (padding += 1) {
-            try appendNumberDigit(allocator, out, zero);
+    const padding = if (digits.len < width) width - digits.len else 0;
+    const total = padding + digits.len;
+    const group_size = if (grouping) |group| group.size else 0;
+    var index: usize = 0;
+    while (index < total) : (index += 1) {
+        if (group_size > 0 and index > 0 and
+            (total - index) % group_size == 0)
+        {
+            try out.appendSlice(allocator, grouping.?.separator);
         }
-    }
-    for (digits) |byte| {
-        try appendNumberDigit(allocator, out, zero + (byte - '0'));
+        if (index < padding) {
+            try appendNumberDigit(allocator, out, zero);
+        } else {
+            const byte = digits[index - padding];
+            try appendNumberDigit(allocator, out, zero + (byte - '0'));
+        }
     }
 }
 

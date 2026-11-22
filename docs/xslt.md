@@ -60,8 +60,8 @@ defer result.deinit();
   filtered source tree. As in XSLT 1.0 and libxslt, `xml:space` does not
   override these declarations.
 - `xsl:number` with `value`, `level="single|multiple|any"`, `count`/`from`
-  match patterns, and decimal, zero-padded, alphabetic, and Roman `format`
-  tokens.
+  match patterns, decimal, zero-padded, alphabetic, and Roman `format`
+  tokens, and `grouping-separator`/`grouping-size`.
 - `disable-output-escaping` on `xsl:value-of` and `xsl:text`, carried as raw
   text nodes and honored by the XML and HTML serializers.
 - `xsl:decimal-format` declarations and `format-number()` patterns: grouping,
@@ -131,6 +131,22 @@ libxslt EXSLT suite: 47 passed, 1 failed, 0 skipped
 The single tracked difference (`common/object-type.1.xsl`) requires the
 Saxon extension module, whose `saxon:expression()` returns an opaque
 external value.
+
+The libxslt REC corpus (`tests/REC` and `tests/REC2`, the examples from the
+XSLT 1.0 specification) is vendored under `testdata/libxslt-rec`:
+
+```sh
+zig build xslt-rec-suite
+```
+
+Expected summary:
+
+```text
+libxslt REC suite: 79 passed, 1 failed, 3 skipped
+```
+
+The single tracked difference (`REC/test-10-3.xsl`) needs locale-aware
+collation; libxslt skips it when the C library lacks locale support.
 
 ## Limitations
 

@@ -1728,3 +1728,59 @@ test "XSLT merges adjacent text into one CDATA section" {
     defer testing.allocator.free(output);
     try testing.expectEqualStrings("<x><![CDATA[ab]]></x>", output);
 }
+
+test "XSLT xsl:number applies grouping-separator and grouping-size" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/">
+        \\    <out><xsl:number value="1234567890" grouping-separator="." grouping-size="3"/>|<xsl:number value="1234567890" grouping-separator="." grouping-size="0"/>|<xsl:number value="1234567890" grouping-separator="" grouping-size="3"/></out>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out>1.234.567.890|1234567890|1234567890</out>",
+        output,
+    );
+}
+
+test "XSLT generate-id derives namespace ids from their element" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:d="urn:def" exclude-result-prefixes="d">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/">
+        \\    <out><xsl:value-of select="generate-id(/d:doc)"/>|<xsl:value-of select="generate-id(d:doc/d:elem)"/>|<xsl:value-of select="generate-id(d:doc/d:elem/namespace::*[local-name()=''])"/></out>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<doc xmlns=\"urn:def\"><elem/></doc>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>id1|id2|id2ns</out>", output);
+}
+
+test "XSLT xsl:attribute synthesizes a prefix for reserved xmlns" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/">
+        \\    <doc><xsl:attribute name="xmlns:xsl" namespace="whatever">value</xsl:attribute></doc>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<doc xmlns:ns_1=\"whatever\" ns_1:xsl=\"value\"/>",
+        output,
+    );
+}

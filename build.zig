@@ -206,6 +206,18 @@ pub fn build(b: *std.Build) void {
     );
     xslt_exslt_suite_step.dependOn(&xslt_exslt_suite.step);
 
+    const xslt_rec_suite = b.addSystemCommand(&.{
+        "python3",
+        "tools/libxslt_rec_suite.py",
+        "testdata/libxslt-rec",
+    });
+    xslt_rec_suite.addFileArg(xslt_tool.getEmittedBin());
+    const xslt_rec_suite_step = b.step(
+        "xslt-rec-suite",
+        "Run the libxslt REC (XSLT specification) regression suite",
+    );
+    xslt_rec_suite_step.dependOn(&xslt_rec_suite.step);
+
     const xsd_diff = b.addSystemCommand(&.{
         "python3",
         "tools/xsd_diff.py",

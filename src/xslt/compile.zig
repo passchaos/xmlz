@@ -312,6 +312,8 @@ pub const NumberInstruction = struct {
     level: enum { single, multiple, any } = .single,
     count: ?CompiledExpr = null,
     from: ?CompiledExpr = null,
+    grouping_separator: ?Avt = null,
+    grouping_size: ?Avt = null,
 };
 
 pub const ApplyImports = struct {
@@ -1343,6 +1345,12 @@ const Compiler = struct {
         }
         if (self.document.attribute(id, "format")) |format| {
             instruction.format = try self.compileAvt(id, format);
+        }
+        if (self.document.attribute(id, "grouping-separator")) |separator| {
+            instruction.grouping_separator = try self.compileAvt(id, separator);
+        }
+        if (self.document.attribute(id, "grouping-size")) |size| {
+            instruction.grouping_size = try self.compileAvt(id, size);
         }
         if (self.document.attribute(id, "level")) |level| {
             if (std.mem.eql(u8, level, "single")) {

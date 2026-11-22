@@ -70,8 +70,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   and expressions, with 87/87 differential checks against libxslt (including
   catalog-aware includes and `document()`), the complete libxslt general
   regression suite (`zig build xslt-suite`, 205 passed with no tracked
-  differences), and the libxslt EXSLT corpus (`zig build xslt-exslt-suite`,
-  47 passed with one Saxon-module test tracked). EXSLT `func:function`
+  differences), the libxslt EXSLT corpus (`zig build xslt-exslt-suite`,
+  47 passed with one Saxon-module test tracked), and the libxslt REC corpus
+  (`zig build xslt-rec-suite`, 79 passed with one locale-collation test
+  tracked). EXSLT `func:function`
   user-defined functions, `libxslt:node-set`, the `set:*` node-set
   functions, `str:replace`, `str:tokenize`, `str:split`, `str:concat`,
   `str:padding`, `str:align`, `str:encode-uri`, `str:decode-uri`, `date:add`,
@@ -290,6 +292,7 @@ zig build c14n-diff     # canonicalization differential checks vs libxml2
 zig build xslt-diff     # XSLT differential checks vs libxslt (needs lxml)
 zig build xslt-suite    # libxslt general regression suite (needs lxml)
 zig build xslt-exslt-suite # libxslt EXSLT regression suite (needs lxml)
+zig build xslt-rec-suite   # libxslt REC (XSLT specification) suite (needs lxml)
 zig build xsd-diff      # XML Schema differential checks vs libxml2 (needs lxml)
 zig build rng-diff      # RELAX NG differential checks vs libxml2 (needs lxml)
 zig build rng-compact-diff # RELAX NG compact syntax checks vs XML twins (needs lxml)
