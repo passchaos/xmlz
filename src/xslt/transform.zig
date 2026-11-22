@@ -740,6 +740,12 @@ const Runtime = struct {
         for (element.namespaces) |decl| {
             try self.addNamespaceDecl(id, decl.prefix, decl.uri);
         }
+        const saved_parent = self.parent;
+        self.parent = id;
+        defer self.parent = saved_parent;
+        for (element.attribute_sets) |set_name| {
+            try self.executeAttributeSet(set_name, node, position, size);
+        }
         for (element.attributes) |attr| {
             const value = try self.evaluateAvt(
                 attr.value,
@@ -760,9 +766,6 @@ const Runtime = struct {
                 ) catch |err| return mapBuilderError(err);
             }
         }
-        const saved_parent = self.parent;
-        self.parent = id;
-        defer self.parent = saved_parent;
         try self.executeInstructions(element.body, node, position, size);
     }
 
@@ -1038,7 +1041,31 @@ const Runtime = struct {
         const saved_parent = self.parent;
         self.parent = id;
         defer self.parent = saved_parent;
+        for (instruction.attribute_sets) |set_name| {
+            try self.executeAttributeSet(set_name, node, position, size);
+        }
         try self.executeInstructions(instruction.body, node, position, size);
+    }
+
+    fn executeAttributeSet(
+        self: *Runtime,
+        name: []const u8,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+    ) Error!void {
+        for (self.stylesheet.attribute_sets) |set| {
+            if (!std.mem.eql(u8, set.name, name)) continue;
+            const instructions = set.expanded orelse set.raw_instructions;
+            try self.executeInstructions(
+                instructions,
+                node,
+                position,
+                size,
+            );
+            return;
+        }
+        return error.InvalidStylesheet;
     }
 
     fn executeAttribute(

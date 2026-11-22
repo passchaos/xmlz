@@ -40,6 +40,14 @@ pub const KeyDef = struct {
     use: CompiledExpr,
 };
 
+pub const AttributeSet = struct {
+    name: []const u8,
+    uses: []const []const u8,
+    raw_instructions: []const Instruction,
+    expanded: ?[]const Instruction = null,
+    visiting: bool = false,
+};
+
 pub const SortKey = struct {
     select: ?CompiledExpr = null,
     data_type: enum { text, number } = .text,
@@ -91,6 +99,7 @@ pub const Stylesheet = struct {
     templates: []const Template = &.{},
     globals: []const Variable = &.{},
     keys: []const KeyDef = &.{},
+    attribute_sets: []const AttributeSet = &.{},
     output: Output = .{},
     documents: []const *dom.Document = &.{},
 
@@ -143,6 +152,7 @@ pub const LiteralElement = struct {
     ns: []const u8,
     namespaces: []const NamespaceDecl,
     attributes: []const LiteralAttribute,
+    attribute_sets: []const []const u8 = &.{},
     body: []const Instruction,
 };
 
@@ -201,6 +211,7 @@ pub const ElementInstruction = struct {
     name: Avt,
     namespace_uri: ?Avt = null,
     namespaces: []const namespace.Binding = &.{},
+    attribute_sets: []const []const u8 = &.{},
     body: []const Instruction,
 };
 
@@ -288,11 +299,15 @@ pub fn compileWithOptions(
         }
     }
     try compiler.run();
+    try compiler.expandAttributeSets();
     return .{
         .arena = arena,
         .templates = try compiler.templates.toOwnedSlice(compiler.arena),
         .globals = try compiler.dedupeGlobals(),
         .keys = try compiler.keys.toOwnedSlice(compiler.arena),
+        .attribute_sets = try compiler.attribute_sets.toOwnedSlice(
+            compiler.arena,
+        ),
         .output = compiler.output,
         .documents = try compiler.included_documents.toOwnedSlice(
             compiler.arena,
@@ -308,6 +323,7 @@ const Compiler = struct {
     templates: std.ArrayList(Template) = .empty,
     globals: std.ArrayList(Variable) = .empty,
     keys: std.ArrayList(KeyDef) = .empty,
+    attribute_sets: std.ArrayList(AttributeSet) = .empty,
     output: Output = .{},
     order: usize = 0,
     next_precedence: usize = 0,
@@ -412,12 +428,13 @@ const Compiler = struct {
                 try self.globals.append(self.arena, variable);
             } else if (std.mem.eql(u8, local, "key")) {
                 try self.compileKey(child);
+            } else if (std.mem.eql(u8, local, "attribute-set")) {
+                try self.compileAttributeSet(child);
             } else if (std.mem.eql(u8, local, "strip-space") or
                 std.mem.eql(u8, local, "preserve-space"))
             {
                 // Whitespace stripping is not applied to the source tree yet.
-            } else if (std.mem.eql(u8, local, "attribute-set") or
-                std.mem.eql(u8, local, "decimal-format") or
+            } else if (std.mem.eql(u8, local, "decimal-format") or
                 std.mem.eql(u8, local, "namespace-alias"))
             {
                 return error.InvalidStylesheet;
@@ -607,6 +624,84 @@ const Compiler = struct {
         });
     }
 
+    fn compileAttributeSet(self: *Compiler, id: dom.NodeId) Error!void {
+        const name = self.document.attribute(id, "name") orelse
+            return error.InvalidStylesheet;
+        for (self.attribute_sets.items) |existing| {
+            if (std.mem.eql(u8, existing.name, name)) {
+                return error.InvalidStylesheet;
+            }
+        }
+        var uses: []const []const u8 = &.{};
+        if (self.document.attribute(id, "use-attribute-sets")) |value| {
+            uses = try self.parseNames(value);
+        }
+        var instructions: std.ArrayList(Instruction) = .empty;
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const child_node = self.document.node(child);
+            if (child_node.kind == .text) {
+                if (isWhitespaceOnly(child_node.value)) continue;
+                return error.InvalidStylesheet;
+            }
+            if (child_node.kind != .element) continue;
+            if (!isXsl(child_node, "attribute")) {
+                return error.InvalidStylesheet;
+            }
+            try self.compileInstruction(child, false, &instructions);
+        }
+        try self.attribute_sets.append(self.arena, .{
+            .name = name,
+            .uses = uses,
+            .raw_instructions = try instructions.toOwnedSlice(self.arena),
+        });
+    }
+
+    fn parseNames(self: *Compiler, value: []const u8) Error![]const []const u8 {
+        var names: std.ArrayList([]const u8) = .empty;
+        var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n");
+        while (tokens.next()) |token| {
+            try names.append(self.arena, token);
+        }
+        return names.toOwnedSlice(self.arena);
+    }
+
+    fn findAttributeSet(self: *Compiler, name: []const u8) ?usize {
+        for (self.attribute_sets.items, 0..) |set, index| {
+            if (std.mem.eql(u8, set.name, name)) return index;
+        }
+        return null;
+    }
+
+    fn expandAttributeSets(self: *Compiler) Error!void {
+        for (self.attribute_sets.items, 0..) |_, index| {
+            _ = try self.expandAttributeSet(index);
+        }
+    }
+
+    fn expandAttributeSet(
+        self: *Compiler,
+        index: usize,
+    ) Error![]const Instruction {
+        const set = &self.attribute_sets.items[index];
+        if (set.expanded) |expanded| return expanded;
+        if (set.visiting) return error.InvalidStylesheet;
+        set.visiting = true;
+        var list: std.ArrayList(Instruction) = .empty;
+        for (set.uses) |name| {
+            const used_index = self.findAttributeSet(name) orelse
+                return error.InvalidStylesheet;
+            try list.appendSlice(
+                self.arena,
+                try self.expandAttributeSet(used_index),
+            );
+        }
+        try list.appendSlice(self.arena, set.raw_instructions);
+        set.expanded = try list.toOwnedSlice(self.arena);
+        set.visiting = false;
+        return set.expanded.?;
+    }
+
     fn compileOutput(self: *Compiler, id: dom.NodeId) Error!void {
         if (!self.principal) return;
         if (self.document.attribute(id, "method")) |method| {
@@ -751,6 +846,9 @@ const Compiler = struct {
             };
             if (self.document.attribute(id, "namespace")) |uri| {
                 instruction.namespace_uri = try self.compileAvt(id, uri);
+            }
+            if (self.document.attribute(id, "use-attribute-sets")) |value| {
+                instruction.attribute_sets = try self.parseNames(value);
             }
             try body.append(self.arena, .{ .element = instruction });
         } else if (std.mem.eql(u8, local, "attribute")) {
@@ -995,6 +1093,13 @@ const Compiler = struct {
             });
         }
         element.attributes = try attributes.toOwnedSlice(self.arena);
+        if (self.document.attributeNs(
+            id,
+            xsl_namespace,
+            "use-attribute-sets",
+        )) |value| {
+            element.attribute_sets = try self.parseNames(value);
+        }
         element.body = try self.compileBody(id, preserve);
         return element;
     }

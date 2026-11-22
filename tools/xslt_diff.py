@@ -270,6 +270,53 @@ STYLESHEETS = [
         {},
     ),
     (
+        "attribute-set-literal",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:attribute-set name="base"><xsl:attribute name="a">1</xsl:attribute></xsl:attribute-set>
+        <xsl:attribute-set name="derived" use-attribute-sets="base"><xsl:attribute name="b">2</xsl:attribute></xsl:attribute-set>
+        <xsl:template match="/"><out><literal xsl:use-attribute-sets="derived"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "attribute-set-override",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:attribute-set name="s"><xsl:attribute name="a">set</xsl:attribute></xsl:attribute-set>
+        <xsl:template match="/"><out><item xsl:use-attribute-sets="s" a="literal"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "attribute-set-avt-multiple",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:attribute-set name="first">
+          <xsl:attribute name="a">first</xsl:attribute>
+          <xsl:attribute name="id"><xsl:value-of select="@id"/></xsl:attribute>
+        </xsl:attribute-set>
+        <xsl:attribute-set name="second"><xsl:attribute name="a">second</xsl:attribute></xsl:attribute-set>
+        <xsl:template match="/"><out><xsl:for-each select="root/item">
+          <item xsl:use-attribute-sets="first second"/>
+        </xsl:for-each></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root><item id='x'/><item id='y'/></root>",
+        {},
+    ),
+    (
+        "attribute-set-dynamic-element",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:attribute-set name="s"><xsl:attribute name="a">1</xsl:attribute></xsl:attribute-set>
+        <xsl:template match="/"><out><xsl:element name="dynamic" use-attribute-sets="s"/></out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>

@@ -583,3 +583,83 @@ test "XSLT HTML output minimizes boolean attributes" {
         output,
     );
 }
+
+test "XSLT attribute sets apply to literal and dynamic elements" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:attribute-set name="base">
+        \\    <xsl:attribute name="a">1</xsl:attribute>
+        \\  </xsl:attribute-set>
+        \\  <xsl:attribute-set name="derived" use-attribute-sets="base">
+        \\    <xsl:attribute name="b">2</xsl:attribute>
+        \\  </xsl:attribute-set>
+        \\  <xsl:template match="/"><out>
+        \\    <literal xsl:use-attribute-sets="derived"/>
+        \\    <xsl:element name="dynamic" use-attribute-sets="base"/>
+        \\    <override xsl:use-attribute-sets="base" a="literal"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><literal a=\"1\" b=\"2\"/><dynamic a=\"1\"/>" ++
+            "<override a=\"literal\"/></out>",
+        output,
+    );
+}
+
+test "XSLT attribute sets support AVTs and multiple sets" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:attribute-set name="first">
+        \\    <xsl:attribute name="a">first</xsl:attribute>
+        \\    <xsl:attribute name="id"><xsl:value-of select="@id"/></xsl:attribute>
+        \\  </xsl:attribute-set>
+        \\  <xsl:attribute-set name="second">
+        \\    <xsl:attribute name="a">second</xsl:attribute>
+        \\  </xsl:attribute-set>
+        \\  <xsl:template match="/"><out><xsl:for-each select="root/item">
+        \\    <item xsl:use-attribute-sets="first second"/>
+        \\  </xsl:for-each></out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source = "<root><item id='x'/><item id='y'/></root>";
+    const output = try transformToString(stylesheet, source, .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><item a=\"second\" id=\"x\"/><item a=\"second\" id=\"y\"/></out>",
+        output,
+    );
+}
+
+test "XSLT rejects circular and invalid attribute sets" {
+    const circular =
+        "<xsl:stylesheet version='1.0' " ++
+        "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+        "<xsl:attribute-set name='a' use-attribute-sets='b'/>" ++
+        "<xsl:attribute-set name='b' use-attribute-sets='a'/>" ++
+        "</xsl:stylesheet>";
+    var circular_document = try parseDocument(circular);
+    defer circular_document.deinit();
+    try testing.expectError(
+        error.InvalidStylesheet,
+        parse(testing.allocator, &circular_document),
+    );
+
+    const invalid =
+        "<xsl:stylesheet version='1.0' " ++
+        "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+        "<xsl:attribute-set name='a'><xsl:text>x</xsl:text>" ++
+        "</xsl:attribute-set></xsl:stylesheet>";
+    var invalid_document = try parseDocument(invalid);
+    defer invalid_document.deinit();
+    try testing.expectError(
+        error.InvalidStylesheet,
+        parse(testing.allocator, &invalid_document),
+    );
+}

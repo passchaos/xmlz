@@ -54,6 +54,8 @@ defer result.deinit();
 - `xsl:include` and `xsl:import` through a resolver, import precedence,
   duplicate named-template detection, and `xsl:apply-imports` (including
   `with-param`).
+- `xsl:attribute-set` definitions, nested `use-attribute-sets`, application to
+  literal result elements and `xsl:element`, and literal-attribute override.
 - `xsl:number` with a `value` expression, and same-name sibling numbering
   otherwise.
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
@@ -69,8 +71,8 @@ template priority its specified default behavior.
 
 ## Limitations
 
-- `xsl:attribute-set`, `xsl:decimal-format`, `xsl:namespace-alias`, and
-  `xsl:strip-space` / `xsl:preserve-space` are not implemented.
+- `xsl:decimal-format`, `xsl:namespace-alias`, and `xsl:strip-space` /
+  `xsl:preserve-space` are not implemented.
 - Result tree fragments in variables are stored as strings; node-set operations
   on them are not supported.
 - `disable-output-escaping`, `cdata-section-elements`, and DOCTYPE output are
@@ -97,5 +99,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-49/49 XSLT differential checks passed
+53/53 XSLT differential checks passed
 ```
