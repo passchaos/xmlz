@@ -156,34 +156,23 @@ const Evaluator = struct {
         if (path.start == null and !path.absolute and path.steps.len == 1) {
             const step = path.steps[0];
             if (step.predicates.len == 0) {
-                switch (step.axis) {
-                    .self_axis => {
-                        const prefix_uri = try resolveNameTestPrefix(
-                            context,
-                            step.node_test,
-                        );
-                        if (try self.matchesTest(
-                            context,
-                            context.node,
-                            step.node_test,
-                            step.axis,
-                            prefix_uri,
-                        )) {
-                            const nodes = try self.allocator.alloc(
-                                value.NodeRef,
-                                1,
-                            );
-                            nodes[0] = context.node;
-                            return .{ .node_set = nodes };
-                        }
-                        return .{ .node_set = &.{} };
-                    },
-                    .child, .attribute => {
-                        if (try self.singleStep(context, step)) |nodes| {
-                            return .{ .node_set = nodes };
-                        }
-                    },
-                    else => {},
+                const prefix_uri = try resolveNameTestPrefix(
+                    context,
+                    step.node_test,
+                );
+                var out: std.ArrayList(value.NodeRef) = .empty;
+                if (try self.appendSingleAxis(
+                    context,
+                    context.node,
+                    step,
+                    prefix_uri,
+                    &out,
+                )) {
+                    if (out.items.len == 0) return .{ .node_set = &.{} };
+                    const owned: []const value.NodeRef = try out.toOwnedSlice(
+                        self.allocator,
+                    );
+                    return .{ .node_set = owned };
                 }
             }
         }
@@ -262,70 +251,90 @@ const Evaluator = struct {
     /// Evaluate a single child or attribute step from one context node.
     /// Returns null when the context node kind cannot have that axis, so the
     /// general path can handle it.
-    fn singleStep(
+    /// Append the matches of one child, attribute, or self step from a single
+    /// context node. Returns false when the axis or node kind needs the
+    /// general path.
+    fn appendSingleAxis(
         self: *Evaluator,
         context: *const value.Context,
+        node: value.NodeRef,
         step: ast.Step,
-    ) Error!?[]const value.NodeRef {
-        const id = switch (context.node) {
-            .node => |node_id| node_id,
-            else => return null,
-        };
-        const prefix_uri = try resolveNameTestPrefix(context, step.node_test);
-        var out: std.ArrayList(value.NodeRef) = .empty;
+        prefix_uri: ?[]const u8,
+        out: *std.ArrayList(value.NodeRef),
+    ) Error!bool {
         switch (step.axis) {
-            .child => {
-                const node_value = context.document.node(id);
-                if (node_value.kind != .document and
-                    node_value.kind != .element)
-                {
-                    return null;
+            .self_axis => {
+                if (try self.matchesTest(
+                    context,
+                    node,
+                    step.node_test,
+                    step.axis,
+                    prefix_uri,
+                )) {
+                    try out.append(self.allocator, node);
                 }
-                var child = node_value.first_child;
-                while (child != dom.null_node) : (child =
-                    context.document.node(child).next_sibling)
-                {
-                    const candidate: value.NodeRef = .{ .node = child };
-                    if (try self.matchesTest(
-                        context,
-                        candidate,
-                        step.node_test,
-                        step.axis,
-                        prefix_uri,
-                    )) {
-                        try out.append(self.allocator, candidate);
-                    }
-                }
+                return true;
             },
-            .attribute => {
-                if (context.document.node(id).kind != .element) return null;
-                const attributes = context.document.attributesOf(id);
-                for (attributes, 0..) |attribute, index| {
-                    if (namespace.Resolver.isNamespaceDeclaration(
-                        attribute.name,
-                    )) continue;
-                    const candidate: value.NodeRef = .{ .attribute = .{
-                        .element = id,
-                        .index = @intCast(index),
-                    } };
-                    if (try self.matchesTest(
-                        context,
-                        candidate,
-                        step.node_test,
-                        step.axis,
-                        prefix_uri,
-                    )) {
-                        try out.append(self.allocator, candidate);
-                    }
+            .child, .attribute => {
+                const id = switch (node) {
+                    .node => |node_id| node_id,
+                    else => return false,
+                };
+                switch (step.axis) {
+                    .child => {
+                        const node_value = context.document.node(id);
+                        if (node_value.kind != .document and
+                            node_value.kind != .element)
+                        {
+                            return false;
+                        }
+                        var child = node_value.first_child;
+                        while (child != dom.null_node) : (child =
+                            context.document.node(child).next_sibling)
+                        {
+                            const candidate: value.NodeRef = .{ .node = child };
+                            if (try self.matchesTest(
+                                context,
+                                candidate,
+                                step.node_test,
+                                step.axis,
+                                prefix_uri,
+                            )) {
+                                try out.append(self.allocator, candidate);
+                            }
+                        }
+                    },
+                    else => {
+                        if (context.document.node(id).kind != .element) {
+                            return false;
+                        }
+                        const attributes = context.document.attributesOf(id);
+                        for (attributes, 0..) |attribute, index| {
+                            if (namespace.Resolver.isNamespaceDeclaration(
+                                attribute.name,
+                            )) continue;
+                            const candidate: value.NodeRef = .{
+                                .attribute = .{
+                                    .element = id,
+                                    .index = @intCast(index),
+                                },
+                            };
+                            if (try self.matchesTest(
+                                context,
+                                candidate,
+                                step.node_test,
+                                step.axis,
+                                prefix_uri,
+                            )) {
+                                try out.append(self.allocator, candidate);
+                            }
+                        }
+                    },
                 }
+                return true;
             },
-            else => return null,
+            else => return false,
         }
-        if (out.items.len == 0) return &.{};
-        const owned: ?[]const value.NodeRef = try out.toOwnedSlice(
-            self.allocator,
-        );
-        return owned;
     }
 
     fn evalFilter(
@@ -351,10 +360,26 @@ const Evaluator = struct {
         input: []const value.NodeRef,
         step: ast.Step,
     ) Error![]const value.NodeRef {
+        const prefix_uri = try resolveNameTestPrefix(context, step.node_test);
+        if (input.len == 1 and step.predicates.len == 0) {
+            var single: std.ArrayList(value.NodeRef) = .empty;
+            if (try self.appendSingleAxis(
+                context,
+                input[0],
+                step,
+                prefix_uri,
+                &single,
+            )) {
+                if (single.items.len == 0) return &.{};
+                const owned: []const value.NodeRef = try single.toOwnedSlice(
+                    self.allocator,
+                );
+                return owned;
+            }
+        }
         var result: std.ArrayList(value.NodeRef) = .empty;
         var axis_buffer: std.ArrayList(value.NodeRef) = .empty;
         var matched: std.ArrayList(value.NodeRef) = .empty;
-        const prefix_uri = try resolveNameTestPrefix(context, step.node_test);
         for (input) |node| {
             axis_buffer.clearRetainingCapacity();
             try self.appendAxisNodes(
