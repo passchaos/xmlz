@@ -373,11 +373,13 @@ pub fn parseWithOptions(
     };
     errdefer compiler.deinitDocuments();
     const root = try compiler.buildFile(document, options.base);
+    const catalogs = try compiler.files.toOwnedSlice(compiler.arena);
+    const documents = try compiler.documents.toOwnedSlice(compiler.arena);
     return .{
         .arena = arena,
         .root = root,
-        .catalogs = try compiler.files.toOwnedSlice(compiler.arena),
-        .documents = try compiler.documents.toOwnedSlice(compiler.arena),
+        .catalogs = catalogs,
+        .documents = documents,
     };
 }
 

@@ -77,21 +77,26 @@ pub fn validate(
         .schema_variables = .empty,
     };
     try validator.run(compiled, options);
+    // All arena-backed slices must be built before the arena is copied into
+    // the result: a later allocation may add a chunk that the copy's list
+    // head would not see.
     const failures = try arena.allocator().dupe(
         Failure,
         validator.failures.items,
     );
+    const active_patterns = try arena.allocator().dupe(
+        []const u8,
+        validator.active_patterns.items,
+    );
+    const fired_rules = try arena.allocator().dupe(
+        FiredRule,
+        validator.fired_rules.items,
+    );
     return .{
         .arena = arena,
         .failures = failures,
-        .active_patterns = try arena.allocator().dupe(
-            []const u8,
-            validator.active_patterns.items,
-        ),
-        .fired_rules = try arena.allocator().dupe(
-            FiredRule,
-            validator.fired_rules.items,
-        ),
+        .active_patterns = active_patterns,
+        .fired_rules = fired_rules,
     };
 }
 

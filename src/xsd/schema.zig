@@ -633,22 +633,31 @@ pub fn parseWithOptions(
         }
     }
     try compiler.run();
+    // Build every arena-backed slice before copying the arena: a new chunk
+    // allocated afterwards would not be reachable from the copy.
+    const elements = try compiler.elements.toOwnedSlice(compiler.arena);
+    const attributes = try compiler.attributes.toOwnedSlice(compiler.arena);
+    const types = try compiler.types.toOwnedSlice(compiler.arena);
+    const groups = try compiler.groups.toOwnedSlice(compiler.arena);
+    const attribute_groups = try compiler.attribute_groups.toOwnedSlice(
+        compiler.arena,
+    );
+    const notations = try compiler.notations.toOwnedSlice(compiler.arena);
+    const documents = try compiler.included_documents.toOwnedSlice(
+        compiler.arena,
+    );
     return .{
         .arena = arena,
         .target_namespace = compiler.target_namespace,
         .element_form_qualified = compiler.element_form_qualified,
         .attribute_form_qualified = compiler.attribute_form_qualified,
-        .elements = try compiler.elements.toOwnedSlice(compiler.arena),
-        .attributes = try compiler.attributes.toOwnedSlice(compiler.arena),
-        .types = try compiler.types.toOwnedSlice(compiler.arena),
-        .groups = try compiler.groups.toOwnedSlice(compiler.arena),
-        .attribute_groups = try compiler.attribute_groups.toOwnedSlice(
-            compiler.arena,
-        ),
-        .notations = try compiler.notations.toOwnedSlice(compiler.arena),
-        .documents = try compiler.included_documents.toOwnedSlice(
-            compiler.arena,
-        ),
+        .elements = elements,
+        .attributes = attributes,
+        .types = types,
+        .groups = groups,
+        .attribute_groups = attribute_groups,
+        .notations = notations,
+        .documents = documents,
     };
 }
 

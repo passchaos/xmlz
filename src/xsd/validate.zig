@@ -44,9 +44,10 @@ pub fn validate(
         .document = document,
     };
     try validator.run();
+    const errors = try validator.errors.toOwnedSlice(arena.allocator());
     return .{
         .arena = arena,
-        .errors = try validator.errors.toOwnedSlice(arena.allocator()),
+        .errors = errors,
     };
 }
 
