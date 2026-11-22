@@ -42,6 +42,9 @@ const Outcome = struct {
     offset: usize = 0,
     line: usize = 0,
     column: usize = 0,
+    validation_issues: usize = 0,
+    validation_error: ?anyerror = null,
+    validated: bool = false,
 };
 
 const ResolverContext = struct {
@@ -225,7 +228,61 @@ fn runTest(
         };
         if (event == null) break;
     }
-    return .{ .entry = entry, .result = .parsed };
+
+    var outcome: Outcome = .{ .entry = entry, .result = .parsed };
+    const validate = std.mem.eql(u8, entry.type, "valid") or
+        std.mem.eql(u8, entry.type, "invalid");
+    if (validate) {
+        var document = xmlz.dom.Document.parse(gpa, decoded, .{
+            .parser = .{
+                .resolver = .{
+                    .context = &resolver_context,
+                    .resolve = resolveExternal,
+                },
+                .namespaces = entry.namespace,
+            },
+            .keep_comments = true,
+            .keep_pis = true,
+        }) catch |err| {
+            outcome.validation_error = err;
+            return outcome;
+        };
+        defer document.deinit();
+        if (document.dtd) |dtd| {
+            if (dtd.doctype_name.len != 0 or
+                dtd.elements.len != 0 or
+                dtd.attributes.len != 0)
+            {
+                outcome.validated = true;
+                const issues = xmlz.validation.validate(
+                    gpa,
+                    &document,
+                    dtd,
+                ) catch |err| {
+                    outcome.validation_error = err;
+                    return outcome;
+                };
+                defer gpa.free(issues);
+                outcome.validation_issues = issues.len;
+                if (debug) {
+                    for (issues) |issue| {
+                        std.debug.print(
+                            "VALIDATION {s} {s}: {s} node={d} attr={s} name={s}\n",
+                            .{
+                                entry.type,
+                                entry.uri,
+                                @tagName(issue.kind),
+                                issue.node,
+                                issue.attribute,
+                                issue.name,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+    return outcome;
 }
 
 fn report(gpa: std.mem.Allocator, outcomes: []const Outcome, verbose: bool) !void {
@@ -257,7 +314,19 @@ fn report(gpa: std.mem.Allocator, outcomes: []const Outcome, verbose: bool) !voi
         const optional_test = std.mem.eql(u8, expected, "error");
 
         const passed = switch (outcome.result) {
-            .parsed => should_parse,
+            .parsed => blk: {
+                if (!should_parse) break :blk false;
+                if (outcome.validation_error != null) break :blk false;
+                if (std.mem.eql(u8, expected, "valid")) {
+                    break :blk !outcome.validated or
+                        outcome.validation_issues == 0;
+                }
+                if (std.mem.eql(u8, expected, "invalid")) {
+                    break :blk !outcome.validated or
+                        outcome.validation_issues > 0;
+                }
+                break :blk true;
+            },
             .rejected, .decode_error => should_reject,
             .missing, .skipped => false,
         };
@@ -302,7 +371,14 @@ fn report(gpa: std.mem.Allocator, outcomes: []const Outcome, verbose: bool) !voi
         } else {
             stats.failed += 1;
             bucket.value_ptr.failed += 1;
-            const error_key = if (outcome.err) |err| @errorName(err) else "parsed";
+            const error_key = if (outcome.validation_error) |err|
+                @errorName(err)
+            else if (outcome.err) |err|
+                @errorName(err)
+            else if (std.mem.eql(u8, expected, "invalid"))
+                "missing-validation-issue"
+            else
+                "unexpected-validation-issue";
             const error_bucket = try by_error.getOrPut(error_key);
             if (!error_bucket.found_existing) error_bucket.value_ptr.* = .{};
             error_bucket.value_ptr.total += 1;

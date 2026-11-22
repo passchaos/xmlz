@@ -39,6 +39,10 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **XPath 1.0.** Location paths, all core axes, predicates, operators,
   variables, and the core function library are implemented over the DOM, with
   namespace-aware name tests and 65/65 differential checks against libxml2.
+- **Optional DTD validation.** Content models, attribute types/defaults,
+  required/fixed values, ID/IDREF rules, entity/notation references, root type,
+  standalone declaration effects, and PE nesting are checked over the DOM. The
+  validation pass is separate from the non-validating pull parser.
 - **Legacy primitives preserved.** The allocation-free tag/attribute scanners
   extracted from `zsvg` remain available and are used by the pull parser's
   fast paths.
@@ -51,6 +55,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | Area | State |
 | --- | --- |
 | XML 1.0 core + DTD | Complete, W3C suite green |
+| DTD validation | Complete, W3C validity tests green |
 | XML 1.1 | Complete, W3C suite green |
 | Namespaces 1.0 / 1.1 | Complete, W3C suite green |
 | DOM tree | Complete |
@@ -130,6 +135,7 @@ src/encoding.zig        byte-encoding detection and normalization
 src/markup.zig          quote-aware tag/declaration end scanners
 src/character_data.zig  character-data spans with CDATA provenance
 src/dom.zig             arena-backed document tree
+src/validation.zig      optional DTD validity checking
 src/writer.zig          XML serializer
 src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
 src/namespace.zig       Namespaces in XML 1.0 resolver

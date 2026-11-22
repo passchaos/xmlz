@@ -11,6 +11,7 @@ pub const namespace = @import("namespace.zig");
 pub const dom = @import("dom.zig");
 pub const writer = @import("writer.zig");
 pub const xpath = @import("xpath/root.zig");
+pub const validation = @import("validation.zig");
 
 const findTagEnd = markup.findTagEnd;
 const findDeclarationEnd = markup.findDeclarationEnd;
@@ -29,6 +30,7 @@ test {
     _ = dom;
     _ = writer;
     _ = xpath;
+    _ = validation;
     _ = @import("fuzz_tests.zig");
 }
 

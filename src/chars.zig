@@ -223,6 +223,11 @@ pub fn isNmtoken(name: []const u8) bool {
     return true;
 }
 
+pub fn isNCName(name: []const u8) bool {
+    validateNCName(name) catch return false;
+    return true;
+}
+
 fn codepointLength(bytes: []const u8, index: usize) NameError!usize {
     const len = std.unicode.utf8ByteSequenceLength(bytes[index]) catch
         return error.InvalidUtf8;

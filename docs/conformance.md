@@ -24,8 +24,8 @@ W3C XML conformance: 2585 total, 2240 passed, 0 failed, 313 skipped (edition 1-4
 
 | Suite `TYPE` | Required xmlz verdict |
 | --- | --- |
-| `valid` | parses to EOF |
-| `invalid` | parses to EOF (DTD validity is not checked) |
+| `valid` | parses to EOF and, when a DTD is present, validates without issues |
+| `invalid` | parses to EOF and, when a DTD is present, produces at least one validity issue |
 | `not-wf` | rejected |
 | `error` | either verdict; reported as optional |
 
@@ -46,9 +46,10 @@ the parser; the parser itself never touches the filesystem.
 
 ## Notes
 
-- The `invalid` class is expected to parse. DTD validity constraints
-  (ID uniqueness, element content models, attribute types, root element type)
-  are not enforced by the core parser.
+- The `invalid` class is expected to parse; DTD validity is checked by the
+  optional validation pass described in `docs/validation.md`. The core parser
+  remains a non-validating parser, so validity constraints do not affect
+  well-formedness.
 - The suite contains mutually inconsistent verdicts around parameter-entity
   nesting: `ibm-not-wf-p28a-ibm28an01` expects rejection, while the Fifth
   Edition errata tests (`E14`, `invalid--005`, `invalid--006`) expect parsing.

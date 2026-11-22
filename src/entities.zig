@@ -21,6 +21,11 @@ pub const Entity = struct {
     public_id: []const u8 = "",
     /// Unparsed (NDATA) external entity; references are not allowed in content.
     unparsed: bool = false,
+    /// Notation name for an unparsed entity.
+    notation: []const u8 = "",
+    /// True when the declaration came from the external subset or an external
+    /// parameter entity. Standalone documents may not use such declarations.
+    from_external: bool = false,
     /// Byte offset of the declaration in the source document, for diagnostics.
     offset: usize = 0,
 };

@@ -36,6 +36,10 @@ pub const Attribute = struct {
     ns: []const u8,
     /// Decoded and normalized value.
     value: []const u8,
+    /// True when tokenized normalization changed the decoded value.
+    normalization_changed: bool = false,
+    /// True when a character reference produced tab, LF, or CR.
+    whitespace_char_ref: bool = false,
 
     pub fn localName(self: Attribute) []const u8 {
         return if (self.colon == 0xFFFF) self.name else self.name[self.colon + 1 ..];
@@ -61,6 +65,10 @@ pub const Node = struct {
     value: []const u8 = "",
     attr_start: u32 = 0,
     attr_count: u32 = 0,
+    /// DTD validation provenance for element-only content.
+    has_whitespace_char_ref_text: bool = false,
+    has_nel_ls_text: bool = false,
+    has_cdata_text: bool = false,
 };
 
 pub const Options = struct {
@@ -80,6 +88,9 @@ pub const Document = struct {
     attributes: []Attribute,
     declaration: ?parser_mod.Declaration = null,
     doctype: ?parser_mod.Doctype = null,
+    /// DTD view from the parser. Slices borrow the parser's input/scratch
+    /// storage, which the DOM keeps alive for the document lifetime.
+    dtd: ?parser_mod.Dtd = null,
 
     pub fn parse(
         allocator: std.mem.Allocator,
@@ -99,6 +110,7 @@ pub const Document = struct {
             .attributes = builder.attributes.items,
             .declaration = builder.declaration,
             .doctype = builder.doctype,
+            .dtd = builder.parser.dtd(),
         };
     }
 
@@ -115,7 +127,11 @@ pub const Document = struct {
 
     /// The root element, or `null_node` when parsing produced no root.
     pub fn root(self: *const Document) NodeId {
-        return self.nodes[0].first_child;
+        var child = self.nodes[0].first_child;
+        while (child != null_node) : (child = self.nodes[child].next_sibling) {
+            if (self.nodes[child].kind == .element) return child;
+        }
+        return null_node;
     }
 
     pub fn node(self: *const Document, id: NodeId) *const Node {
@@ -243,6 +259,9 @@ const Builder = struct {
     stack_len: usize = 0,
     declaration: ?parser_mod.Declaration = null,
     doctype: ?parser_mod.Doctype = null,
+    /// DTD view from the parser. Slices borrow the parser's input/scratch
+    /// storage, which the DOM keeps alive for the document lifetime.
+    dtd: ?parser_mod.Dtd = null,
 
     fn init(
         allocator: std.mem.Allocator,
@@ -280,7 +299,13 @@ const Builder = struct {
                 .start_element => |element| try self.startElement(element),
                 .end_element => try self.endElement(),
                 .text => |text| try self.appendText(text, false),
-                .cdata => |data| try self.appendText(data, true),
+                .cdata => |data| {
+                    try self.appendText(data, true);
+                    if (self.stack_len != 0) {
+                        self.nodes.items[self.stack[self.stack_len - 1]]
+                            .has_cdata_text = true;
+                    }
+                },
                 .comment => |data| {
                     if (!self.options.keep_comments) continue;
                     _ = try self.addChildNode(
@@ -344,8 +369,11 @@ const Builder = struct {
                     },
                 );
             }
+            var normalization_changed = false;
             if (attr.tokenized) {
-                value = try normalizeTokenized(self.allocator, value);
+                const normalized = try normalizeTokenized(self.allocator, value);
+                normalization_changed = !std.mem.eql(u8, value, normalized);
+                value = normalized;
             }
             const uri = if (namespace.Resolver.isNamespaceDeclaration(attr.name))
                 namespace.xmlns_uri
@@ -356,6 +384,8 @@ const Builder = struct {
                 .colon = attr.colon,
                 .ns = uri,
                 .value = value,
+                .normalization_changed = normalization_changed,
+                .whitespace_char_ref = attr.whitespace_char_ref,
             });
         }
 
@@ -404,11 +434,14 @@ const Builder = struct {
                     .preserve_external = true,
                 },
             );
-        if (decoded.len == 0) return;
-        _ = try self.addChildNode(
-            self.stack[self.stack_len - 1],
-            .{ .kind = .text, .value = decoded },
-        );
+        const parent = self.stack[self.stack_len - 1];
+        _ = try self.addChildNode(parent, .{ .kind = .text, .value = decoded });
+        if (self.parser.text_whitespace_char_ref) {
+            self.nodes.items[parent].has_whitespace_char_ref_text = true;
+        }
+        if (self.parser.text_has_nel_ls) {
+            self.nodes.items[parent].has_nel_ls_text = true;
+        }
     }
 
     fn currentParent(self: *const Builder) NodeId {

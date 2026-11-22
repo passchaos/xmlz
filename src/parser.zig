@@ -28,13 +28,86 @@ pub const SourceRange = struct {
 
 pub const DefaultKind = enum { required, implied, fixed, value };
 
+pub const AttributeType = union(enum) {
+    cdata,
+    id,
+    idref,
+    idrefs,
+    entity,
+    entities,
+    nmtoken,
+    nmtokens,
+    notation: []const []const u8,
+    enumeration: []const []const u8,
+};
+
+pub const ContentNode = union(enum) {
+    name: []const u8,
+    choice: []const *ContentNode,
+    sequence: []const *ContentNode,
+    quantifier: struct {
+        node: *ContentNode,
+        min: u8,
+        max: ?u8,
+    },
+};
+
+pub const ContentModel = union(enum) {
+    empty,
+    any,
+    mixed: []const []const u8,
+    children: *ContentNode,
+};
+
+pub const ElementDecl = struct {
+    name: []const u8,
+    model: ContentModel,
+    from_external: bool = false,
+};
+
 pub const AttributeDecl = struct {
     element: []const u8,
     name: []const u8,
-    tokenized: bool,
+    attr_type: AttributeType,
     default_kind: DefaultKind,
     default_value: []const u8 = "",
     value_offset: usize = 0,
+    from_external: bool = false,
+
+    pub fn tokenized(self: AttributeDecl) bool {
+        return self.attr_type != .cdata;
+    }
+};
+
+pub const NotationDecl = struct {
+    name: []const u8,
+    public_id: ?[]const u8 = null,
+    system_id: ?[]const u8 = null,
+    from_external: bool = false,
+};
+
+pub const DuplicateAttribute = struct {
+    element: []const u8,
+    name: []const u8,
+};
+
+pub const PeIssue = struct {
+    offset: usize,
+};
+
+pub const Dtd = struct {
+    doctype_name: []const u8,
+    elements: []const ElementDecl,
+    attributes: []const AttributeDecl,
+    notations: []const NotationDecl,
+    entities: *const entities.Table,
+    duplicate_elements: []const []const u8,
+    duplicate_attributes: []const DuplicateAttribute,
+    duplicate_notations: []const []const u8,
+    pe_issues: []const PeIssue,
+    undeclared_refs: []const []const u8,
+    standalone: ?bool,
+    namespaces: bool,
 };
 
 pub const Options = struct {
@@ -141,6 +214,9 @@ pub const Attribute = struct {
     name_key: u32 = 0,
     /// True when the value needs entity decoding or whitespace normalization.
     needs_decode: bool = false,
+    /// True when a character reference produced a tab, LF, or CR. NMTOKENS
+    /// validity requires tokens to be separated by literal spaces.
+    whitespace_char_ref: bool = false,
     /// True when an ATTLIST declaration gives this attribute a tokenized
     /// (non-CDATA) type, which changes attribute-value normalization.
     tokenized: bool = false,
@@ -240,13 +316,28 @@ pub const Parser = struct {
     ns: namespace.Resolver = .{},
     xml_version: chars.Version = .xml_1_0,
     started: bool = false,
+    in_external_subset: bool = false,
+    text_whitespace_char_ref: bool = false,
+    text_has_nel_ls: bool = false,
     tokenized_attrs: [128]struct {
         element: []const u8,
         name: []const u8,
     } = undefined,
     tokenized_attr_count: usize = 0,
-    attribute_decls: [128]AttributeDecl = undefined,
-    attribute_decl_count: usize = 0,
+    element_decls: std.ArrayList(ElementDecl) = .empty,
+    attribute_decls: std.ArrayList(AttributeDecl) = .empty,
+    notation_decls: std.ArrayList(NotationDecl) = .empty,
+    fixed_element_decls: [32]ElementDecl = undefined,
+    fixed_element_count: usize = 0,
+    fixed_attribute_decls: [32]AttributeDecl = undefined,
+    fixed_attribute_count: usize = 0,
+    fixed_notation_decls: [16]NotationDecl = undefined,
+    fixed_notation_count: usize = 0,
+    duplicate_elements: std.ArrayList([]const u8) = .empty,
+    duplicate_attributes: std.ArrayList(DuplicateAttribute) = .empty,
+    duplicate_notations: std.ArrayList([]const u8) = .empty,
+    pe_issues: std.ArrayList(PeIssue) = .empty,
+    undeclared_refs: std.ArrayList([]const u8) = .empty,
     external_depth: usize = 0,
     external_checked: std.StaticBitSet(entities.max_entities) = .empty,
     fragment: bool = false,
@@ -317,6 +408,23 @@ pub const Parser = struct {
     /// Entity declarations collected from the DOCTYPE internal subset.
     pub fn entityTable(self: *const Parser) *const entities.Table {
         return &self.entity_table;
+    }
+
+    pub fn dtd(self: *const Parser) Dtd {
+        return .{
+            .doctype_name = self.doctype_name,
+            .elements = self.element_decls.items,
+            .attributes = self.attribute_decls.items,
+            .notations = self.notation_decls.items,
+            .entities = &self.entity_table,
+            .duplicate_elements = self.duplicate_elements.items,
+            .duplicate_attributes = self.duplicate_attributes.items,
+            .duplicate_notations = self.duplicate_notations.items,
+            .pe_issues = self.pe_issues.items,
+            .undeclared_refs = self.undeclared_refs.items,
+            .standalone = self.standalone,
+            .namespaces = self.options.namespaces,
+        };
     }
 
     /// Byte offset where the most recent error was detected.
@@ -735,6 +843,7 @@ pub const Parser = struct {
         const value_start = self.pos;
         var has_non_ascii = false;
         var needs_decode = false;
+        var whitespace_char_ref = false;
 
         while (self.pos < self.input.len and self.input[self.pos] != quote) {
             const byte = self.input[self.pos];
@@ -743,6 +852,31 @@ pub const Parser = struct {
             }
             if (byte == '&') {
                 needs_decode = true;
+                if (self.pos + 1 < self.input.len and
+                    self.input[self.pos + 1] == '#')
+                {
+                    const semicolon = std.mem.indexOfScalarPos(
+                        u8,
+                        self.input,
+                        self.pos + 2,
+                        ';',
+                    ) orelse {
+                        return self.fail(
+                            error.InvalidEntityReference,
+                            self.pos,
+                        );
+                    };
+                    const body = self.input[self.pos + 1 .. semicolon];
+                    const codepoint = if (body.len > 1 and body[1] == 'x')
+                        chars.parseHexCharRefVersion(body[1..], self.xml_version)
+                    else
+                        chars.parseDecimalCharRefVersion(body[1..], self.xml_version);
+                    if (codepoint) |value| {
+                        if (value == '\t' or value == '\n' or value == '\r') {
+                            whitespace_char_ref = true;
+                        }
+                    }
+                }
                 self.pos = try self.validateReference(self.pos, true);
                 continue;
             }
@@ -783,6 +917,7 @@ pub const Parser = struct {
             .colon = name_info.colon,
             .name_key = attributeNameKey(name),
             .needs_decode = needs_decode,
+            .whitespace_char_ref = whitespace_char_ref,
             .tokenized = false,
         };
     }
@@ -831,12 +966,46 @@ pub const Parser = struct {
 
     fn scanText(self: *Parser) Error!?[]const u8 {
         const start = self.pos;
+        self.text_whitespace_char_ref = false;
+        self.text_has_nel_ls = false;
+        var whitespace_char_ref = false;
         var index = start;
         while (true) {
             index = findTextSpecial(self.input, index);
             if (index >= self.input.len) break;
             switch (self.input[index]) {
                 '&' => {
+                    if (index + 1 < self.input.len and
+                        self.input[index + 1] == '#')
+                    {
+                        const semicolon = std.mem.indexOfScalarPos(
+                            u8,
+                            self.input,
+                            index + 2,
+                            ';',
+                        ) orelse 0;
+                        if (semicolon > index + 1) {
+                            const body = self.input[index + 1 .. semicolon];
+                            const codepoint = if (body.len > 1 and
+                                body[1] == 'x')
+                                chars.parseHexCharRefVersion(
+                                    body[1..],
+                                    self.xml_version,
+                                )
+                            else
+                                chars.parseDecimalCharRefVersion(
+                                    body[1..],
+                                    self.xml_version,
+                                );
+                            if (codepoint) |value| {
+                                if (value == ' ' or value == '\t' or
+                                    value == '\n' or value == '\r')
+                                {
+                                    whitespace_char_ref = true;
+                                }
+                            }
+                        }
+                    }
                     const reference = try self.classifyReference(index);
                     if (reference.kind == .entity) {
                         if (index > start) {
@@ -845,12 +1014,23 @@ pub const Parser = struct {
                             if (self.findInvalidLiteral(span)) |bad| {
                                 return self.fail(error.InvalidCharacter, start + bad);
                             }
+                            self.text_whitespace_char_ref = whitespace_char_ref;
+                            self.text_has_nel_ls = hasXml11LineSeparator(
+                                span,
+                                self.xml_version,
+                            );
                             return span;
                         }
                         self.pos = reference.end;
+                        const entity = reference.entity.?;
+                        if (!entity.external and entity.value.len == 0) {
+                            // Preserve an empty entity reference as an empty
+                            // text event so consumers can observe the content.
+                            return "";
+                        }
                         try self.expandEntityReference(
                             reference.name,
-                            reference.entity.?,
+                            entity,
                         );
                         return null;
                     }
@@ -873,6 +1053,8 @@ pub const Parser = struct {
         if (self.findInvalidLiteral(span)) |bad| {
             return self.fail(error.InvalidCharacter, start + bad);
         }
+        self.text_whitespace_char_ref = whitespace_char_ref;
+        self.text_has_nel_ls = hasXml11LineSeparator(span, self.xml_version);
         return span;
     }
 
@@ -900,10 +1082,19 @@ pub const Parser = struct {
             if (self.standalone != true and
                 (self.external_subset_present or self.parameter_reference_seen))
             {
+                if (self.scratchAllocator()) |allocator| {
+                    try self.undeclared_refs.append(allocator, body);
+                }
                 return .{ .kind = .plain, .end = end };
             }
             return self.fail(error.UndeclaredEntity, amp + 1);
         };
+        if (self.standalone == true and entity.from_external) {
+            if (!self.options.allow_undeclared_entities) {
+                return self.fail(error.UndeclaredEntity, amp + 1);
+            }
+            return .{ .kind = .plain, .end = end };
+        }
         if (entity.unparsed) {
             return self.fail(error.UnparsedEntityReference, amp + 1);
         }
@@ -1239,9 +1430,7 @@ pub const Parser = struct {
 
         if (system_id) |system| {
             self.external_subset_present = true;
-            if (self.standalone != true) {
-                try self.loadExternalSubset(system, public_id);
-            }
+            try self.loadExternalSubset(system, public_id);
         }
         try self.validateEntityDeclarations();
 
@@ -1332,10 +1521,28 @@ pub const Parser = struct {
                     const last = ids[declaration_end];
                     // A declaration may not begin inside a parameter-entity
                     // replacement and continue outside it (WFC: PE Between
-                    // Declarations). The converse is a validity constraint in
-                    // the Fifth Edition errata, matching libxml2 and expat.
-                    if (first != 0 and first != last) {
+                    // Declarations). Other boundary mismatches are validity
+                    // errors in the Fifth Edition errata.
+                    if (first != 0 and last == 0) {
                         return self.fail(error.InvalidDoctype, declaration_start);
+                    }
+                    if (first != last) {
+                        if (self.scratchAllocator()) |allocator| {
+                            try self.pe_issues.append(allocator, .{
+                                .offset = declaration_start,
+                            });
+                        }
+                    }
+                    if (std.mem.startsWith(
+                        u8,
+                        self.input[declaration_start..],
+                        "<!ELEMENT",
+                    )) {
+                        try self.checkElementGroupNesting(
+                            self.input[declaration_start .. declaration_end + 1],
+                            ids,
+                            declaration_start,
+                        );
                     }
                 }
             }
@@ -1353,6 +1560,102 @@ pub const Parser = struct {
                 continue;
             }
             return self.fail(error.InvalidDoctype, self.pos);
+        }
+    }
+
+    fn checkElementGroupNesting(
+        self: *Parser,
+        declaration: []const u8,
+        ids: []const u32,
+        base: usize,
+    ) Error!void {
+        var stack: [128]struct { offset: usize, id: u32 } = undefined;
+        var depth: usize = 0;
+        for (declaration, 0..) |byte, index| {
+            switch (byte) {
+                '(' => {
+                    if (depth < stack.len and base + index < ids.len) {
+                        stack[depth] = .{
+                            .offset = index,
+                            .id = ids[base + index],
+                        };
+                        depth += 1;
+                    }
+                },
+                ')' => {
+                    if (depth == 0) continue;
+                    depth -= 1;
+                    const open = stack[depth];
+                    const close_id = if (base + index < ids.len)
+                        ids[base + index]
+                    else
+                        0;
+                    if (open.id != close_id) {
+                        if (self.scratchAllocator()) |allocator| {
+                            try self.pe_issues.append(allocator, .{
+                                .offset = base + open.offset,
+                            });
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    fn checkConditionalSectionNesting(
+        self: *Parser,
+        bytes: []const u8,
+        ids: []const u32,
+    ) Error!void {
+        var position: usize = 0;
+        while (std.mem.indexOfPos(u8, bytes, position, "<![")) |start| {
+            var depth: usize = 1;
+            var scan = start + 3;
+            var quote: u8 = 0;
+            while (scan < bytes.len and depth > 0) {
+                if (quote != 0) {
+                    if (bytes[scan] == quote) quote = 0;
+                    scan += 1;
+                    continue;
+                }
+                if (bytes[scan] == '"' or bytes[scan] == '\'') {
+                    quote = bytes[scan];
+                    scan += 1;
+                    continue;
+                }
+                if (std.mem.startsWith(u8, bytes[scan..], "<![")) {
+                    depth += 1;
+                    scan += 3;
+                    continue;
+                }
+                if (std.mem.startsWith(u8, bytes[scan..], "]]>")) {
+                    depth -= 1;
+                    scan += 3;
+                    continue;
+                }
+                scan += 1;
+            }
+            if (depth != 0) return;
+            const end = scan - 3;
+            var keyword_start = start + 3;
+            while (keyword_start < end and
+                chars.isWhitespace(bytes[keyword_start]))
+            {
+                keyword_start += 1;
+            }
+            const start_id = if (start < ids.len) ids[start] else 0;
+            const keyword_id = if (keyword_start < ids.len)
+                ids[keyword_start]
+            else
+                0;
+            const end_id = if (end < ids.len) ids[end] else 0;
+            if (start_id != keyword_id or start_id != end_id) {
+                if (self.scratchAllocator()) |allocator| {
+                    try self.pe_issues.append(allocator, .{ .offset = start });
+                }
+            }
+            position = scan;
         }
     }
 
@@ -1466,11 +1769,15 @@ pub const Parser = struct {
         const saved_base = self.resolver_base;
         self.resolver_base = system_id;
         defer self.resolver_base = saved_base;
+        const saved_external = self.in_external_subset;
+        self.in_external_subset = true;
+        defer self.in_external_subset = saved_external;
 
         const body = try self.stripTextDeclaration(decoded);
         var expanded: std.ArrayList(u8) = .empty;
         try self.expandSubset(body, true, &expanded, allocator, 0, true);
         const stripped = try self.stripBoundaries(expanded.items, allocator);
+        try self.checkConditionalSectionNesting(stripped.bytes, stripped.ids);
         var filtered: std.ArrayList(u8) = .empty;
         var filtered_ids: std.ArrayList(u32) = .empty;
         try evaluateConditionals(
@@ -1601,11 +1908,12 @@ pub const Parser = struct {
         const entity = self.parameter_entities.find(name) orelse {
             return self.fail(error.UndeclaredEntity, 0);
         };
-        if (mark_boundaries) try out.append(allocator, 0x01);
+        const mark = mark_boundaries and entity.from_external;
+        if (mark) try out.append(allocator, 0x01);
         if (add_spaces) try out.append(allocator, ' ');
         defer {
             if (add_spaces) out.append(allocator, ' ') catch {};
-            if (mark_boundaries) out.append(allocator, 0x02) catch {};
+            if (mark) out.append(allocator, 0x02) catch {};
         }
         if (entity.external) {
             const resolver = self.options.resolver orelse return;
@@ -1625,6 +1933,9 @@ pub const Parser = struct {
             const saved_base = self.resolver_base;
             self.resolver_base = entity.system_id;
             defer self.resolver_base = saved_base;
+            const saved_external = self.in_external_subset;
+            self.in_external_subset = true;
+            defer self.in_external_subset = saved_external;
 
             const decoded_body = try decodeParameterReplacement(
                 self,
@@ -1757,6 +2068,7 @@ pub const Parser = struct {
                     .name = name,
                     .value = value,
                     .offset = base,
+                    .from_external = self.in_external_subset,
                 }) catch {
                     return self.fail(error.EntityLimitExceeded, base);
                 };
@@ -1765,6 +2077,7 @@ pub const Parser = struct {
                     .name = name,
                     .value = value,
                     .offset = base,
+                    .from_external = self.in_external_subset,
                 }) catch {
                     return self.fail(error.EntityLimitExceeded, base);
                 };
@@ -1789,11 +2102,12 @@ pub const Parser = struct {
         }
 
         var unparsed = false;
+        var notation: []const u8 = "";
         if (scanner.skipWhitespace() != 0 and scanner.startsWith("NDATA")) {
             if (parameter) return scanner.fail(error.InvalidDoctype);
             if (!scanner.eatKeyword("NDATA")) return scanner.fail(error.InvalidDoctype);
             try scanner.requireWhitespace();
-            _ = try scanner.scanName();
+            notation = try scanner.scanName();
             _ = scanner.skipWhitespace();
             unparsed = true;
         }
@@ -1808,6 +2122,7 @@ pub const Parser = struct {
                 .system_id = system_id,
                 .public_id = public_id,
                 .offset = base,
+                .from_external = self.in_external_subset,
             }) catch {
                 return self.fail(error.EntityLimitExceeded, base);
             };
@@ -1819,7 +2134,9 @@ pub const Parser = struct {
                 .system_id = system_id,
                 .public_id = public_id,
                 .unparsed = unparsed,
+                .notation = notation,
                 .offset = base,
+                .from_external = self.in_external_subset,
             }) catch {
                 return self.fail(error.EntityLimitExceeded, base);
             };
@@ -1844,13 +2161,18 @@ pub const Parser = struct {
         var scanner = DtdScanner.init(self, self.pos, end);
         if (!scanner.eat("<!ELEMENT")) return scanner.fail(error.InvalidDoctype);
         try scanner.requireWhitespace();
-        _ = try scanner.scanName();
+        const element_name = try scanner.scanName();
         try scanner.requireWhitespace();
-        try scanContentSpec(&scanner);
+        const model = try scanContentSpec(&scanner);
         _ = scanner.skipWhitespace();
         try scanner.expectByte('>');
         if (!scanner.atEnd()) return scanner.fail(error.InvalidDoctype);
         self.pos = end + 1;
+        try self.addElementDecl(.{
+            .name = element_name,
+            .model = model,
+            .from_external = self.in_external_subset,
+        });
     }
 
     fn scanAttlistDeclaration(self: *Parser) Error!void {
@@ -1868,8 +2190,10 @@ pub const Parser = struct {
             if (whitespace == 0) return scanner.fail(error.InvalidDoctype);
             const attribute_name = try scanner.scanName();
             try scanner.requireWhitespace();
-            const tokenized = try scanAttType(&scanner);
-            if (tokenized and self.tokenized_attr_count < self.tokenized_attrs.len) {
+            const attr_type = try scanAttType(&scanner);
+            if (attr_type != .cdata and
+                self.tokenized_attr_count < self.tokenized_attrs.len)
+            {
                 self.tokenized_attrs[self.tokenized_attr_count] = .{
                     .element = element_name,
                     .name = attribute_name,
@@ -1878,19 +2202,15 @@ pub const Parser = struct {
             }
             try scanner.requireWhitespace();
             const default_decl = try scanDefaultDecl(&scanner);
-            if (self.attribute_decl_count < self.attribute_decls.len and
-                !self.hasAttributeDecl(element_name, attribute_name))
-            {
-                self.attribute_decls[self.attribute_decl_count] = .{
-                    .element = element_name,
-                    .name = attribute_name,
-                    .tokenized = tokenized,
-                    .default_kind = default_decl.kind,
-                    .default_value = default_decl.value,
-                    .value_offset = default_decl.value_offset,
-                };
-                self.attribute_decl_count += 1;
-            }
+            try self.addAttributeDecl(.{
+                .element = element_name,
+                .name = attribute_name,
+                .attr_type = attr_type,
+                .default_kind = default_decl.kind,
+                .default_value = default_decl.value,
+                .value_offset = default_decl.value_offset,
+                .from_external = self.in_external_subset,
+            });
         }
         if (!scanner.atEnd()) return scanner.fail(error.InvalidDoctype);
         self.pos = end + 1;
@@ -1908,19 +2228,21 @@ pub const Parser = struct {
             return scanner.fail(error.InvalidQualifiedName);
         }
         try scanner.requireWhitespace();
+        var public_id: ?[]const u8 = null;
+        var system_id: ?[]const u8 = null;
         if (scanner.eatKeyword("SYSTEM")) {
             try scanner.requireWhitespace();
-            _ = try scanner.scanQuoted();
+            system_id = try scanner.scanQuoted();
         } else if (scanner.eatKeyword("PUBLIC")) {
             try scanner.requireWhitespace();
             const public_base = scanner.abs() + 1;
-            const public_id = try scanner.scanQuoted();
-            try self.validatePubidLiteral(public_id, public_base);
+            public_id = try scanner.scanQuoted();
+            try self.validatePubidLiteral(public_id.?, public_base);
             const whitespace = scanner.skipWhitespace();
             if (whitespace != 0 and
                 (scanner.peek() == '"' or scanner.peek() == '\''))
             {
-                _ = try scanner.scanQuoted();
+                system_id = try scanner.scanQuoted();
             }
         } else {
             return scanner.fail(error.InvalidDoctype);
@@ -1929,6 +2251,12 @@ pub const Parser = struct {
         try scanner.expectByte('>');
         if (!scanner.atEnd()) return scanner.fail(error.InvalidDoctype);
         self.pos = end + 1;
+        try self.addNotationDecl(.{
+            .name = notation_name,
+            .public_id = public_id,
+            .system_id = system_id,
+            .from_external = self.in_external_subset,
+        });
     }
 
     fn validateEntityValueSyntax(
@@ -2168,6 +2496,9 @@ pub const Parser = struct {
         if (entities.isPredefined(body)) return;
 
         if (self.entity_table.find(body)) |entity| {
+            if (self.standalone == true and entity.from_external) {
+                return self.fail(error.UndeclaredEntity, offset + 1);
+            }
             if (entity.unparsed) {
                 return self.fail(error.UnparsedEntityReference, offset);
             }
@@ -2188,6 +2519,9 @@ pub const Parser = struct {
         if (self.standalone != true and
             (self.external_subset_present or self.parameter_reference_seen))
         {
+            if (self.scratchAllocator()) |allocator| {
+                try self.undeclared_refs.append(allocator, body);
+            }
             return;
         }
         return self.fail(error.UndeclaredEntity, offset + 1);
@@ -2378,8 +2712,81 @@ pub const Parser = struct {
         return false;
     }
 
+    fn addElementDecl(self: *Parser, decl: ElementDecl) Error!void {
+        if (self.findElementDecl(decl.name) != null) {
+            if (self.scratchAllocator()) |allocator| {
+                try self.duplicate_elements.append(allocator, decl.name);
+            }
+            return;
+        }
+        if (self.scratchAllocator()) |allocator| {
+            try self.element_decls.append(allocator, decl);
+            return;
+        }
+        if (self.fixed_element_count < self.fixed_element_decls.len) {
+            self.fixed_element_decls[self.fixed_element_count] = decl;
+            self.fixed_element_count += 1;
+        }
+    }
+
+    fn addAttributeDecl(self: *Parser, decl: AttributeDecl) Error!void {
+        if (self.hasAttributeDecl(decl.element, decl.name)) return;
+        if (self.scratchAllocator()) |allocator| {
+            try self.attribute_decls.append(allocator, decl);
+            return;
+        }
+        if (self.fixed_attribute_count < self.fixed_attribute_decls.len) {
+            self.fixed_attribute_decls[self.fixed_attribute_count] = decl;
+            self.fixed_attribute_count += 1;
+        }
+    }
+
+    fn addNotationDecl(self: *Parser, decl: NotationDecl) Error!void {
+        for (self.notation_decls.items) |existing| {
+            if (std.mem.eql(u8, existing.name, decl.name)) {
+                if (self.scratchAllocator()) |allocator| {
+                    try self.duplicate_notations.append(allocator, decl.name);
+                }
+                return;
+            }
+        }
+        for (self.fixed_notation_decls[0..self.fixed_notation_count]) |existing| {
+            if (std.mem.eql(u8, existing.name, decl.name)) {
+                if (self.scratchAllocator()) |allocator| {
+                    try self.duplicate_notations.append(allocator, decl.name);
+                }
+                return;
+            }
+        }
+        if (self.scratchAllocator()) |allocator| {
+            try self.notation_decls.append(allocator, decl);
+            return;
+        }
+        if (self.fixed_notation_count < self.fixed_notation_decls.len) {
+            self.fixed_notation_decls[self.fixed_notation_count] = decl;
+            self.fixed_notation_count += 1;
+        }
+    }
+
+    fn findElementDecl(self: *const Parser, name: []const u8) ?*const ElementDecl {
+        for (self.element_decls.items) |*decl| {
+            if (std.mem.eql(u8, decl.name, name)) return decl;
+        }
+        for (self.fixed_element_decls[0..self.fixed_element_count]) |*decl| {
+            if (std.mem.eql(u8, decl.name, name)) return decl;
+        }
+        return null;
+    }
+
     fn hasAttributeDecl(self: *const Parser, element: []const u8, name: []const u8) bool {
-        for (self.attribute_decls[0..self.attribute_decl_count]) |decl| {
+        for (self.attribute_decls.items) |decl| {
+            if (std.mem.eql(u8, decl.element, element) and
+                std.mem.eql(u8, decl.name, name))
+            {
+                return true;
+            }
+        }
+        for (self.fixed_attribute_decls[0..self.fixed_attribute_count]) |decl| {
             if (std.mem.eql(u8, decl.element, element) and
                 std.mem.eql(u8, decl.name, name))
             {
@@ -2394,8 +2801,9 @@ pub const Parser = struct {
         element: []const u8,
         attr_count: *usize,
     ) Error!void {
-        for (self.attribute_decls[0..self.attribute_decl_count]) |decl| {
+        for (self.attribute_decls.items) |decl| {
             if (!std.mem.eql(u8, decl.element, element)) continue;
+            if (self.standalone == true and decl.from_external) continue;
             var present = false;
             for (self.attrs[0..attr_count.*]) |attr| {
                 if (std.mem.eql(u8, attr.name, decl.name)) {
@@ -2423,7 +2831,44 @@ pub const Parser = struct {
                 .namespace_uri = "",
                 .colon = name_info.colon,
                 .name_key = attributeNameKey(decl.name),
-                .tokenized = decl.tokenized,
+                .needs_decode = true,
+                .tokenized = decl.tokenized(),
+                .from_default = true,
+            };
+            attr_count.* += 1;
+        }
+        for (self.fixed_attribute_decls[0..self.fixed_attribute_count]) |decl| {
+            if (!std.mem.eql(u8, decl.element, element)) continue;
+            if (self.standalone == true and decl.from_external) continue;
+            var present = false;
+            for (self.attrs[0..attr_count.*]) |attr| {
+                if (std.mem.eql(u8, attr.name, decl.name)) {
+                    present = true;
+                    break;
+                }
+            }
+            if (present) continue;
+            const value = switch (decl.default_kind) {
+                .value, .fixed => decl.default_value,
+                .required, .implied => continue,
+            };
+            if (attr_count.* == self.options.max_attributes) {
+                return self.fail(error.AttributeLimitExceeded, 0);
+            }
+            const name_info = chars.scanNameInfo(decl.name);
+            self.attrs[attr_count.*] = .{
+                .name = decl.name,
+                .value = value,
+                .name_range = .{ .start = 0, .end = 0 },
+                .value_range = .{
+                    .start = @intCast(decl.value_offset),
+                    .end = @intCast(decl.value_offset + value.len),
+                },
+                .namespace_uri = "",
+                .colon = name_info.colon,
+                .name_key = attributeNameKey(decl.name),
+                .needs_decode = true,
+                .tokenized = decl.tokenized(),
                 .from_default = true,
             };
             attr_count.* += 1;
@@ -2586,8 +3031,20 @@ const DtdScanner = struct {
     }
 };
 
-fn scanContentSpec(scanner: *DtdScanner) Error!void {
-    if (scanner.eatKeyword("EMPTY") or scanner.eatKeyword("ANY")) return;
+var fallback_content_node: ContentNode = .{ .name = "" };
+
+fn newContentNode(
+    allocator: std.mem.Allocator,
+    value: ContentNode,
+) Error!*ContentNode {
+    const node = try allocator.create(ContentNode);
+    node.* = value;
+    return node;
+}
+
+fn scanContentSpec(scanner: *DtdScanner) Error!ContentModel {
+    if (scanner.eatKeyword("EMPTY")) return .empty;
+    if (scanner.eatKeyword("ANY")) return .any;
     if (scanner.peek() != '(') return scanner.fail(error.InvalidDoctype);
 
     var look = scanner.index + 1;
@@ -2597,10 +3054,12 @@ fn scanContentSpec(scanner: *DtdScanner) Error!void {
     if (std.mem.startsWith(u8, scanner.text[look..], "#PCDATA")) {
         return scanMixed(scanner);
     }
-    return scanChildrenGroup(scanner);
+    return .{ .children = try scanChildrenGroup(scanner) };
 }
 
-fn scanMixed(scanner: *DtdScanner) Error!void {
+fn scanMixed(scanner: *DtdScanner) Error!ContentModel {
+    const allocator = scanner.parser.scratchAllocator();
+    var names: std.ArrayList([]const u8) = .empty;
     try scanner.expectByte('(');
     _ = scanner.skipWhitespace();
     if (!scanner.eat("#PCDATA")) return scanner.fail(error.InvalidDoctype);
@@ -2610,7 +3069,8 @@ fn scanMixed(scanner: *DtdScanner) Error!void {
         has_names = true;
         scanner.index += 1;
         _ = scanner.skipWhitespace();
-        _ = try scanner.scanName();
+        const name = try scanner.scanName();
+        if (allocator) |a| try names.append(a, name);
         _ = scanner.skipWhitespace();
     }
     try scanner.expectByte(')');
@@ -2619,12 +3079,17 @@ fn scanMixed(scanner: *DtdScanner) Error!void {
     } else if (has_names) {
         return scanner.fail(error.InvalidDoctype);
     }
+    if (allocator) |a| return .{ .mixed = try names.toOwnedSlice(a) };
+    return .any;
 }
 
-fn scanChildrenGroup(scanner: *DtdScanner) Error!void {
+fn scanChildrenGroup(scanner: *DtdScanner) Error!*ContentNode {
+    const allocator = scanner.parser.scratchAllocator();
     try scanner.expectByte('(');
     _ = scanner.skipWhitespace();
-    try scanContentParticle(scanner);
+    var children: std.ArrayList(*ContentNode) = .empty;
+    const first = try scanContentParticle(scanner);
+    if (allocator) |a| try children.append(a, first);
     _ = scanner.skipWhitespace();
 
     var separator: ?u8 = null;
@@ -2636,66 +3101,133 @@ fn scanChildrenGroup(scanner: *DtdScanner) Error!void {
         separator = byte;
         scanner.index += 1;
         _ = scanner.skipWhitespace();
-        try scanContentParticle(scanner);
+        const child = try scanContentParticle(scanner);
+        if (allocator) |a| try children.append(a, child);
         _ = scanner.skipWhitespace();
     }
     try scanner.expectByte(')');
-    if (scanner.peek()) |byte| {
-        if (byte == '?' or byte == '*' or byte == '+') scanner.index += 1;
+
+    var node: *ContentNode = &fallback_content_node;
+    if (allocator) |a| {
+        const items = try children.toOwnedSlice(a);
+        node = if (separator == '|')
+            try newContentNode(a, .{ .choice = items })
+        else
+            try newContentNode(a, .{ .sequence = items });
     }
+    if (scanner.peek()) |byte| {
+        if (byte == '?' or byte == '*' or byte == '+') {
+            if (allocator) |a| {
+                node = try newContentNode(a, .{ .quantifier = .{
+                    .node = node,
+                    .min = if (byte == '+') 1 else 0,
+                    .max = if (byte == '?') 1 else null,
+                } });
+            }
+            scanner.index += 1;
+        }
+    }
+    return node;
 }
 
-fn scanContentParticle(scanner: *DtdScanner) Error!void {
+fn scanContentParticle(scanner: *DtdScanner) Error!*ContentNode {
+    const allocator = scanner.parser.scratchAllocator();
     _ = scanner.skipWhitespace();
     if (scanner.peek() == '(') {
-        try scanChildrenGroup(scanner);
-        return;
+        return scanChildrenGroup(scanner);
     }
-    _ = try scanner.scanName();
+    const name = try scanner.scanName();
+    var node: *ContentNode = &fallback_content_node;
+    if (allocator) |a| {
+        node = try newContentNode(a, .{ .name = name });
+    }
     if (scanner.peek()) |byte| {
-        if (byte == '?' or byte == '*' or byte == '+') scanner.index += 1;
+        if (byte == '?' or byte == '*' or byte == '+') {
+            if (allocator) |a| {
+                node = try newContentNode(a, .{ .quantifier = .{
+                    .node = node,
+                    .min = if (byte == '+') 1 else 0,
+                    .max = if (byte == '?') 1 else null,
+                } });
+            }
+            scanner.index += 1;
+        }
     }
+    return node;
 }
 
-fn scanAttType(scanner: *DtdScanner) Error!bool {
-    if (scanner.eatKeyword("CDATA")) return false;
-    const tokenized = [_][]const u8{
-        "IDREFS",   "IDREF",   "ID", "ENTITIES", "ENTITY",
-        "NMTOKENS", "NMTOKEN",
+fn scanAttType(scanner: *DtdScanner) Error!AttributeType {
+    if (scanner.eatKeyword("CDATA")) return .cdata;
+    const tokenized = [_]struct { []const u8, AttributeType }{
+        .{ "IDREFS", .idrefs },
+        .{ "IDREF", .idref },
+        .{ "ID", .id },
+        .{ "ENTITIES", .entities },
+        .{ "ENTITY", .entity },
+        .{ "NMTOKENS", .nmtokens },
+        .{ "NMTOKEN", .nmtoken },
     };
-    for (tokenized) |keyword| {
-        if (scanner.eatKeyword(keyword)) return true;
+    for (tokenized) |entry| {
+        if (scanner.eatKeyword(entry[0])) return entry[1];
     }
     if (scanner.eatKeyword("NOTATION")) {
         try scanner.requireWhitespace();
         try scanner.expectByte('(');
         _ = scanner.skipWhitespace();
-        _ = try scanner.scanName();
-        _ = scanner.skipWhitespace();
-        while (scanner.peek() == '|') {
-            scanner.index += 1;
-            _ = scanner.skipWhitespace();
-            _ = try scanner.scanName();
-            _ = scanner.skipWhitespace();
-        }
+        const names = try scanNameList(scanner, ')');
         try scanner.expectByte(')');
-        return true;
+        return .{ .notation = names };
     }
     if (scanner.peek() == '(') {
         scanner.index += 1;
         _ = scanner.skipWhitespace();
-        _ = try scanner.scanNmtoken();
-        _ = scanner.skipWhitespace();
-        while (scanner.peek() == '|') {
-            scanner.index += 1;
-            _ = scanner.skipWhitespace();
-            _ = try scanner.scanNmtoken();
-            _ = scanner.skipWhitespace();
-        }
+        const names = try scanNmtokenList(scanner, ')');
         try scanner.expectByte(')');
-        return true;
+        return .{ .enumeration = names };
     }
     return scanner.fail(error.InvalidDoctype);
+}
+
+fn scanNameList(
+    scanner: *DtdScanner,
+    terminator: u8,
+) Error![]const []const u8 {
+    const allocator = scanner.parser.scratchAllocator();
+    var names: std.ArrayList([]const u8) = .empty;
+    const first = try scanner.scanName();
+    if (allocator) |a| try names.append(a, first);
+    _ = scanner.skipWhitespace();
+    while (scanner.peek() == '|') {
+        scanner.index += 1;
+        _ = scanner.skipWhitespace();
+        const name = try scanner.scanName();
+        if (allocator) |a| try names.append(a, name);
+        _ = scanner.skipWhitespace();
+    }
+    _ = terminator;
+    if (allocator) |a| return names.toOwnedSlice(a);
+    return &.{};
+}
+
+fn scanNmtokenList(
+    scanner: *DtdScanner,
+    terminator: u8,
+) Error![]const []const u8 {
+    const allocator = scanner.parser.scratchAllocator();
+    var names: std.ArrayList([]const u8) = .empty;
+    const first = try scanner.scanNmtoken();
+    if (allocator) |a| try names.append(a, first);
+    _ = scanner.skipWhitespace();
+    while (scanner.peek() == '|') {
+        scanner.index += 1;
+        _ = scanner.skipWhitespace();
+        const name = try scanner.scanNmtoken();
+        if (allocator) |a| try names.append(a, name);
+        _ = scanner.skipWhitespace();
+    }
+    _ = terminator;
+    if (allocator) |a| return names.toOwnedSlice(a);
+    return &.{};
 }
 
 const DefaultDecl = struct {
@@ -3187,6 +3719,12 @@ fn declaredVersion11(input: []const u8, start: usize) ?bool {
         index += 1;
     }
     return std.mem.eql(u8, declaration[value_start..index], "1.1");
+}
+
+fn hasXml11LineSeparator(input: []const u8, version: chars.Version) bool {
+    if (version != .xml_1_1) return false;
+    return std.mem.indexOf(u8, input, "\xC2\x85") != null or
+        std.mem.indexOf(u8, input, "\xE2\x80\xA8") != null;
 }
 
 fn hasXml11LineEnds(input: []const u8) bool {
