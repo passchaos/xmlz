@@ -24,6 +24,13 @@ if (!result.isValid()) {
 }
 ```
 
+Compact syntax schemas are parsed from UTF-8 text:
+
+```zig
+var schema = try xmlz.rng.parseCompact(allocator, compact_source);
+defer schema.deinit();
+```
+
 Includes and external references use the resolver in `Options`:
 
 ```zig
@@ -44,7 +51,14 @@ var schema = try xmlz.rng.parseWithOptions(allocator, &schema_document, .{
   `mixed`, `list`, `text`, `empty`, and `notAllowed`.
 - `data` and `value` patterns with the XML Schema datatype library
   (`http://www.w3.org/2001/XMLSchema-datatypes`), the compatibility library,
-  and the empty library (`string`, `token`).
+  and the empty library (`string`, `token`), including `except` patterns.
+- The compact syntax (`rng.parseCompact`): declarations (`namespace`,
+  `default namespace`, `datatypes`), `grammar`/`start`/`define` with
+  `=`/`|=`/`&=` combine, nested grammars, `parent`, name classes with
+  `*`/`p:*`/`except`, grouping with `,`/`&`/`|`, postfix `?`/`*`/`+`,
+  `list`/`mixed`/`text`/`empty`/`notAllowed`, data/value patterns with
+  parameters, literal concatenation (`~`), `\x{...}` escapes, quoted
+  keywords, comments, and annotations.
 - Datatype parameters: `pattern`, `enumeration`, `minInclusive`,
   `maxInclusive`, `minExclusive`, `maxExclusive`, `length`, `minLength`,
   `maxLength`, `totalDigits`, and `fractionDigits`.
@@ -55,7 +69,8 @@ var schema = try xmlz.rng.parseWithOptions(allocator, &schema_document, .{
 
 ## Limitations
 
-- The compact syntax is not supported; only the XML syntax is parsed.
+- Compact `include` and `external` are not supported yet; use the XML syntax
+  for schemas that need them.
 - Unsupported datatype libraries are rejected at schema compile time.
 - `notAllowed` inside repetition and other patterns that libxml2 rejects as
   invalid schemas may be accepted; schema-level constraint checking is
@@ -75,5 +90,15 @@ classes, namespaces, data/value/list patterns, facets, includes, define
 overrides, and external references. Expected output:
 
 ```text
-64/64 RELAX NG differential checks passed
+67/67 RELAX NG differential checks passed
+```
+
+Compact syntax is verified separately against XML-syntax twins:
+
+```sh
+zig build rng-compact-diff
+```
+
+```text
+27/27 RELAX NG compact differential checks passed
 ```

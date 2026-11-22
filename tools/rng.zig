@@ -71,14 +71,22 @@ pub fn main(init: std.process.Init) !void {
     var args = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
     defer args.deinit();
     _ = args.next();
-    const schema_path = args.next() orelse return error.MissingSchema;
+    var compact = false;
+    var schema_path = args.next() orelse return error.MissingSchema;
+    if (std.mem.eql(u8, schema_path, "--compact")) {
+        compact = true;
+        schema_path = args.next() orelse return error.MissingSchema;
+    }
     const instance_path = args.next() orelse return error.MissingInstance;
 
-    var schema_file = loadFile(init, schema_path) catch |err| {
-        std.debug.print("schema load failed: {s}\n", .{@errorName(err)});
-        std.process.exit(2);
-    };
-    defer schema_file.deinit(init.gpa);
+    var schema_file: ?Loaded = null;
+    if (!compact) {
+        schema_file = loadFile(init, schema_path) catch |err| {
+            std.debug.print("schema load failed: {s}\n", .{@errorName(err)});
+            std.process.exit(2);
+        };
+    }
+    defer if (schema_file) |*loaded| loaded.deinit(init.gpa);
     var instance_file = loadFile(init, instance_path) catch |err| {
         std.debug.print("instance load failed: {s}\n", .{@errorName(err)});
         std.process.exit(2);
@@ -87,9 +95,33 @@ pub fn main(init: std.process.Init) !void {
 
     var loader: SchemaLoader = .{ .allocator = init.gpa, .io = init.io };
     defer loader.deinit();
-    var compiled = xmlz.rng.parseWithOptions(
+    var compiled = if (compact) blk: {
+        const source = std.Io.Dir.cwd().readFileAlloc(
+            init.io,
+            schema_path,
+            init.gpa,
+            .limited(64 * 1024 * 1024),
+        ) catch |err| {
+            std.debug.print("schema load failed: {s}\n", .{@errorName(err)});
+            std.process.exit(2);
+        };
+        defer init.gpa.free(source);
+        const decoded = xmlz.encoding.decodeAlloc(
+            init.gpa,
+            source,
+            64 * 1024 * 1024,
+        ) catch |err| {
+            std.debug.print("schema load failed: {s}\n", .{@errorName(err)});
+            std.process.exit(2);
+        };
+        defer init.gpa.free(decoded);
+        break :blk xmlz.rng.parseCompact(init.gpa, decoded) catch |err| {
+            std.debug.print("schema error: {s}\n", .{@errorName(err)});
+            std.process.exit(2);
+        };
+    } else xmlz.rng.parseWithOptions(
         init.gpa,
-        &schema_file.document,
+        &schema_file.?.document,
         .{
             .resolver = .{ .context = &loader, .load = loadSchema },
             .base = schema_path,

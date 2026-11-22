@@ -246,6 +246,21 @@ CASES = [
             "<a><b/></a>",
         ],
     ),
+    (
+        "data-except",
+        f"""<element xmlns="{RNG}"
+          datatypeLibrary="http://www.w3.org/2001/XMLSchema-datatypes"
+          name="root">
+          <data type="integer">
+            <except><value>0</value></except>
+          </data>
+        </element>""",
+        [
+            "<root>5</root>",
+            "<root>0</root>",
+            "<root>x</root>",
+        ],
+    ),
 ]
 
 BUNDLES = [

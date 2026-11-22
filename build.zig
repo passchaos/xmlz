@@ -171,6 +171,17 @@ pub fn build(b: *std.Build) void {
     );
     rng_diff_step.dependOn(&rng_diff.step);
 
+    const rng_compact_diff = b.addSystemCommand(&.{
+        "python3",
+        "tools/rng_compact_diff.py",
+    });
+    rng_compact_diff.addFileArg(rng_tool.getEmittedBin());
+    const rng_compact_diff_step = b.step(
+        "rng-compact-diff",
+        "Differential RELAX NG compact syntax checks against libxml2",
+    );
+    rng_compact_diff_step.dependOn(&rng_compact_diff.step);
+
     const check_step = b.step("check", "Run unit tests and the conformance suite");
     check_step.dependOn(test_step);
     check_step.dependOn(conformance_step);

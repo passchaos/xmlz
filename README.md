@@ -69,12 +69,13 @@ then exposes them through a pull parser and reusable lexical primitives.
   identity constraints, includes/imports/redefines, notation declarations,
   built-in datatypes, facets, abstract types, `block`/`final`, and
   `xsi:type` / `xsi:nil`, with 248/248 differential checks against libxml2.
-- **RELAX NG.** `rng.parse` compiles XML-syntax grammars and `rng.validate`
-  checks instances against element/attribute name classes, group, choice,
-  interleave, optional, repetition, mixed content, text, empty, data/value
-  (XSD datatype libraries and facets), lists, recursive defines, includes,
-  nested grammars, and external references, with 64/64 differential checks
-  against libxml2.
+- **RELAX NG.** `rng.parse` compiles XML-syntax grammars, `rng.parseCompact`
+  parses the compact syntax, and `rng.validate` checks instances against
+  element/attribute name classes, group, choice, interleave, optional,
+  repetition, mixed content, text, empty, data/value (XSD datatype libraries,
+  facets, `except`), lists, recursive defines, includes, nested grammars,
+  `parentRef`, and external references, with 67/67 differential checks against
+  libxml2 plus 27/27 compact-syntax checks.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.
@@ -107,7 +108,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | XML Base / xml:id | Complete (RFC 3986 resolution, base chains, ID normalization) |
 | XSLT 1.0 | Core engine (templates, modes, params, sorting, copy, AVTs) |
 | XML Schema 1.0 | Core validation (structures, datatypes, facets, groups, identity) |
-| RELAX NG | XML syntax (patterns, datatypes, includes, external refs) |
+| RELAX NG | XML and compact syntax (patterns, datatypes, includes, external refs) |
 
 ## Quick start
 
@@ -245,6 +246,7 @@ zig build c14n-diff     # canonicalization differential checks vs libxml2
 zig build xslt-diff     # XSLT differential checks vs libxslt (needs lxml)
 zig build xsd-diff      # XML Schema differential checks vs libxml2 (needs lxml)
 zig build rng-diff      # RELAX NG differential checks vs libxml2 (needs lxml)
+zig build rng-compact-diff # RELAX NG compact syntax checks vs XML twins (needs lxml)
 zig build test          # includes deterministic mutation/fuzz smoke tests
 ```
 

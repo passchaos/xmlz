@@ -54,6 +54,8 @@ pub const Data = struct {
     kind: datatypes.Kind,
     facets: datatypes.Facets = .{},
     params: []const Param = &.{},
+    /// Optional `except` pattern; matching values are rejected.
+    except: ?*const Pattern = null,
 };
 
 pub const Value = struct {
@@ -597,12 +599,18 @@ const Parser = struct {
         const kind = try self.datatypeKind(library, type_name);
         var facets: datatypes.Facets = .{};
         var params: std.ArrayList(Param) = .empty;
+        var except: ?*const Pattern = null;
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element) continue;
             if (!std.mem.eql(u8, node.ns, structure_namespace)) continue;
             if (std.mem.eql(u8, node.local, "annotation")) continue;
+            if (std.mem.eql(u8, node.local, "except")) {
+                if (except != null) return error.InvalidPattern;
+                except = try self.singlePatternChild(child);
+                continue;
+            }
             if (!std.mem.eql(u8, node.local, "param")) {
                 return error.InvalidPattern;
             }
@@ -618,6 +626,7 @@ const Parser = struct {
             .kind = kind,
             .facets = facets,
             .params = try params.toOwnedSlice(self.arena),
+            .except = except,
         } });
     }
 

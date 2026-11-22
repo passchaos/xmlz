@@ -117,8 +117,9 @@ errors with node paths.
 
 ## RELAX NG
 
-`rng` parses the RELAX NG XML syntax into a pattern tree with resolved
-`define` references, including `div`, `include`, and `externalRef`. Instance
+`rng` parses both the RELAX NG XML syntax and the compact syntax into a
+pattern tree with resolved `define` references, including `div`, `include`,
+and `externalRef` (XML syntax). Instance
 validation computes pattern derivatives over attributes (order-independent),
 child elements, and text runs. Attributes are consumed first, then the
 residual pattern is matched against the children; interleave, choice,
@@ -147,5 +148,7 @@ by the conformance harness.
   `lxml`.
 - `zig build rng-diff` compares RELAX NG validation results against libxml2 via
   `lxml`.
+- `zig build rng-compact-diff` validates compact-syntax schemas against
+  equivalent XML-syntax twins using libxml2.
 - `zig build bench` compares pull/DOM throughput against expat, pugixml, and
   libxml2 with reproducible generated input.

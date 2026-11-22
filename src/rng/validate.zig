@@ -564,7 +564,9 @@ const Matcher = struct {
         switch (resolved.*) {
             .text => return self.singleton(try self.make(.empty)),
             .data => |data| {
-                if (!self.validateData(data, text)) return &.{};
+                if (!try self.dataMatches(data, element_id, text)) {
+                    return &.{};
+                }
                 return self.singleton(try self.make(.empty));
             },
             .value => |value| {
@@ -734,7 +736,9 @@ const Matcher = struct {
         const resolved = (try self.resolve(pattern)) orelse return &.{};
         switch (resolved.*) {
             .data => |data| {
-                if (!self.validateData(data, token)) return &.{};
+                if (!try self.dataMatches(data, dom.null_node, token)) {
+                    return &.{};
+                }
                 return self.singleton(try self.make(.empty));
             },
             .value => |value| {
@@ -830,7 +834,7 @@ const Matcher = struct {
         const resolved = (try self.resolve(pattern)) orelse return false;
         switch (resolved.*) {
             .text => return true,
-            .data => |data| return self.validateData(data, text),
+            .data => |data| return self.dataMatches(data, element_id, text),
             .value => |value| return self.valueMatches(value, element_id, text),
             .list => |item| return self.matchTokens(item, text),
             .choice => |pair| {
@@ -870,6 +874,21 @@ const Matcher = struct {
             .not_allowed => return false,
             else => return false,
         }
+    }
+
+    fn dataMatches(
+        self: *Matcher,
+        data: schema.Data,
+        element_id: dom.NodeId,
+        text: []const u8,
+    ) Error!bool {
+        if (!self.validateData(data, text)) return false;
+        if (data.except) |except| {
+            if (try self.valuePatternMatches(except, element_id, text)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     fn validateData(
@@ -980,7 +999,7 @@ const Matcher = struct {
             .zero_or_more => true,
             .one_or_more => |inner| self.nullable(inner),
             .mixed => true,
-            .data => |data| self.validateData(data, ""),
+            .data => |data| try self.dataMatches(data, dom.null_node, ""),
             .value => |value| self.valueMatches(value, dom.null_node, ""),
             .list => |item| self.matchTokens(item, ""),
             .ref, .parent_ref => unreachable,

@@ -4,6 +4,7 @@ const std = @import("std");
 const dom = @import("../dom.zig");
 
 pub const schema = @import("schema.zig");
+pub const compact = @import("compact.zig");
 pub const validate_mod = @import("validate.zig");
 
 pub const Schema = schema.Schema;
@@ -21,6 +22,14 @@ pub fn parse(
     document: *const dom.Document,
 ) Error!Schema {
     return schema.parse(allocator, document);
+}
+
+/// Compile a schema written in the RELAX NG compact syntax.
+pub fn parseCompact(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) Error!Schema {
+    return compact.parse(allocator, source);
 }
 
 /// Compile a schema with include/externalRef resolution.
@@ -44,6 +53,7 @@ pub fn validate(
 test {
     std.testing.refAllDecls(@This());
     _ = schema;
+    _ = compact;
     _ = validate_mod;
 }
 
@@ -242,4 +252,174 @@ test "RELAX NG nested grammars and parentRef" {
     try expectValid(schema_source, "<a/>");
     try expectValid(schema_source, "<a><a><a/></a></a>");
     try expectInvalid(schema_source, "<a><b/></a>");
+}
+
+fn expectCompactValid(compact_source: []const u8, instance: []const u8) !void {
+    var compiled = try parseCompact(testing.allocator, compact_source);
+    defer compiled.deinit();
+    var instance_document = try parseDocument(instance);
+    defer instance_document.deinit();
+    var result = try validate(&compiled, testing.allocator, &instance_document);
+    defer result.deinit();
+    try testing.expect(result.isValid());
+}
+
+fn expectCompactInvalid(compact_source: []const u8, instance: []const u8) !void {
+    var compiled = try parseCompact(testing.allocator, compact_source);
+    defer compiled.deinit();
+    var instance_document = try parseDocument(instance);
+    defer instance_document.deinit();
+    var result = try validate(&compiled, testing.allocator, &instance_document);
+    defer result.deinit();
+    try testing.expect(!result.isValid());
+}
+
+test "RELAX NG compact syntax validates sequences and attributes" {
+    const compact_source =
+        \\element root {
+        \\  attribute id { text },
+        \\  element item { text },
+        \\  element item { text }
+        \\}
+    ;
+    try expectCompactValid(
+        compact_source,
+        "<root id='1'><item>a</item><item>b</item></root>",
+    );
+    try expectCompactInvalid(
+        compact_source,
+        "<root><item>a</item><item>b</item></root>",
+    );
+    try expectCompactInvalid(
+        compact_source,
+        "<root id='1'><item>a</item></root>",
+    );
+}
+
+test "RELAX NG compact syntax validates choices and repetition" {
+    const compact_source =
+        \\element root {
+        \\  (element a { text } | element b { empty })+,
+        \\  attribute id { text }?
+        \\}
+    ;
+    try expectCompactValid(compact_source, "<root><a>x</a><b/><a>y</a></root>");
+    try expectCompactValid(compact_source, "<root id='1'><b/></root>");
+    try expectCompactInvalid(compact_source, "<root/>");
+    try expectCompactInvalid(compact_source, "<root><c/></root>");
+}
+
+test "RELAX NG compact syntax validates namespaces and name classes" {
+    const compact_source =
+        \\default namespace = "urn:t"
+        \\namespace t = "urn:t"
+        \\element root {
+        \\  element * - t:skip { empty }*
+        \\}
+    ;
+    try expectCompactValid(
+        compact_source,
+        "<root xmlns='urn:t'><a/><b/></root>",
+    );
+    try expectCompactInvalid(
+        compact_source,
+        "<root xmlns='urn:t'><skip/></root>",
+    );
+    try expectCompactValid(
+        compact_source,
+        "<root xmlns='urn:t'><skip xmlns=''/></root>",
+    );
+}
+
+test "RELAX NG compact syntax validates data, values, and lists" {
+    const compact_source =
+        \\element root {
+        \\  element n { xsd:integer { minInclusive = "10" } },
+        \\  element tag { "fixed" },
+        \\  element ids { list { xsd:integer+ } },
+        \\  element nonZero { xsd:integer - "0" }
+        \\}
+    ;
+    try expectCompactValid(
+        compact_source,
+        "<root><n>10</n><tag>fixed</tag><ids>1 2 3</ids><nonZero>5</nonZero></root>",
+    );
+    try expectCompactInvalid(
+        compact_source,
+        "<root><n>5</n><tag>fixed</tag><ids>1</ids><nonZero>5</nonZero></root>",
+    );
+    try expectCompactInvalid(
+        compact_source,
+        "<root><n>10</n><tag>other</tag><ids>1</ids><nonZero>5</nonZero></root>",
+    );
+    try expectCompactInvalid(
+        compact_source,
+        "<root><n>10</n><tag>fixed</tag><ids>1</ids><nonZero>0</nonZero></root>",
+    );
+}
+
+test "RELAX NG compact syntax validates grammars and parent references" {
+    const compact_source =
+        \\grammar {
+        \\  start = chain
+        \\  chain = grammar {
+        \\    start = element a { parent chain? }
+        \\  }
+        \\}
+    ;
+    try expectCompactValid(compact_source, "<a/>");
+    try expectCompactValid(compact_source, "<a><a><a/></a></a>");
+    try expectCompactInvalid(compact_source, "<a><b/></a>");
+}
+
+test "RELAX NG compact syntax supports escapes and quoted keywords" {
+    const compact_source =
+        \\element \x{72}oot {
+        \\  \text = element item { empty }
+        \\  text
+        \\}
+    ;
+    // The quoted define name is only meaningful inside a grammar; using it as
+    // a pattern atom is an error, so keep this schema invalid.
+    const compiled = parseCompact(testing.allocator, compact_source);
+    if (compiled) |value| {
+        var schema_value = value;
+        schema_value.deinit();
+        return error.TestUnexpectedResult;
+    } else |err| {
+        try testing.expect(
+            err == error.InvalidPattern or err == error.InvalidSchema,
+        );
+    }
+
+    const valid_source =
+        \\element \x{72}oot { element item { empty } }
+    ;
+    try expectCompactValid(valid_source, "<root><item/></root>");
+    try expectCompactInvalid(valid_source, "<root><other/></root>");
+}
+
+test "RELAX NG compact syntax rejects mixed operators without parentheses" {
+    const compiled = parseCompact(
+        testing.allocator,
+        "element root { element a { empty } | element b { empty }, element c { empty } }",
+    );
+    if (compiled) |value| {
+        var schema_value = value;
+        schema_value.deinit();
+        return error.TestUnexpectedResult;
+    } else |err| {
+        try testing.expect(err == error.InvalidPattern);
+    }
+}
+
+test "RELAX NG compact syntax skips comments and annotations" {
+    const compact_source =
+        \\# leading comment
+        \\element root {
+        \\  ## documentation
+        \\  [ doc="yes" ] element item { empty } >> note
+        \\}
+    ;
+    try expectCompactValid(compact_source, "<root><item/></root>");
 }
