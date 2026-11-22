@@ -79,6 +79,10 @@ pub const AttributeDecl = struct {
     }
 };
 
+const AttributeDefaultMap = std.StringHashMapUnmanaged(
+    std.ArrayListUnmanaged(*AttributeDecl),
+);
+
 pub const NotationDecl = struct {
     name: []const u8,
     public_id: ?[]const u8 = null,
@@ -327,6 +331,8 @@ pub const Parser = struct {
     attrs: [max_attributes]Attribute = undefined,
     entity_table: entities.Table = .{},
     parameter_entities: entities.Table = .{},
+    /// Attribute declarations grouped by element name, built on first use.
+    attribute_defaults: ?AttributeDefaultMap = null,
     /// True while re-scanning an external subset whose entity declarations
     /// were already parsed and validated during parameter-entity expansion.
     entities_preparsed: bool = false,
@@ -3002,82 +3008,76 @@ pub const Parser = struct {
         element: []const u8,
         attr_count: *usize,
     ) Error!void {
-        for (self.attribute_decls.items) |decl| {
-            if (!std.mem.eql(u8, decl.element, element)) continue;
-            if (self.standalone == true and decl.from_external) continue;
-            var present = false;
-            for (self.attrs[0..attr_count.*]) |attr| {
-                if (std.mem.eql(u8, attr.name, decl.name)) {
-                    present = true;
-                    break;
-                }
+        try self.ensureAttributeDefaultIndex();
+        if (self.attribute_defaults) |map| {
+            const decls = map.get(element) orelse return;
+            for (decls.items) |decl| {
+                try self.applyDefaultDecl(decl, attr_count);
             }
-            if (present) continue;
-            const value = switch (decl.default_kind) {
-                .value, .fixed => decl.default_value,
-                .required, .implied => continue,
-            };
-            if (attr_count.* == self.options.max_attributes) {
-                return self.fail(error.AttributeLimitExceeded, 0);
-            }
-            const name_info = chars.scanNameInfo(decl.name);
-            self.attrs[attr_count.*] = .{
-                .name = decl.name,
-                .value = value,
-                .name_range = .{ .start = 0, .end = 0 },
-                .value_range = .{
-                    .start = @intCast(decl.value_offset),
-                    .end = @intCast(decl.value_offset + value.len),
-                },
-                .namespace_uri = if (namespace.Resolver.isNamespaceDeclaration(
-                    decl.name,
-                )) namespace.xmlns_uri else "",
-                .colon = name_info.colon,
-                .name_key = attributeNameKey(decl.name),
-                .needs_decode = true,
-                .tokenized = decl.tokenized(),
-                .from_default = true,
-            };
-            attr_count.* += 1;
+            return;
         }
-        for (self.fixed_attribute_decls[0..self.fixed_attribute_count]) |decl| {
-            if (!std.mem.eql(u8, decl.element, element)) continue;
-            if (self.standalone == true and decl.from_external) continue;
-            var present = false;
-            for (self.attrs[0..attr_count.*]) |attr| {
-                if (std.mem.eql(u8, attr.name, decl.name)) {
-                    present = true;
-                    break;
-                }
-            }
-            if (present) continue;
-            const value = switch (decl.default_kind) {
-                .value, .fixed => decl.default_value,
-                .required, .implied => continue,
-            };
-            if (attr_count.* == self.options.max_attributes) {
-                return self.fail(error.AttributeLimitExceeded, 0);
-            }
-            const name_info = chars.scanNameInfo(decl.name);
-            self.attrs[attr_count.*] = .{
-                .name = decl.name,
-                .value = value,
-                .name_range = .{ .start = 0, .end = 0 },
-                .value_range = .{
-                    .start = @intCast(decl.value_offset),
-                    .end = @intCast(decl.value_offset + value.len),
-                },
-                .namespace_uri = if (namespace.Resolver.isNamespaceDeclaration(
-                    decl.name,
-                )) namespace.xmlns_uri else "",
-                .colon = name_info.colon,
-                .name_key = attributeNameKey(decl.name),
-                .needs_decode = true,
-                .tokenized = decl.tokenized(),
-                .from_default = true,
-            };
-            attr_count.* += 1;
+        for (self.attribute_decls.items) |*decl| {
+            try self.applyDefaultDecl(decl, attr_count);
         }
+        for (self.fixed_attribute_decls[0..self.fixed_attribute_count]) |*decl| {
+            try self.applyDefaultDecl(decl, attr_count);
+        }
+    }
+
+    /// Group attribute declarations by element name so applying defaults for
+    /// an element does not scan every declaration in the DTD.
+    fn ensureAttributeDefaultIndex(self: *Parser) Error!void {
+        if (self.attribute_defaults != null) return;
+        const allocator = self.scratchAllocator() orelse return;
+        var map: AttributeDefaultMap = .empty;
+        for (self.attribute_decls.items) |*decl| {
+            const entry = try map.getOrPut(allocator, decl.element);
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            try entry.value_ptr.append(allocator, decl);
+        }
+        for (self.fixed_attribute_decls[0..self.fixed_attribute_count]) |*decl| {
+            const entry = try map.getOrPut(allocator, decl.element);
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            try entry.value_ptr.append(allocator, decl);
+        }
+        self.attribute_defaults = map;
+    }
+
+    fn applyDefaultDecl(
+        self: *Parser,
+        decl: *const AttributeDecl,
+        attr_count: *usize,
+    ) Error!void {
+        if (self.standalone == true and decl.from_external) return;
+        for (self.attrs[0..attr_count.*]) |attr| {
+            if (std.mem.eql(u8, attr.name, decl.name)) return;
+        }
+        const value = switch (decl.default_kind) {
+            .value, .fixed => decl.default_value,
+            .required, .implied => return,
+        };
+        if (attr_count.* == self.options.max_attributes) {
+            return self.fail(error.AttributeLimitExceeded, 0);
+        }
+        const name_info = chars.scanNameInfo(decl.name);
+        self.attrs[attr_count.*] = .{
+            .name = decl.name,
+            .value = value,
+            .name_range = .{ .start = 0, .end = 0 },
+            .value_range = .{
+                .start = @intCast(decl.value_offset),
+                .end = @intCast(decl.value_offset + value.len),
+            },
+            .namespace_uri = if (namespace.Resolver.isNamespaceDeclaration(
+                decl.name,
+            )) namespace.xmlns_uri else "",
+            .colon = name_info.colon,
+            .name_key = attributeNameKey(decl.name),
+            .needs_decode = true,
+            .tokenized = decl.tokenized(),
+            .from_default = true,
+        };
+        attr_count.* += 1;
     }
 
     fn isTokenizedAttribute(
