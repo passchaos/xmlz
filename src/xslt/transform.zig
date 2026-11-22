@@ -417,7 +417,47 @@ const SpaceRuleEntry = struct {
 };
 
 const TemplateList = std.ArrayListUnmanaged(u32);
-const NameTemplateMap = std.HashMapUnmanaged(
+
+/// Candidates for one node category, split by template mode. A template
+/// without a mode only matches `apply-templates` without a mode, and a
+/// template with a mode only matches that mode, so each lookup scans exactly
+/// one list.
+const ModeBucket = struct {
+    default: TemplateList = .empty,
+    by_mode: std.StringHashMapUnmanaged(TemplateList) = .empty,
+
+    fn add(
+        self: *ModeBucket,
+        allocator: std.mem.Allocator,
+        mode: ?[]const u8,
+        index: u32,
+    ) !void {
+        if (mode) |name| {
+            const entry = try self.by_mode.getOrPut(allocator, name);
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            try entry.value_ptr.append(allocator, index);
+        } else {
+            try self.default.append(allocator, index);
+        }
+    }
+
+    fn candidates(self: *const ModeBucket, mode: ?[]const u8) []const u32 {
+        if (mode) |name| {
+            const list = self.by_mode.get(name) orelse return &.{};
+            return list.items;
+        }
+        return self.default.items;
+    }
+};
+
+const NameBucketMap = std.HashMapUnmanaged(
+    NameKey,
+    ModeBucket,
+    NameKeyContext,
+    80,
+);
+
+const NameListMap = std.HashMapUnmanaged(
     NameKey,
     TemplateList,
     NameKeyContext,
@@ -426,23 +466,23 @@ const NameTemplateMap = std.HashMapUnmanaged(
 
 /// Inverted index from nodes to the template rules that can match them.
 /// Non-simple patterns are evaluated once per document into `nodes`; simple
-/// patterns are bucketed by node kind and expanded name. Matching a node then
-/// costs a hash lookup plus a few short category scans instead of testing
-/// every rule in the stylesheet.
+/// patterns are bucketed by node kind, expanded name, and mode. Matching a
+/// node then costs a hash lookup plus a few short category scans instead of
+/// testing every rule in the stylesheet.
 const TemplateIndex = struct {
     allocator: std.mem.Allocator,
     nodes: std.AutoHashMapUnmanaged(NodeKey, TemplateList) = .empty,
-    element_any: TemplateList = .empty,
-    elements: NameTemplateMap = .empty,
-    elements_by_uri: std.StringHashMapUnmanaged(TemplateList) = .empty,
-    attribute_any: TemplateList = .empty,
-    attributes: NameTemplateMap = .empty,
-    attributes_by_uri: std.StringHashMapUnmanaged(TemplateList) = .empty,
-    text: TemplateList = .empty,
-    comment: TemplateList = .empty,
-    processing_instruction: TemplateList = .empty,
-    child_node: TemplateList = .empty,
-    document_node: TemplateList = .empty,
+    element_any: ModeBucket = .{},
+    elements: NameBucketMap = .empty,
+    elements_by_uri: std.StringHashMapUnmanaged(ModeBucket) = .empty,
+    attribute_any: ModeBucket = .{},
+    attributes: NameBucketMap = .empty,
+    attributes_by_uri: std.StringHashMapUnmanaged(ModeBucket) = .empty,
+    text: ModeBucket = .{},
+    comment: ModeBucket = .{},
+    processing_instruction: ModeBucket = .{},
+    child_node: ModeBucket = .{},
+    document_node: ModeBucket = .{},
 
     fn init(allocator: std.mem.Allocator) TemplateIndex {
         return .{ .allocator = allocator };
@@ -463,29 +503,57 @@ const TemplateIndex = struct {
         self: *TemplateIndex,
         index: u32,
         matcher: PatternMatcher,
+        mode: ?[]const u8,
     ) !void {
         switch (matcher) {
-            .simple => |pattern| try self.addSimple(index, pattern),
-            .structural => |pattern| try self.addStructural(index, pattern),
+            .simple => |pattern| try self.addSimple(index, pattern, mode),
+            .structural => |pattern| try self.addStructural(
+                index,
+                pattern,
+                mode,
+            ),
         }
     }
 
-    fn addSimple(self: *TemplateIndex, index: u32, pattern: SimplePattern) !void {
+    fn addSimple(
+        self: *TemplateIndex,
+        index: u32,
+        pattern: SimplePattern,
+        mode: ?[]const u8,
+    ) !void {
         switch (pattern) {
-            .element_any => try self.element_any.append(self.allocator, index),
-            .element_name => |name| try self.addElementName(index, name),
-            .attribute_any => try self.attribute_any.append(
+            .element_any => try self.element_any.add(
                 self.allocator,
+                mode,
                 index,
             ),
-            .attribute_name => |name| try self.addAttributeName(index, name),
-            .text => try self.text.append(self.allocator, index),
-            .comment => try self.comment.append(self.allocator, index),
-            .processing_instruction => try self.processing_instruction.append(
+            .element_name => |name| try self.addElementName(
+                index,
+                name,
+                mode,
+            ),
+            .attribute_any => try self.attribute_any.add(
                 self.allocator,
+                mode,
                 index,
             ),
-            .child_node => try self.child_node.append(self.allocator, index),
+            .attribute_name => |name| try self.addAttributeName(
+                index,
+                name,
+                mode,
+            ),
+            .text => try self.text.add(self.allocator, mode, index),
+            .comment => try self.comment.add(self.allocator, mode, index),
+            .processing_instruction => try self.processing_instruction.add(
+                self.allocator,
+                mode,
+                index,
+            ),
+            .child_node => try self.child_node.add(
+                self.allocator,
+                mode,
+                index,
+            ),
         }
     }
 
@@ -493,39 +561,51 @@ const TemplateIndex = struct {
         self: *TemplateIndex,
         index: u32,
         pattern: StructuralPattern,
+        mode: ?[]const u8,
     ) !void {
         for (pattern.alternatives) |steps| {
             if (steps.len == 0) {
-                try self.document_node.append(self.allocator, index);
+                try self.document_node.add(self.allocator, mode, index);
                 continue;
             }
             const last = steps[steps.len - 1];
             switch (last.node_test) {
                 .name => |name| {
                     if (last.axis == .attribute) {
-                        try self.addAttributeName(index, name);
+                        try self.addAttributeName(index, name, mode);
                     } else {
-                        try self.addElementName(index, name);
+                        try self.addElementName(index, name, mode);
                     }
                 },
-                .node => try self.child_node.append(self.allocator, index),
-                .text => try self.text.append(self.allocator, index),
-                .comment => try self.comment.append(self.allocator, index),
-                .processing_instruction => try self.processing_instruction.append(
+                .node => try self.child_node.add(
                     self.allocator,
+                    mode,
+                    index,
+                ),
+                .text => try self.text.add(self.allocator, mode, index),
+                .comment => try self.comment.add(self.allocator, mode, index),
+                .processing_instruction => try self.processing_instruction.add(
+                    self.allocator,
+                    mode,
                     index,
                 ),
             }
         }
     }
 
-    fn addElementName(self: *TemplateIndex, index: u32, name: NamePattern) !void {
+    fn addElementName(
+        self: *TemplateIndex,
+        index: u32,
+        name: NamePattern,
+        mode: ?[]const u8,
+    ) !void {
         if (name.local) |local| {
             try appendName(
                 &self.elements,
                 self.allocator,
                 .{ .uri = name.uri, .local = local },
                 index,
+                mode,
             );
         } else if (name.check_namespace) {
             try appendUri(
@@ -533,9 +613,10 @@ const TemplateIndex = struct {
                 self.allocator,
                 name.uri,
                 index,
+                mode,
             );
         } else {
-            try self.element_any.append(self.allocator, index);
+            try self.element_any.add(self.allocator, mode, index);
         }
     }
 
@@ -543,6 +624,7 @@ const TemplateIndex = struct {
         self: *TemplateIndex,
         index: u32,
         name: NamePattern,
+        mode: ?[]const u8,
     ) !void {
         if (name.local) |local| {
             try appendName(
@@ -550,6 +632,7 @@ const TemplateIndex = struct {
                 self.allocator,
                 .{ .uri = name.uri, .local = local },
                 index,
+                mode,
             );
         } else if (name.check_namespace) {
             try appendUri(
@@ -557,15 +640,16 @@ const TemplateIndex = struct {
                 self.allocator,
                 name.uri,
                 index,
+                mode,
             );
         } else {
-            try self.attribute_any.append(self.allocator, index);
+            try self.attribute_any.add(self.allocator, mode, index);
         }
     }
 };
 
-fn appendName(
-    map: *NameTemplateMap,
+fn appendIndex(
+    map: *NameListMap,
     allocator: std.mem.Allocator,
     key: NameKey,
     index: u32,
@@ -575,15 +659,28 @@ fn appendName(
     try entry.value_ptr.append(allocator, index);
 }
 
+fn appendName(
+    map: *NameBucketMap,
+    allocator: std.mem.Allocator,
+    key: NameKey,
+    index: u32,
+    mode: ?[]const u8,
+) !void {
+    const entry = try map.getOrPut(allocator, key);
+    if (!entry.found_existing) entry.value_ptr.* = .{};
+    try entry.value_ptr.add(allocator, mode, index);
+}
+
 fn appendUri(
-    map: *std.StringHashMapUnmanaged(TemplateList),
+    map: *std.StringHashMapUnmanaged(ModeBucket),
     allocator: std.mem.Allocator,
     uri: []const u8,
     index: u32,
+    mode: ?[]const u8,
 ) !void {
     const entry = try map.getOrPut(allocator, uri);
-    if (!entry.found_existing) entry.value_ptr.* = .empty;
-    try entry.value_ptr.append(allocator, index);
+    if (!entry.found_existing) entry.value_ptr.* = .{};
+    try entry.value_ptr.add(allocator, mode, index);
 }
 
 const KeyQuery = struct {
@@ -711,7 +808,7 @@ const Runtime = struct {
     /// Global variable index by name.
     global_index: std.StringHashMapUnmanaged(usize) = .empty,
     /// Attribute sets by expanded name, in declaration order.
-    attribute_set_index: NameTemplateMap = .empty,
+    attribute_set_index: NameListMap = .empty,
     /// Documents whose template matches have been indexed, keyed by the
     /// merged document-root node id.
     built_match_roots: std.AutoHashMapUnmanaged(usize, void) = .empty,
@@ -1530,7 +1627,11 @@ const Runtime = struct {
             else
                 continue;
             self.template_states[index].matcher = matcher;
-            try self.template_index.addMatcher(@intCast(index), matcher);
+            try self.template_index.addMatcher(
+                @intCast(index),
+                matcher,
+                template.mode,
+            );
         }
         try self.buildAttributeSetIndex();
         // The source document is indexed eagerly; documents loaded later by
@@ -2386,94 +2487,83 @@ const Runtime = struct {
                 switch (value.kind) {
                     .element => {
                         self.addCandidates(
-                            index.element_any.items,
+                            index.element_any.candidates(mode),
                             node,
-                            mode,
                             maximum_precedence,
                             best,
                         );
                         if (index.elements.get(.{
                             .uri = value.ns,
                             .local = value.local,
-                        })) |list| {
+                        })) |bucket| {
                             self.addCandidates(
-                                list.items,
+                                bucket.candidates(mode),
                                 node,
-                                mode,
                                 maximum_precedence,
                                 best,
                             );
                         }
-                        if (index.elements_by_uri.get(value.ns)) |list| {
+                        if (index.elements_by_uri.get(value.ns)) |bucket| {
                             self.addCandidates(
-                                list.items,
+                                bucket.candidates(mode),
                                 node,
-                                mode,
                                 maximum_precedence,
                                 best,
                             );
                         }
                         self.addCandidates(
-                            index.child_node.items,
+                            index.child_node.candidates(mode),
                             node,
-                            mode,
                             maximum_precedence,
                             best,
                         );
                     },
                     .text => {
                         self.addCandidates(
-                            index.text.items,
+                            index.text.candidates(mode),
                             node,
-                            mode,
                             maximum_precedence,
                             best,
                         );
                         self.addCandidates(
-                            index.child_node.items,
+                            index.child_node.candidates(mode),
                             node,
-                            mode,
                             maximum_precedence,
                             best,
                         );
                     },
                     .comment => {
                         self.addCandidates(
-                            index.comment.items,
+                            index.comment.candidates(mode),
                             node,
-                            mode,
                             maximum_precedence,
                             best,
                         );
                         self.addCandidates(
-                            index.child_node.items,
+                            index.child_node.candidates(mode),
                             node,
-                            mode,
                             maximum_precedence,
                             best,
                         );
                     },
                     .processing_instruction => {
                         self.addCandidates(
-                            index.processing_instruction.items,
+                            index.processing_instruction.candidates(mode),
                             node,
-                            mode,
                             maximum_precedence,
                             best,
                         );
                         self.addCandidates(
-                            index.child_node.items,
+                            index.child_node.candidates(mode),
                             node,
-                            mode,
                             maximum_precedence,
                             best,
                         );
                     },
                     .document => {
                         self.addCandidates(
-                            index.document_node.items,
+                            index.document_node.candidates(mode),
                             node,
-                            mode,
                             maximum_precedence,
                             best,
                         );
@@ -2485,29 +2575,26 @@ const Runtime = struct {
                     attribute.element,
                 )[attribute.index];
                 self.addCandidates(
-                    index.attribute_any.items,
+                    index.attribute_any.candidates(mode),
                     node,
-                    mode,
                     maximum_precedence,
                     best,
                 );
                 if (index.attributes.get(.{
                     .uri = name.ns,
                     .local = name.localName(),
-                })) |list| {
+                })) |bucket| {
                     self.addCandidates(
-                        list.items,
+                        bucket.candidates(mode),
                         node,
-                        mode,
                         maximum_precedence,
                         best,
                     );
                 }
-                if (index.attributes_by_uri.get(name.ns)) |list| {
+                if (index.attributes_by_uri.get(name.ns)) |bucket| {
                     self.addCandidates(
-                        list.items,
+                        bucket.candidates(mode),
                         node,
-                        mode,
                         maximum_precedence,
                         best,
                     );
@@ -2521,7 +2608,6 @@ const Runtime = struct {
         self: *Runtime,
         candidates: []const u32,
         node: xpath.NodeRef,
-        mode: ?[]const u8,
         maximum_precedence: usize,
         best: *?*const compile.Template,
     ) void {
@@ -2529,7 +2615,6 @@ const Runtime = struct {
             const state = &self.template_states[index];
             const template = state.template;
             if (template.precedence >= maximum_precedence) continue;
-            if (!modeMatches(template.mode, mode)) continue;
             const matched = switch (state.matcher.?) {
                 .simple => |pattern| self.simpleMatches(pattern, node),
                 .structural => |pattern| self.structuralMatches(pattern, node),
@@ -3039,7 +3124,7 @@ const Runtime = struct {
 
     fn buildAttributeSetIndex(self: *Runtime) Error!void {
         for (self.stylesheet.attribute_sets, 0..) |*set, index| {
-            try appendName(
+            try appendIndex(
                 &self.attribute_set_index,
                 self.allocator,
                 .{ .uri = set.name_uri, .local = set.name },

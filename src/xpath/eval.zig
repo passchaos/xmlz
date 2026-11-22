@@ -187,6 +187,7 @@ const Evaluator = struct {
                 }
             }
         }
+        var initial: [1]value.NodeRef = undefined;
         var current: []const value.NodeRef = undefined;
         if (path.start) |start_expression| {
             current = try self.requireNodeSet(
@@ -194,15 +195,22 @@ const Evaluator = struct {
                 context,
             );
         } else if (path.absolute) {
-            const nodes = try self.allocator.alloc(value.NodeRef, 1);
-            nodes[0] = documentRootOf(context, context.node);
-            current = nodes;
+            initial[0] = documentRootOf(context, context.node);
+            current = initial[0..1];
         } else {
-            const nodes = try self.allocator.alloc(value.NodeRef, 1);
-            nodes[0] = context.node;
-            current = nodes;
+            initial[0] = context.node;
+            current = initial[0..1];
         }
-
+        if (path.steps.len == 0) {
+            // Nothing consumes the initial node, so it cannot stay on this
+            // stack frame.
+            const nodes = try self.allocator.alloc(
+                value.NodeRef,
+                current.len,
+            );
+            @memcpy(nodes, current);
+            return .{ .node_set = nodes };
+        }
         for (path.steps) |step| {
             current = try self.applyStep(context, current, step);
         }
@@ -680,13 +688,14 @@ const Evaluator = struct {
         axis: ast.Axis,
         prefix_uri: ?[]const u8,
     ) Error!bool {
-        const node_kind = self.kind(context, node);
         switch (node_test) {
             .node => return true,
-            .text => return node_kind == .text,
-            .comment => return node_kind == .comment,
+            .text => return self.kind(context, node) == .text,
+            .comment => return self.kind(context, node) == .comment,
             .processing_instruction => |target| {
-                if (node_kind != .processing_instruction) return false;
+                if (self.kind(context, node) != .processing_instruction) {
+                    return false;
+                }
                 if (target) |expected| {
                     const id = node.node;
                     return std.mem.eql(
@@ -699,7 +708,10 @@ const Evaluator = struct {
             },
             .name => |name_test| {
                 if (axis == .namespace_axis) {
-                    if (node_kind != .namespace) return false;
+                    switch (node) {
+                        .namespace_node => {},
+                        else => return false,
+                    }
                     if (name_test.prefix != null) {
                         // Namespace nodes have a null namespace URI, so a
                         // prefixed name test can never match one.
@@ -715,29 +727,38 @@ const Evaluator = struct {
                     }
                     return true;
                 }
-                if (axis == .attribute) {
-                    if (node_kind != .attribute) return false;
-                } else {
-                    if (node_kind != .element) return false;
+                var local: []const u8 = undefined;
+                var uri: []const u8 = undefined;
+                switch (node) {
+                    .node => |id| {
+                        if (axis == .attribute) return false;
+                        const node_value = context.document.node(id);
+                        if (node_value.kind != .element) return false;
+                        local = node_value.local;
+                        uri = node_value.ns;
+                    },
+                    .attribute => |attr| {
+                        if (axis != .attribute) return false;
+                        const node_value = context.document.attributesOf(
+                            attr.element,
+                        )[attr.index];
+                        local = node_value.localName();
+                        uri = node_value.ns;
+                    },
+                    .namespace_node => return false,
                 }
                 if (name_test.prefix == null and name_test.local == null) {
                     return true;
                 }
                 if (name_test.local) |expected| {
-                    if (!std.mem.eql(u8, self.localName(context, node), expected)) {
-                        return false;
-                    }
+                    if (!std.mem.eql(u8, local, expected)) return false;
                 }
                 if (name_test.prefix != null) {
-                    const uri = prefix_uri orelse
+                    const expected_uri = prefix_uri orelse
                         return error.UndefinedPrefix;
-                    return std.mem.eql(
-                        u8,
-                        self.namespaceUri(context, node),
-                        uri,
-                    );
+                    return std.mem.eql(u8, uri, expected_uri);
                 }
-                return self.namespaceUri(context, node).len == 0;
+                return uri.len == 0;
             },
         }
     }
