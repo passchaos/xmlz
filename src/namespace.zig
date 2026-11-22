@@ -48,6 +48,38 @@ pub fn splitQName(raw: []const u8) Error!QName {
     return .{ .prefix = "", .local = raw, .raw = raw };
 }
 
+/// Split a QName whose bytes have already been validated as an XML `Name`.
+/// Only the namespace-specific constraints are checked: at most one colon,
+/// non-empty parts, and a NameStartChar at the beginning of the local part.
+pub fn splitQNameValidated(raw: []const u8) Error!QName {
+    if (raw.len == 0) return error.InvalidQualifiedName;
+    if (std.mem.indexOfScalar(u8, raw, ':')) |colon| {
+        if (colon == 0 or colon + 1 == raw.len) {
+            return error.InvalidQualifiedName;
+        }
+        if (std.mem.indexOfScalarPos(u8, raw, colon + 1, ':') != null) {
+            return error.InvalidQualifiedName;
+        }
+        const local = raw[colon + 1 ..];
+        if (local[0] < 0x80) {
+            if (!chars.isAsciiNameStartChar(local[0])) {
+                return error.InvalidQualifiedName;
+            }
+        } else {
+            const length = std.unicode.utf8ByteSequenceLength(local[0]) catch
+                return error.InvalidQualifiedName;
+            if (length > local.len) return error.InvalidQualifiedName;
+            const codepoint = std.unicode.utf8Decode(local[0..length]) catch
+                return error.InvalidQualifiedName;
+            if (!chars.isNCNameStartChar(codepoint)) {
+                return error.InvalidQualifiedName;
+            }
+        }
+        return .{ .prefix = raw[0..colon], .local = local, .raw = raw };
+    }
+    return .{ .prefix = "", .local = raw, .raw = raw };
+}
+
 pub const ResolvedName = struct {
     raw: []const u8,
     prefix: []const u8,
@@ -65,19 +97,28 @@ pub const Resolver = struct {
     bindings: [max_bindings]Binding = undefined,
     count: usize = 0,
     marks: [max_depth]usize = undefined,
+    default_marks: [max_depth][]const u8 = undefined,
+    default_ns: []const u8 = "",
     depth: usize = 0,
 
     pub fn reset(self: *Resolver) void {
         self.count = 0;
         self.depth = 0;
+        self.default_ns = "";
+    }
+
+    /// Enter an element scope without declaring namespaces.
+    pub fn enter(self: *Resolver) Error!void {
+        if (self.depth == max_depth) return error.NamespaceLimitExceeded;
+        self.marks[self.depth] = self.count;
+        self.default_marks[self.depth] = self.default_ns;
+        self.depth += 1;
     }
 
     /// Enter an element and process its namespace declarations. `attrs` may be
     /// any slice of structs with `name` and `value` fields.
     pub fn push(self: *Resolver, attrs: anytype) Error!void {
-        if (self.depth == max_depth) return error.NamespaceLimitExceeded;
-        self.marks[self.depth] = self.count;
-        self.depth += 1;
+        try self.enter();
 
         for (attrs) |attr| {
             if (std.mem.eql(u8, attr.name, "xmlns")) {
@@ -115,19 +156,11 @@ pub const Resolver = struct {
         std.debug.assert(self.depth != 0);
         self.depth -= 1;
         self.count = self.marks[self.depth];
+        self.default_ns = self.default_marks[self.depth];
     }
 
     pub fn resolve(self: *const Resolver, prefix: []const u8) ?[]const u8 {
-        if (prefix.len == 0) {
-            var index = self.count;
-            while (index > 0) {
-                index -= 1;
-                if (self.bindings[index].prefix.len == 0) {
-                    return self.bindings[index].uri;
-                }
-            }
-            return "";
-        }
+        if (prefix.len == 0) return self.default_ns;
         if (std.mem.eql(u8, prefix, "xml")) return xml_uri;
         var index = self.count;
         while (index > 0) {
@@ -143,7 +176,30 @@ pub const Resolver = struct {
         self: *const Resolver,
         raw: []const u8,
     ) Error!ResolvedName {
-        const qname = try splitQName(raw);
+        return self.resolveElementQName(try splitQName(raw));
+    }
+
+    /// Fast path for names already validated by the XML parser.
+    pub fn resolveElementNameValidated(
+        self: *const Resolver,
+        raw: []const u8,
+    ) Error!ResolvedName {
+        if (std.mem.indexOfScalar(u8, raw, ':') != null) {
+            return self.resolveElementQName(try splitQNameValidated(raw));
+        }
+        return .{
+            .raw = raw,
+            .prefix = "",
+            .local = raw,
+            .uri = self.resolve("") orelse "",
+        };
+    }
+
+    fn resolveElementQName(
+        self: *const Resolver,
+        qname: QName,
+    ) Error!ResolvedName {
+        const raw = qname.raw;
         if (std.mem.eql(u8, qname.prefix, "xmlns")) return error.ReservedPrefix;
         if (qname.prefix.len == 0) {
             const uri = self.resolve("") orelse "";
@@ -167,7 +223,25 @@ pub const Resolver = struct {
         self: *const Resolver,
         raw: []const u8,
     ) Error!ResolvedName {
-        const qname = try splitQName(raw);
+        return self.resolveAttributeQName(try splitQName(raw));
+    }
+
+    /// Fast path for names already validated by the XML parser.
+    pub fn resolveAttributeNameValidated(
+        self: *const Resolver,
+        raw: []const u8,
+    ) Error!ResolvedName {
+        if (std.mem.indexOfScalar(u8, raw, ':') != null) {
+            return self.resolveAttributeQName(try splitQNameValidated(raw));
+        }
+        return .{ .raw = raw, .prefix = "", .local = raw, .uri = "" };
+    }
+
+    fn resolveAttributeQName(
+        self: *const Resolver,
+        qname: QName,
+    ) Error!ResolvedName {
+        const raw = qname.raw;
         if (qname.prefix.len == 0) {
             return .{
                 .raw = raw,
@@ -186,15 +260,21 @@ pub const Resolver = struct {
         };
     }
 
-    pub fn isNamespaceDeclaration(name: []const u8) bool {
-        return std.mem.eql(u8, name, "xmlns") or
-            std.mem.startsWith(u8, name, "xmlns:");
+    pub inline fn isNamespaceDeclaration(name: []const u8) bool {
+        if (name.len < 5) return false;
+        if (name[0] != 'x' or name[1] != 'm' or name[2] != 'l' or
+            name[3] != 'n' or name[4] != 's')
+        {
+            return false;
+        }
+        return name.len == 5 or name[5] == ':';
     }
 
     fn addBinding(self: *Resolver, prefix: []const u8, uri: []const u8) Error!void {
         if (self.count == self.bindings.len) return error.NamespaceLimitExceeded;
         self.bindings[self.count] = .{ .prefix = prefix, .uri = uri };
         self.count += 1;
+        if (prefix.len == 0) self.default_ns = uri;
     }
 };
 

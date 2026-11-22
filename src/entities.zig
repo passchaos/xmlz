@@ -239,11 +239,14 @@ pub fn decodeTextAlloc(
     limits: Limits,
     options: Options,
 ) DecodeError![]const u8 {
-    if (std.mem.indexOfScalar(u8, raw, '&') == null and
-        std.mem.indexOfScalar(u8, raw, '\r') == null)
-    {
-        return raw;
+    var needs_work = false;
+    for (raw) |byte| {
+        if (byte == '&' or byte == '\r') {
+            needs_work = true;
+            break;
+        }
     }
+    if (!needs_work) return raw;
     var expansion: Expansion = .{
         .allocator = allocator,
         .table = table,
@@ -266,13 +269,17 @@ pub fn decodeAttributeAlloc(
     limits: Limits,
     options: Options,
 ) DecodeError![]const u8 {
-    if (std.mem.indexOfScalar(u8, raw, '&') == null and
-        std.mem.indexOfScalar(u8, raw, '\r') == null and
-        std.mem.indexOfScalar(u8, raw, '\n') == null and
-        std.mem.indexOfScalar(u8, raw, '\t') == null)
-    {
-        return raw;
+    var needs_work = false;
+    for (raw) |byte| {
+        switch (byte) {
+            '&', '\r', '\n', '\t' => {
+                needs_work = true;
+                break;
+            },
+            else => {},
+        }
     }
+    if (!needs_work) return raw;
     var expansion: Expansion = .{
         .allocator = allocator,
         .table = table,

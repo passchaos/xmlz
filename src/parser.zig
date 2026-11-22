@@ -18,9 +18,23 @@ const namespace = @import("namespace.zig");
 pub const max_open_elements = 512;
 pub const max_attributes = 64;
 
+/// Byte offsets are 32-bit; inputs larger than 4 GiB are rejected. This keeps
+/// attribute records compact for large DOMs while remaining far beyond typical
+/// XML document sizes.
 pub const SourceRange = struct {
-    start: usize,
-    end: usize,
+    start: u32,
+    end: u32,
+};
+
+pub const DefaultKind = enum { required, implied, fixed, value };
+
+pub const AttributeDecl = struct {
+    element: []const u8,
+    name: []const u8,
+    tokenized: bool,
+    default_kind: DefaultKind,
+    default_value: []const u8 = "",
+    value_offset: usize = 0,
 };
 
 pub const Options = struct {
@@ -92,6 +106,7 @@ pub const Error = error{
     UnexpectedDoctype,
     UnexpectedMarkup,
     RootElementMismatch,
+    InputTooLarge,
     UnsupportedParameterEntity,
     ExternalEntityDepthExceeded,
     InvalidQualifiedName,
@@ -103,6 +118,14 @@ pub const Error = error{
 };
 
 pub const Attribute = struct {
+    pub fn localName(self: Attribute) []const u8 {
+        return if (self.colon == 0xFFFF) self.name else self.name[self.colon + 1 ..];
+    }
+
+    pub fn prefixName(self: Attribute) []const u8 {
+        return if (self.colon == 0xFFFF) "" else self.name[0..self.colon];
+    }
+
     /// Raw qualified name exactly as authored.
     name: []const u8,
     /// Raw value: references are not expanded and line endings are untouched.
@@ -112,6 +135,18 @@ pub const Attribute = struct {
     /// Resolved namespace URI when namespace processing is enabled; empty for
     /// unprefixed attributes and namespace declarations.
     namespace_uri: []const u8 = "",
+    /// Byte offset of the first colon in the raw name, or 0xFFFF.
+    colon: u16 = 0xFFFF,
+    /// Cheap duplicate-detection key for the raw name.
+    name_key: u32 = 0,
+    /// True when the value needs entity decoding or whitespace normalization.
+    needs_decode: bool = false,
+    /// True when an ATTLIST declaration gives this attribute a tokenized
+    /// (non-CDATA) type, which changes attribute-value normalization.
+    tokenized: bool = false,
+    /// True when the attribute was supplied by an ATTLIST default rather than
+    /// authored on the element.
+    from_default: bool = false,
 };
 
 pub const StartElement = struct {
@@ -124,6 +159,10 @@ pub const StartElement = struct {
     depth: usize,
     /// Resolved namespace URI when namespace processing is enabled.
     namespace_uri: []const u8 = "",
+    /// Byte offset of the first colon in the raw name, or 0xFFFF.
+    colon: u16 = 0xFFFF,
+    /// True when the element declared at least one namespace.
+    has_namespace_decls: bool = false,
 };
 
 pub const EndElement = struct {
@@ -204,6 +243,8 @@ pub const Parser = struct {
         name: []const u8,
     } = undefined,
     tokenized_attr_count: usize = 0,
+    attribute_decls: [128]AttributeDecl = undefined,
+    attribute_decl_count: usize = 0,
     external_depth: usize = 0,
     external_checked: std.StaticBitSet(entities.max_entities) = .empty,
     fragment: bool = false,
@@ -302,6 +343,9 @@ pub const Parser = struct {
 
     /// Return the next event, or null at a clean end of document.
     pub fn next(self: *Parser) Error!?Event {
+        if (self.input.len > std.math.maxInt(u32)) {
+            return self.fail(error.InputTooLarge, 0);
+        }
         if (!self.utf8_input) {
             self.error_offset = 0;
             return error.NonUtf8Input;
@@ -373,14 +417,24 @@ pub const Parser = struct {
             return self.fail(error.UnexpectedEndOfInput, self.pos);
         }
         if (self.input[self.pos] == '<') {
-            if (self.startsWith("</")) return .{ .end_element = try self.scanEndTag() };
-            if (self.startsWith("<!--")) return .{ .comment = try self.scanComment() };
-            if (self.startsWith("<![CDATA[")) return .{ .cdata = try self.scanCdata() };
-            if (self.startsWith("<?")) {
-                return .{ .processing_instruction = try self.scanPi() };
+            const following = if (self.pos + 1 < self.input.len)
+                self.input[self.pos + 1]
+            else
+                0;
+            switch (following) {
+                '/' => return .{ .end_element = try self.scanEndTag() },
+                '!' => {
+                    if (self.startsWith("<!--")) {
+                        return .{ .comment = try self.scanComment() };
+                    }
+                    if (self.startsWith("<![CDATA[")) {
+                        return .{ .cdata = try self.scanCdata() };
+                    }
+                    return self.fail(error.UnexpectedMarkup, self.pos);
+                },
+                '?' => return .{ .processing_instruction = try self.scanPi() },
+                else => return .{ .start_element = try self.scanStartTag() },
             }
-            if (self.startsWith("<!")) return self.fail(error.UnexpectedMarkup, self.pos);
-            return .{ .start_element = try self.scanStartTag() };
         }
         if (try self.scanText()) |text| return .{ .text = text };
         return null;
@@ -406,13 +460,14 @@ pub const Parser = struct {
         self.pos += 1;
 
         const name_start = self.pos;
-        const name_len = chars.scanName(self.input[name_start..]);
-        if (name_len == 0) return self.fail(error.InvalidName, name_start);
-        const name = self.input[name_start .. name_start + name_len];
-        self.pos = name_start + name_len;
+        const name_info = chars.scanNameInfo(self.input[name_start..]);
+        if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
+        const name = self.input[name_start .. name_start + name_info.len];
+        self.pos = name_start + name_info.len;
 
         var attr_count: usize = 0;
         var self_closing = false;
+        var has_namespace_decls = false;
         while (true) {
             const before_whitespace = self.pos;
             self.skipWhitespace();
@@ -441,80 +496,113 @@ pub const Parser = struct {
                 },
             }
 
-            const attr = try self.scanAttribute();
+            if (attr_count == self.options.max_attributes) {
+                return self.fail(error.AttributeLimitExceeded, self.pos);
+            }
+            try self.scanAttributeInto(&self.attrs[attr_count]);
+            const attr = &self.attrs[attr_count];
+            if (self.options.namespaces and
+                namespace.Resolver.isNamespaceDeclaration(attr.name))
+            {
+                has_namespace_decls = true;
+            }
             for (self.attrs[0..attr_count]) |existing| {
-                if (std.mem.eql(u8, existing.name, attr.name)) {
-                    return self.fail(error.DuplicateAttribute, attr.name_range.start);
+                if (existing.name_key == attr.name_key and
+                    std.mem.eql(u8, existing.name, attr.name))
+                {
+                    return self.fail(
+                        error.DuplicateAttribute,
+                        attr.name_range.start,
+                    );
                 }
             }
-            if (attr_count == self.options.max_attributes) {
-                return self.fail(error.AttributeLimitExceeded, attr.name_range.start);
-            }
-            self.attrs[attr_count] = attr;
             attr_count += 1;
+        }
+
+        try self.applyAttributeDefaults(name, &attr_count);
+        for (self.attrs[0..attr_count]) |*attr| {
+            attr.tokenized = self.isTokenizedAttribute(name, attr.name);
         }
 
         var element_namespace: []const u8 = "";
         if (self.options.namespaces) {
-            var namespace_attrs: [max_attributes]struct {
-                name: []const u8,
-                value: []const u8,
-            } = undefined;
-            var namespace_attr_count: usize = 0;
-            for (self.attrs[0..attr_count]) |attr| {
-                if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
-                var value = attr.value;
-                if (std.mem.indexOfScalar(u8, value, '&') != null or
-                    hasWhitespace(value))
-                {
-                    if (self.scratchAllocator()) |allocator| {
-                        const decoded = entities.decodeAttributeAlloc(
-                            allocator,
-                            value,
-                            &self.entity_table,
-                            .{},
-                            .{
-                                .preserve_undeclared = true,
-                                .preserve_external = true,
-                            },
-                        ) catch value;
-                        value = decoded;
-                        if (self.isTokenizedAttribute(name, attr.name)) {
-                            value = normalizeTokenizedValue(
+            if (has_namespace_decls) {
+                var namespace_attrs: [max_attributes]struct {
+                    name: []const u8,
+                    value: []const u8,
+                } = undefined;
+                var namespace_attr_count: usize = 0;
+                for (self.attrs[0..attr_count]) |*attr| {
+                    if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                        continue;
+                    }
+                    var value = attr.value;
+                    if (std.mem.indexOfScalar(u8, value, '&') != null or
+                        hasWhitespace(value))
+                    {
+                        if (self.scratchAllocator()) |allocator| {
+                            const decoded = entities.decodeAttributeAlloc(
                                 allocator,
-                                decoded,
+                                value,
+                                &self.entity_table,
+                                .{},
+                                .{
+                                    .preserve_undeclared = true,
+                                    .preserve_external = true,
+                                },
                             ) catch value;
+                            value = decoded;
+                            if (self.isTokenizedAttribute(name, attr.name)) {
+                                value = normalizeTokenizedValue(
+                                    allocator,
+                                    decoded,
+                                ) catch value;
+                            }
+                        }
+                    }
+                    attr.namespace_uri = namespace.xmlns_uri;
+                    namespace_attrs[namespace_attr_count] = .{
+                        .name = attr.name,
+                        .value = value,
+                    };
+                    namespace_attr_count += 1;
+                }
+                try self.ns.push(namespace_attrs[0..namespace_attr_count]);
+            } else {
+                try self.ns.enter();
+            }
+
+            const resolved_element = try self.ns.resolveElementNameValidated(name);
+            element_namespace = resolved_element.uri;
+
+            var prefixed: [max_attributes]namespace.ResolvedName = undefined;
+            var prefixed_keys: [max_attributes]u32 = undefined;
+            var prefixed_count: usize = 0;
+            for (self.attrs[0..attr_count]) |*attr| {
+                if (attr.namespace_uri.len != 0) continue; // xmlns declaration
+                if (attr.colon == 0xFFFF) continue;
+                const resolved_attr = try self.ns.resolveAttributeNameValidated(attr.name);
+                attr.namespace_uri = resolved_attr.uri;
+                prefixed[prefixed_count] = resolved_attr;
+                prefixed_keys[prefixed_count] = resolvedNameKey(
+                    resolved_attr.uri,
+                    resolved_attr.local,
+                );
+                prefixed_count += 1;
+            }
+            if (prefixed_count >= 2) {
+                for (prefixed[0..prefixed_count], 0..) |current, index| {
+                    for (prefixed[0..index]) |previous| {
+                        if (std.mem.eql(u8, previous.uri, current.uri) and
+                            std.mem.eql(u8, previous.local, current.local))
+                        {
+                            return self.fail(
+                                error.DuplicateExpandedAttribute,
+                                0,
+                            );
                         }
                     }
                 }
-                namespace_attrs[namespace_attr_count] = .{
-                    .name = attr.name,
-                    .value = value,
-                };
-                namespace_attr_count += 1;
-            }
-            try self.ns.push(namespace_attrs[0..namespace_attr_count]);
-            const resolved_element = try self.ns.resolveElementName(name);
-            element_namespace = resolved_element.uri;
-
-            var resolved_attrs: [max_attributes]namespace.ResolvedName = undefined;
-            var resolved_count: usize = 0;
-            for (self.attrs[0..attr_count]) |*attr| {
-                if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
-                const resolved_attr = try self.ns.resolveAttributeName(attr.name);
-                attr.namespace_uri = resolved_attr.uri;
-                for (resolved_attrs[0..resolved_count]) |previous| {
-                    if (std.mem.eql(u8, previous.uri, resolved_attr.uri) and
-                        std.mem.eql(u8, previous.local, resolved_attr.local))
-                    {
-                        return self.fail(
-                            error.DuplicateExpandedAttribute,
-                            attr.name_range.start,
-                        );
-                    }
-                }
-                resolved_attrs[resolved_count] = resolved_attr;
-                resolved_count += 1;
             }
         }
 
@@ -544,20 +632,25 @@ pub const Parser = struct {
 
         return .{
             .name = name,
-            .name_range = .{ .start = name_start, .end = name_start + name_len },
+            .name_range = .{
+                .start = @intCast(name_start),
+                .end = @intCast(name_start + name_info.len),
+            },
             .attrs = self.attrs[0..attr_count],
             .self_closing = self_closing,
             .depth = event_depth,
             .namespace_uri = element_namespace,
+            .colon = name_info.colon,
+            .has_namespace_decls = has_namespace_decls,
         };
     }
 
-    fn scanAttribute(self: *Parser) Error!Attribute {
+    fn scanAttributeInto(self: *Parser, out: *Attribute) Error!void {
         const name_start = self.pos;
-        const name_len = chars.scanName(self.input[name_start..]);
-        if (name_len == 0) return self.fail(error.InvalidName, name_start);
-        const name = self.input[name_start .. name_start + name_len];
-        self.pos = name_start + name_len;
+        const name_info = chars.scanNameInfo(self.input[name_start..]);
+        if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
+        const name = self.input[name_start .. name_start + name_info.len];
+        self.pos = name_start + name_info.len;
 
         self.skipWhitespace();
         if (self.pos >= self.input.len or self.input[self.pos] != '=') {
@@ -575,6 +668,8 @@ pub const Parser = struct {
         }
         self.pos += 1;
         const value_start = self.pos;
+        var has_non_ascii = false;
+        var needs_decode = false;
 
         while (self.pos < self.input.len and self.input[self.pos] != quote) {
             const byte = self.input[self.pos];
@@ -582,8 +677,18 @@ pub const Parser = struct {
                 return self.fail(error.InvalidAttributeValue, self.pos);
             }
             if (byte == '&') {
+                needs_decode = true;
                 self.pos = try self.validateReference(self.pos, true);
                 continue;
+            }
+            if (byte < 0x20) {
+                if (byte == '\t' or byte == '\n' or byte == '\r') {
+                    needs_decode = true;
+                } else {
+                    return self.fail(error.InvalidCharacter, self.pos);
+                }
+            } else if (byte >= 0x80) {
+                has_non_ascii = true;
             }
             self.pos += 1;
         }
@@ -592,16 +697,28 @@ pub const Parser = struct {
         }
 
         const value = self.input[value_start..self.pos];
-        if (chars.findInvalidXmlChar(value)) |bad| {
-            return self.fail(error.InvalidCharacter, value_start + bad);
+        if (has_non_ascii) {
+            if (chars.findInvalidXmlChar(value)) |bad| {
+                return self.fail(error.InvalidCharacter, value_start + bad);
+            }
         }
         self.pos += 1;
-        return .{
+        out.* = .{
             .name = name,
             .value = value,
-            .name_range = .{ .start = name_start, .end = name_start + name_len },
-            .value_range = .{ .start = value_start, .end = value_start + value.len },
+            .name_range = .{
+                .start = @intCast(name_start),
+                .end = @intCast(name_start + name_info.len),
+            },
+            .value_range = .{
+                .start = @intCast(value_start),
+                .end = @intCast(value_start + value.len),
+            },
             .namespace_uri = "",
+            .colon = name_info.colon,
+            .name_key = attributeNameKey(name),
+            .needs_decode = needs_decode,
+            .tokenized = false,
         };
     }
 
@@ -622,7 +739,7 @@ pub const Parser = struct {
         if (self.depth == 0) return self.fail(error.MismatchedEndTag, name_start);
         var end_namespace: []const u8 = "";
         if (self.options.namespaces) {
-            const resolved = try self.ns.resolveElementName(name);
+            const resolved = try self.ns.resolveElementNameValidated(name);
             end_namespace = resolved.uri;
         }
         const expected = self.open_names[self.depth - 1];
@@ -638,7 +755,10 @@ pub const Parser = struct {
         if (self.depth == 0 and !self.fragment) self.state = .epilog;
         return .{
             .name = name,
-            .name_range = .{ .start = name_start, .end = name_start + name_len },
+            .name_range = .{
+                .start = @intCast(name_start),
+                .end = @intCast(name_start + name_len),
+            },
             .depth = event_depth,
             .namespace_uri = end_namespace,
         };
@@ -1685,7 +1805,20 @@ pub const Parser = struct {
                 self.tokenized_attr_count += 1;
             }
             try scanner.requireWhitespace();
-            try scanDefaultDecl(&scanner);
+            const default_decl = try scanDefaultDecl(&scanner);
+            if (self.attribute_decl_count < self.attribute_decls.len and
+                !self.hasAttributeDecl(element_name, attribute_name))
+            {
+                self.attribute_decls[self.attribute_decl_count] = .{
+                    .element = element_name,
+                    .name = attribute_name,
+                    .tokenized = tokenized,
+                    .default_kind = default_decl.kind,
+                    .default_value = default_decl.value,
+                    .value_offset = default_decl.value_offset,
+                };
+                self.attribute_decl_count += 1;
+            }
         }
         if (!scanner.atEnd()) return scanner.fail(error.InvalidDoctype);
         self.pos = end + 1;
@@ -2168,6 +2301,58 @@ pub const Parser = struct {
         return false;
     }
 
+    fn hasAttributeDecl(self: *const Parser, element: []const u8, name: []const u8) bool {
+        for (self.attribute_decls[0..self.attribute_decl_count]) |decl| {
+            if (std.mem.eql(u8, decl.element, element) and
+                std.mem.eql(u8, decl.name, name))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn applyAttributeDefaults(
+        self: *Parser,
+        element: []const u8,
+        attr_count: *usize,
+    ) Error!void {
+        for (self.attribute_decls[0..self.attribute_decl_count]) |decl| {
+            if (!std.mem.eql(u8, decl.element, element)) continue;
+            var present = false;
+            for (self.attrs[0..attr_count.*]) |attr| {
+                if (std.mem.eql(u8, attr.name, decl.name)) {
+                    present = true;
+                    break;
+                }
+            }
+            if (present) continue;
+            const value = switch (decl.default_kind) {
+                .value, .fixed => decl.default_value,
+                .required, .implied => continue,
+            };
+            if (attr_count.* == self.options.max_attributes) {
+                return self.fail(error.AttributeLimitExceeded, 0);
+            }
+            const name_info = chars.scanNameInfo(decl.name);
+            self.attrs[attr_count.*] = .{
+                .name = decl.name,
+                .value = value,
+                .name_range = .{ .start = 0, .end = 0 },
+                .value_range = .{
+                    .start = @intCast(decl.value_offset),
+                    .end = @intCast(decl.value_offset + value.len),
+                },
+                .namespace_uri = "",
+                .colon = name_info.colon,
+                .name_key = attributeNameKey(decl.name),
+                .tokenized = decl.tokenized,
+                .from_default = true,
+            };
+            attr_count.* += 1;
+        }
+    }
+
     fn isTokenizedAttribute(
         self: *const Parser,
         element: []const u8,
@@ -2436,11 +2621,21 @@ fn scanAttType(scanner: *DtdScanner) Error!bool {
     return scanner.fail(error.InvalidDoctype);
 }
 
-fn scanDefaultDecl(scanner: *DtdScanner) Error!void {
-    if (scanner.eatKeyword("#REQUIRED") or scanner.eatKeyword("#IMPLIED")) {
-        return;
+const DefaultDecl = struct {
+    kind: DefaultKind,
+    value: []const u8 = "",
+    value_offset: usize = 0,
+};
+
+fn scanDefaultDecl(scanner: *DtdScanner) Error!DefaultDecl {
+    if (scanner.eatKeyword("#REQUIRED")) return .{ .kind = .required };
+    if (scanner.eatKeyword("#IMPLIED")) return .{ .kind = .implied };
+
+    var fixed = false;
+    if (scanner.eatKeyword("#FIXED")) {
+        fixed = true;
+        try scanner.requireWhitespace();
     }
-    if (scanner.eatKeyword("#FIXED")) try scanner.requireWhitespace();
 
     const quote = scanner.peek() orelse return scanner.fail(error.UnexpectedEndOfInput);
     if (quote != '"' and quote != '\'') return scanner.fail(error.InvalidDoctype);
@@ -2474,6 +2669,11 @@ fn scanDefaultDecl(scanner: *DtdScanner) Error!void {
         return scanner.failAt(error.InvalidCharacter, value_start + bad);
     }
     scanner.index += 1;
+    return .{
+        .kind = if (fixed) .fixed else .value,
+        .value = value,
+        .value_offset = scanner.base + value_start,
+    };
 }
 
 fn decodeCharacterReferences(
@@ -2767,6 +2967,19 @@ fn evaluateConditionals(
         }
         pos = scan;
     }
+}
+
+fn attributeNameKey(name: []const u8) u32 {
+    const last = name[name.len - 1];
+    return (@as(u32, @intCast(name.len)) << 16) ^
+        (@as(u32, name[0]) << 8) ^ @as(u32, last);
+}
+
+fn resolvedNameKey(uri: []const u8, local: []const u8) u32 {
+    const first = if (uri.len != 0) uri[0] else 0;
+    return (@as(u32, @intCast(uri.len)) << 20) ^
+        (@as(u32, @intCast(local.len)) << 8) ^
+        @as(u32, first) ^ @as(u32, local[0]);
 }
 
 fn hasWhitespace(value: []const u8) bool {
@@ -3182,4 +3395,46 @@ test "text scanner stops at markup and validates references" {
     try testing.expectEqualStrings("x &amp; y &lt; z", text);
     const end = (try parser.next()).?.end_element;
     try testing.expectEqualStrings("a", end.name);
+}
+
+test "DTD attribute defaults and tokenized types are exposed" {
+    const input =
+        "<!DOCTYPE doc [" ++
+        "<!ELEMENT doc EMPTY>" ++
+        "<!ATTLIST doc a CDATA \"x\" b NMTOKEN \"  y  z \" c CDATA #IMPLIED d CDATA #REQUIRED>" ++
+        "]><doc d='v'/>";
+    var parser = Parser.init(input, .{});
+    defer parser.deinit();
+
+    var found = false;
+    while (try parser.next()) |event| {
+        switch (event) {
+            .start_element => |element| {
+                found = true;
+                try std.testing.expectEqual(@as(usize, 3), element.attrs.len);
+                var saw_a = false;
+                var saw_b = false;
+                var saw_d = false;
+                for (element.attrs) |attr| {
+                    if (std.mem.eql(u8, attr.name, "a")) {
+                        saw_a = true;
+                        try std.testing.expectEqualStrings("x", attr.value);
+                        try std.testing.expect(attr.from_default);
+                    } else if (std.mem.eql(u8, attr.name, "b")) {
+                        saw_b = true;
+                        try std.testing.expectEqualStrings("  y  z ", attr.value);
+                        try std.testing.expect(attr.tokenized);
+                        try std.testing.expect(attr.from_default);
+                    } else if (std.mem.eql(u8, attr.name, "d")) {
+                        saw_d = true;
+                        try std.testing.expectEqualStrings("v", attr.value);
+                        try std.testing.expect(!attr.from_default);
+                    }
+                }
+                try std.testing.expect(saw_a and saw_b and saw_d);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(found);
 }

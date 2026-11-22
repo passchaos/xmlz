@@ -32,9 +32,16 @@ then exposes them through a pull parser and reusable lexical primitives.
   suite and a harness. xmlz currently passes **1971/1971 applicable XML 1.0
   and Namespaces 1.0 tests** (the remaining suite entries are XML 1.1; see
   `docs/conformance.md`).
+- **DOM and writer.** The arena-backed DOM exposes resolved namespaces,
+  decoded/normalized values, DTD attribute defaults, child traversal, and text
+  content queries. The writer round-trips documents with correct escaping and
+  optional safe pretty printing.
 - **Legacy primitives preserved.** The allocation-free tag/attribute scanners
   extracted from `zsvg` remain available and are used by the pull parser's
   fast paths.
+- **Measured performance.** On a 16 MiB SVG-like document the pull parser
+  reaches 751 MB/s (681 MB/s with namespaces), 4.9x faster than expat and 5.1x
+  faster than libxml2's reader; see `docs/benchmarks.md`.
 
 ## Status
 
@@ -42,8 +49,8 @@ then exposes them through a pull parser and reusable lexical primitives.
 | --- | --- |
 | XML 1.0 core + DTD | Complete, W3C suite green |
 | Namespaces in XML | Complete, W3C suite green |
-| DOM tree | In progress |
-| Writer/serializer | In progress |
+| DOM tree | Complete |
+| Writer/serializer | Complete |
 | XML 1.1 | Not implemented |
 | XPath / XSD / XSLT | Out of scope for the core engine |
 
@@ -111,8 +118,12 @@ src/entities.zig        entity tables and reference decoding
 src/encoding.zig        byte-encoding detection and normalization
 src/markup.zig          quote-aware tag/declaration end scanners
 src/character_data.zig  character-data spans with CDATA provenance
+src/dom.zig             arena-backed document tree
+src/writer.zig          XML serializer
+src/namespace.zig       Namespaces in XML 1.0 resolver
 src/root.zig            public API surface
 tools/conformance.zig   W3C suite harness
+bench/                  reproducible benchmarks
 tools/gen_xmlconf_manifest.py
 testdata/xmlconf        W3C XML conformance suite + generated manifest
 ```
@@ -123,6 +134,7 @@ testdata/xmlconf        W3C XML conformance suite + generated manifest
 zig build test          # unit tests
 zig build conformance   # W3C XML conformance suite
 zig build check         # both
+zig build bench         # parser/DOM benchmarks vs expat, pugixml, libxml2
 ```
 
 The conformance step needs `testdata/xmlconf/manifest.json`. Regenerate it with:

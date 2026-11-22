@@ -76,21 +76,32 @@ pub inline fn isNCNameChar(cp: u21) bool {
     return cp != ':' and isNameChar(cp);
 }
 
+const ascii_name_start_table: [256]bool = blk: {
+    var table: [256]bool = @splat(false);
+    table[':'] = true;
+    table['_'] = true;
+    for ('A'..'Z' + 1) |byte| table[byte] = true;
+    for ('a'..'z' + 1) |byte| table[byte] = true;
+    break :blk table;
+};
+
+const ascii_name_table: [256]bool = blk: {
+    var table = ascii_name_start_table;
+    table['-'] = true;
+    table['.'] = true;
+    for ('0'..'9' + 1) |byte| table[byte] = true;
+    break :blk table;
+};
+
 /// ASCII subset of `NameStartChar`. Colon is included: namespace processing is
 /// a separate layer that may reject or split it.
 pub inline fn isAsciiNameStartChar(byte: u8) bool {
-    return switch (byte) {
-        ':', '_', 'A'...'Z', 'a'...'z' => true,
-        else => false,
-    };
+    return ascii_name_start_table[byte];
 }
 
 /// ASCII subset of `NameChar`.
 pub inline fn isAsciiNameChar(byte: u8) bool {
-    return switch (byte) {
-        ':', '_', '-', '.', '0'...'9', 'A'...'Z', 'a'...'z' => true,
-        else => false,
-    };
+    return ascii_name_table[byte];
 }
 
 pub const NameError = error{
@@ -192,6 +203,47 @@ fn codepointLength(bytes: []const u8, index: usize) NameError!usize {
         return error.InvalidUtf8;
     if (index + len > bytes.len) return error.InvalidUtf8;
     return len;
+}
+
+pub const NameInfo = struct {
+    len: usize,
+    /// Byte offset of the first colon, or 0xFFFF when absent.
+    colon: u16 = 0xFFFF,
+};
+
+/// Scan the longest valid XML `Name` prefix and remember the first colon.
+pub fn scanNameInfo(bytes: []const u8) NameInfo {
+    var info: NameInfo = .{ .len = 0 };
+    if (bytes.len == 0) return info;
+    var index: usize = 0;
+    const first = bytes[0];
+    if (first < 0x80) {
+        if (!isAsciiNameStartChar(first)) return info;
+        if (first == ':') info.colon = 0;
+        index = 1;
+    } else {
+        const first_len = codepointLength(bytes, 0) catch return info;
+        const cp = std.unicode.utf8Decode(bytes[0..first_len]) catch return info;
+        if (!isNameStartChar(cp)) return info;
+        index = first_len;
+    }
+    while (index < bytes.len) {
+        const byte = bytes[index];
+        if (byte < 0x80) {
+            if (!isAsciiNameChar(byte)) break;
+            if (byte == ':' and info.colon == 0xFFFF and index < 0xFFFF) {
+                info.colon = @intCast(index);
+            }
+            index += 1;
+            continue;
+        }
+        const len = codepointLength(bytes, index) catch break;
+        const cp = std.unicode.utf8Decode(bytes[index..][0..len]) catch break;
+        if (!isNameChar(cp)) break;
+        index += len;
+    }
+    info.len = index;
+    return info;
 }
 
 /// Scan the longest valid XML `Name` prefix. Returns 0 when the first byte
