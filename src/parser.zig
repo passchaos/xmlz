@@ -80,7 +80,7 @@ pub const AttributeDecl = struct {
 };
 
 const AttributeDefaultMap = std.StringHashMapUnmanaged(
-    std.ArrayListUnmanaged(*AttributeDecl),
+    std.ArrayListUnmanaged(u32),
 );
 
 pub const NotationDecl = struct {
@@ -331,8 +331,10 @@ pub const Parser = struct {
     attrs: [max_attributes]Attribute = undefined,
     entity_table: entities.Table = .{},
     parameter_entities: entities.Table = .{},
-    /// Attribute declarations grouped by element name, built on first use.
+    /// Attribute declarations grouped by element name.
     attribute_defaults: ?AttributeDefaultMap = null,
+    /// Declared element names, used for duplicate detection.
+    element_names: ?std.StringHashMapUnmanaged(void) = null,
     /// True while re-scanning an external subset whose entity declarations
     /// were already parsed and validated during parameter-entity expansion.
     entities_preparsed: bool = false,
@@ -2920,16 +2922,20 @@ pub const Parser = struct {
     }
 
     fn addElementDecl(self: *Parser, decl: ElementDecl) Error!void {
-        if (self.findElementDecl(decl.name) != null) {
-            if (self.scratchAllocator()) |allocator| {
-                try self.duplicate_elements.append(allocator, decl.name);
-            }
-            return;
-        }
         if (self.scratchAllocator()) |allocator| {
+            if (self.element_names == null) self.element_names = .empty;
+            const entry = try self.element_names.?.getOrPut(
+                allocator,
+                decl.name,
+            );
+            if (entry.found_existing) {
+                try self.duplicate_elements.append(allocator, decl.name);
+                return;
+            }
             try self.element_decls.append(allocator, decl);
             return;
         }
+        if (self.findElementDecl(decl.name) != null) return;
         if (self.fixed_element_count < self.fixed_element_decls.len) {
             self.fixed_element_decls[self.fixed_element_count] = decl;
             self.fixed_element_count += 1;
@@ -2937,11 +2943,23 @@ pub const Parser = struct {
     }
 
     fn addAttributeDecl(self: *Parser, decl: AttributeDecl) Error!void {
-        if (self.hasAttributeDecl(decl.element, decl.name)) return;
         if (self.scratchAllocator()) |allocator| {
+            if (self.attribute_defaults == null) {
+                self.attribute_defaults = .empty;
+            }
+            const map = &self.attribute_defaults.?;
+            const entry = try map.getOrPut(allocator, decl.element);
+            if (!entry.found_existing) entry.value_ptr.* = .empty;
+            for (entry.value_ptr.items) |index| {
+                const existing = self.attribute_decls.items[index];
+                if (std.mem.eql(u8, existing.name, decl.name)) return;
+            }
+            const index: u32 = @intCast(self.attribute_decls.items.len);
             try self.attribute_decls.append(allocator, decl);
+            try entry.value_ptr.append(allocator, index);
             return;
         }
+        if (self.hasAttributeDecl(decl.element, decl.name)) return;
         if (self.fixed_attribute_count < self.fixed_attribute_decls.len) {
             self.fixed_attribute_decls[self.fixed_attribute_count] = decl;
             self.fixed_attribute_count += 1;
@@ -3008,39 +3026,19 @@ pub const Parser = struct {
         element: []const u8,
         attr_count: *usize,
     ) Error!void {
-        try self.ensureAttributeDefaultIndex();
         if (self.attribute_defaults) |map| {
             const decls = map.get(element) orelse return;
-            for (decls.items) |decl| {
-                try self.applyDefaultDecl(decl, attr_count);
+            for (decls.items) |index| {
+                try self.applyDefaultDecl(
+                    &self.attribute_decls.items[index],
+                    attr_count,
+                );
             }
             return;
         }
-        for (self.attribute_decls.items) |*decl| {
-            try self.applyDefaultDecl(decl, attr_count);
-        }
         for (self.fixed_attribute_decls[0..self.fixed_attribute_count]) |*decl| {
             try self.applyDefaultDecl(decl, attr_count);
         }
-    }
-
-    /// Group attribute declarations by element name so applying defaults for
-    /// an element does not scan every declaration in the DTD.
-    fn ensureAttributeDefaultIndex(self: *Parser) Error!void {
-        if (self.attribute_defaults != null) return;
-        const allocator = self.scratchAllocator() orelse return;
-        var map: AttributeDefaultMap = .empty;
-        for (self.attribute_decls.items) |*decl| {
-            const entry = try map.getOrPut(allocator, decl.element);
-            if (!entry.found_existing) entry.value_ptr.* = .empty;
-            try entry.value_ptr.append(allocator, decl);
-        }
-        for (self.fixed_attribute_decls[0..self.fixed_attribute_count]) |*decl| {
-            const entry = try map.getOrPut(allocator, decl.element);
-            if (!entry.found_existing) entry.value_ptr.* = .empty;
-            try entry.value_ptr.append(allocator, decl);
-        }
-        self.attribute_defaults = map;
     }
 
     fn applyDefaultDecl(
