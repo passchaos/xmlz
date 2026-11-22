@@ -16,7 +16,7 @@ chars / encoding / markup / character_data
                   |                |
                writer           xpath / xinclude / c14n
                                   |
-                                xslt
+                            xslt / xsd
 ```
 
 ## Pull parser
@@ -97,6 +97,17 @@ document, reusing the XPath engine for expressions and `current()`. Imported
 stylesheets, keys, result-tree-fragment node sets, and HTML serialization are
 not implemented.
 
+## XML Schema
+
+`xsd` compiles schema documents into element, attribute, and type components.
+Simple types resolve to built-in datatype kinds with inherited facets; complex
+types resolve to flattened particles and attribute uses, including
+simple/complex content extension and restriction. Instance validation walks the
+tree with a backtracking particle matcher, validates attributes and simple
+values, applies wildcards and `xsi:type` / `xsi:nil`, and collects errors with
+node paths. Includes/imports, groups, identity constraints, and substitution
+groups are not implemented.
+
 ## Trusted mode
 
 `Parser.Options.trusted = true` skips character, name, duplicate-attribute, and
@@ -113,5 +124,7 @@ by the conformance harness.
 - `zig build xpath-diff` compares XPath results against libxml2's `xmllint`.
 - `zig build c14n-diff` compares canonical forms against libxml2's `xmllint`.
 - `zig build xslt-diff` compares XSLT result trees against libxslt via `lxml`.
+- `zig build xsd-diff` compares schema validation results against libxml2 via
+  `lxml`.
 - `zig build bench` compares pull/DOM throughput against expat, pugixml, and
   libxml2 with reproducible generated input.

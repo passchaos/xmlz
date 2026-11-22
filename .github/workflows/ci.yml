@@ -23,3 +23,5 @@ jobs:
         run: zig build c14n-diff
       - name: XSLT differential
         run: zig build xslt-diff
+      - name: XML Schema differential
+        run: zig build xsd-diff

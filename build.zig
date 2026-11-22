@@ -94,6 +94,17 @@ pub fn build(b: *std.Build) void {
     xslt_tool.root_module.addImport("xmlz", mod);
     b.installArtifact(xslt_tool);
 
+    const xsd_tool = b.addExecutable(.{
+        .name = "xsd",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/xsd.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    xsd_tool.root_module.addImport("xmlz", mod);
+    b.installArtifact(xsd_tool);
+
     const xpath_diff = b.addSystemCommand(&.{
         "python3",
         "tools/xpath_diff.py",
@@ -126,6 +137,17 @@ pub fn build(b: *std.Build) void {
         "Differential XSLT checks against libxslt through lxml",
     );
     xslt_diff_step.dependOn(&xslt_diff.step);
+
+    const xsd_diff = b.addSystemCommand(&.{
+        "python3",
+        "tools/xsd_diff.py",
+    });
+    xsd_diff.addFileArg(xsd_tool.getEmittedBin());
+    const xsd_diff_step = b.step(
+        "xsd-diff",
+        "Differential XML Schema checks against libxml2 through lxml",
+    );
+    xsd_diff_step.dependOn(&xsd_diff.step);
 
     const check_step = b.step("check", "Run unit tests and the conformance suite");
     check_step.dependOn(test_step);
