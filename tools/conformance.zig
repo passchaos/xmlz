@@ -150,9 +150,7 @@ fn runTest(
     entry: Entry,
     debug: bool,
 ) !Outcome {
-    if (entry.xml11 or entry.namespace or
-        std.mem.eql(u8, entry.version, "1.1"))
-    {
+    if (entry.xml11 or std.mem.eql(u8, entry.version, "1.1")) {
         return .{ .entry = entry, .result = .skipped };
     }
     // The suite marks tests that only apply to XML 1.0 editions 1-4. xmlz
@@ -197,6 +195,7 @@ fn runTest(
             .context = &resolver_context,
             .resolve = resolveExternal,
         },
+        .namespaces = entry.namespace,
     });
     defer parser.deinit();
     while (true) {

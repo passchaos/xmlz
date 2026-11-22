@@ -66,6 +66,16 @@ pub inline fn isNameChar(cp: u21) bool {
     };
 }
 
+/// `NCNameStartChar`: `NameStartChar` without the namespace separator.
+pub inline fn isNCNameStartChar(cp: u21) bool {
+    return cp != ':' and isNameStartChar(cp);
+}
+
+/// `NCNameChar`: `NameChar` without the namespace separator.
+pub inline fn isNCNameChar(cp: u21) bool {
+    return cp != ':' and isNameChar(cp);
+}
+
 /// ASCII subset of `NameStartChar`. Colon is included: namespace processing is
 /// a separate layer that may reject or split it.
 pub inline fn isAsciiNameStartChar(byte: u8) bool {
@@ -133,6 +143,36 @@ pub fn validateNmtoken(name: []const u8) NameError!void {
         const cp = std.unicode.utf8Decode(name[index..][0..len]) catch
             return error.InvalidUtf8;
         if (!isNameChar(cp)) return error.InvalidChar;
+        index += len;
+    }
+}
+
+/// Validate an XML `NCName` (a `Name` with no colon).
+pub fn validateNCName(name: []const u8) NameError!void {
+    if (name.len == 0) return error.EmptyName;
+    const first_len = try codepointLength(name, 0);
+    if (first_len == 1) {
+        if (name[0] == ':' or !isAsciiNameStartChar(name[0])) {
+            return error.InvalidStart;
+        }
+    } else {
+        const cp = std.unicode.utf8Decode(name[0..first_len]) catch
+            return error.InvalidUtf8;
+        if (!isNCNameStartChar(cp)) return error.InvalidStart;
+    }
+
+    var index = first_len;
+    while (index < name.len) {
+        const byte = name[index];
+        if (byte < 0x80) {
+            if (byte == ':' or !isAsciiNameChar(byte)) return error.InvalidChar;
+            index += 1;
+            continue;
+        }
+        const len = try codepointLength(name, index);
+        const cp = std.unicode.utf8Decode(name[index..][0..len]) catch
+            return error.InvalidUtf8;
+        if (!isNCNameChar(cp)) return error.InvalidChar;
         index += len;
     }
 }
@@ -305,6 +345,17 @@ test "XML name productions cover ASCII and Unicode ranges" {
     try std.testing.expect(!isName("\u{037E}"));
     try std.testing.expect(!isName("x\u{FFFE}"));
     try std.testing.expect(!isName("\xFF"));
+}
+
+test "NCName validation rejects colons" {
+    try std.testing.expect(isName("a:b"));
+    try validateNCName("abc");
+    try validateNCName("_x-y.1");
+    try validateNCName("é");
+    try std.testing.expectError(error.InvalidChar, validateNCName("a:b"));
+    try std.testing.expectError(error.InvalidStart, validateNCName(":a"));
+    try std.testing.expectError(error.InvalidChar, validateNCName("a:"));
+    try std.testing.expectError(error.EmptyName, validateNCName(""));
 }
 
 test "name scanner stops at the first invalid byte" {

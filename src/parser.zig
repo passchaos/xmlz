@@ -13,6 +13,7 @@ const chars = @import("chars.zig");
 const entities = @import("entities.zig");
 const encoding = @import("encoding.zig");
 const markup = @import("markup.zig");
+const namespace = @import("namespace.zig");
 
 pub const max_open_elements = 512;
 pub const max_attributes = 64;
@@ -34,6 +35,9 @@ pub const Options = struct {
     allow_undeclared_entities: bool = false,
     /// Accept `<!DOCTYPE ...>`. Disabled rejects every doctype.
     allow_doctype: bool = true,
+    /// Validate Namespaces in XML 1.0 constraints and resolve names. Disabled
+    /// by default so permissive legacy documents can be scanned as raw XML.
+    namespaces: bool = false,
     /// Allocator used only when a DTD needs parameter-entity expansion or an
     /// external subset/entity must be loaded. Without it those features report
     /// `UnsupportedParameterEntity`.
@@ -90,6 +94,12 @@ pub const Error = error{
     RootElementMismatch,
     UnsupportedParameterEntity,
     ExternalEntityDepthExceeded,
+    InvalidQualifiedName,
+    UndeclaredPrefix,
+    InvalidNamespaceDeclaration,
+    ReservedPrefix,
+    DuplicateExpandedAttribute,
+    NamespaceLimitExceeded,
 };
 
 pub const Attribute = struct {
@@ -99,6 +109,9 @@ pub const Attribute = struct {
     value: []const u8,
     name_range: SourceRange,
     value_range: SourceRange,
+    /// Resolved namespace URI when namespace processing is enabled; empty for
+    /// unprefixed attributes and namespace declarations.
+    namespace_uri: []const u8 = "",
 };
 
 pub const StartElement = struct {
@@ -109,6 +122,8 @@ pub const StartElement = struct {
     self_closing: bool,
     /// Depth after opening the element; the root element has depth 1.
     depth: usize,
+    /// Resolved namespace URI when namespace processing is enabled.
+    namespace_uri: []const u8 = "",
 };
 
 pub const EndElement = struct {
@@ -116,6 +131,8 @@ pub const EndElement = struct {
     name_range: SourceRange,
     /// Depth of the element being closed; the root element has depth 1.
     depth: usize,
+    /// Resolved namespace URI when namespace processing is enabled.
+    namespace_uri: []const u8 = "",
 };
 
 pub const Declaration = struct {
@@ -181,6 +198,12 @@ pub const Parser = struct {
     attrs: [max_attributes]Attribute = undefined,
     entity_table: entities.Table = .{},
     parameter_entities: entities.Table = .{},
+    ns: namespace.Resolver = .{},
+    tokenized_attrs: [128]struct {
+        element: []const u8,
+        name: []const u8,
+    } = undefined,
+    tokenized_attr_count: usize = 0,
     external_depth: usize = 0,
     external_checked: std.StaticBitSet(entities.max_entities) = .empty,
     fragment: bool = false,
@@ -431,6 +454,70 @@ pub const Parser = struct {
             attr_count += 1;
         }
 
+        var element_namespace: []const u8 = "";
+        if (self.options.namespaces) {
+            var namespace_attrs: [max_attributes]struct {
+                name: []const u8,
+                value: []const u8,
+            } = undefined;
+            var namespace_attr_count: usize = 0;
+            for (self.attrs[0..attr_count]) |attr| {
+                if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
+                var value = attr.value;
+                if (std.mem.indexOfScalar(u8, value, '&') != null or
+                    hasWhitespace(value))
+                {
+                    if (self.scratchAllocator()) |allocator| {
+                        const decoded = entities.decodeAttributeAlloc(
+                            allocator,
+                            value,
+                            &self.entity_table,
+                            .{},
+                            .{
+                                .preserve_undeclared = true,
+                                .preserve_external = true,
+                            },
+                        ) catch value;
+                        value = decoded;
+                        if (self.isTokenizedAttribute(name, attr.name)) {
+                            value = normalizeTokenizedValue(
+                                allocator,
+                                decoded,
+                            ) catch value;
+                        }
+                    }
+                }
+                namespace_attrs[namespace_attr_count] = .{
+                    .name = attr.name,
+                    .value = value,
+                };
+                namespace_attr_count += 1;
+            }
+            try self.ns.push(namespace_attrs[0..namespace_attr_count]);
+            const resolved_element = try self.ns.resolveElementName(name);
+            element_namespace = resolved_element.uri;
+
+            var resolved_attrs: [max_attributes]namespace.ResolvedName = undefined;
+            var resolved_count: usize = 0;
+            for (self.attrs[0..attr_count]) |*attr| {
+                if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
+                const resolved_attr = try self.ns.resolveAttributeName(attr.name);
+                attr.namespace_uri = resolved_attr.uri;
+                for (resolved_attrs[0..resolved_count]) |previous| {
+                    if (std.mem.eql(u8, previous.uri, resolved_attr.uri) and
+                        std.mem.eql(u8, previous.local, resolved_attr.local))
+                    {
+                        return self.fail(
+                            error.DuplicateExpandedAttribute,
+                            attr.name_range.start,
+                        );
+                    }
+                }
+                resolved_attrs[resolved_count] = resolved_attr;
+                resolved_count += 1;
+            }
+        }
+
         const is_root = !self.root_seen;
         if (is_root) {
             // The DOCTYPE name matching the root element type is a validity
@@ -445,6 +532,7 @@ pub const Parser = struct {
             if (is_root and !self.fragment) {
                 self.state = .epilog;
             }
+            if (self.options.namespaces) self.ns.pop();
         } else {
             if (self.depth == self.options.max_depth) {
                 return self.fail(error.DepthLimitExceeded, start);
@@ -460,6 +548,7 @@ pub const Parser = struct {
             .attrs = self.attrs[0..attr_count],
             .self_closing = self_closing,
             .depth = event_depth,
+            .namespace_uri = element_namespace,
         };
     }
 
@@ -512,6 +601,7 @@ pub const Parser = struct {
             .value = value,
             .name_range = .{ .start = name_start, .end = name_start + name_len },
             .value_range = .{ .start = value_start, .end = value_start + value.len },
+            .namespace_uri = "",
         };
     }
 
@@ -530,12 +620,18 @@ pub const Parser = struct {
         self.pos += 1;
 
         if (self.depth == 0) return self.fail(error.MismatchedEndTag, name_start);
+        var end_namespace: []const u8 = "";
+        if (self.options.namespaces) {
+            const resolved = try self.ns.resolveElementName(name);
+            end_namespace = resolved.uri;
+        }
         const expected = self.open_names[self.depth - 1];
         if (!std.mem.eql(u8, expected, name)) {
             return self.fail(error.MismatchedEndTag, name_start);
         }
         const event_depth = self.depth;
         self.depth -= 1;
+        if (self.options.namespaces) self.ns.pop();
         if (self.depth < self.entity_entry_depth) {
             return self.fail(error.MismatchedEndTag, name_start);
         }
@@ -544,6 +640,7 @@ pub const Parser = struct {
             .name = name,
             .name_range = .{ .start = name_start, .end = name_start + name_len },
             .depth = event_depth,
+            .namespace_uri = end_namespace,
         };
     }
 
@@ -762,6 +859,11 @@ pub const Parser = struct {
         const target_len = chars.scanName(self.input[target_start..]);
         if (target_len == 0) return self.fail(error.InvalidName, target_start);
         const target = self.input[target_start .. target_start + target_len];
+        if (self.options.namespaces and
+            std.mem.indexOfScalar(u8, target, ':') != null)
+        {
+            return self.fail(error.InvalidQualifiedName, target_start);
+        }
         if (std.ascii.eqlIgnoreCase(target, "xml")) {
             return self.fail(error.InvalidProcessingInstruction, target_start);
         }
@@ -1430,6 +1532,11 @@ pub const Parser = struct {
         }
 
         const name = try scanner.scanName();
+        if (self.options.namespaces and
+            std.mem.indexOfScalar(u8, name, ':') != null)
+        {
+            return scanner.fail(error.InvalidQualifiedName);
+        }
         const duplicate = if (parameter)
             self.parameter_entities.find(name) != null
         else
@@ -1559,7 +1666,7 @@ pub const Parser = struct {
         var scanner = DtdScanner.init(self, self.pos, end);
         if (!scanner.eat("<!ATTLIST")) return scanner.fail(error.InvalidDoctype);
         try scanner.requireWhitespace();
-        _ = try scanner.scanName();
+        const element_name = try scanner.scanName();
         while (true) {
             const whitespace = scanner.skipWhitespace();
             if (scanner.peek() == '>') {
@@ -1567,9 +1674,16 @@ pub const Parser = struct {
                 break;
             }
             if (whitespace == 0) return scanner.fail(error.InvalidDoctype);
-            _ = try scanner.scanName();
+            const attribute_name = try scanner.scanName();
             try scanner.requireWhitespace();
-            try scanAttType(&scanner);
+            const tokenized = try scanAttType(&scanner);
+            if (tokenized and self.tokenized_attr_count < self.tokenized_attrs.len) {
+                self.tokenized_attrs[self.tokenized_attr_count] = .{
+                    .element = element_name,
+                    .name = attribute_name,
+                };
+                self.tokenized_attr_count += 1;
+            }
             try scanner.requireWhitespace();
             try scanDefaultDecl(&scanner);
         }
@@ -1582,7 +1696,12 @@ pub const Parser = struct {
         var scanner = DtdScanner.init(self, self.pos, end);
         if (!scanner.eat("<!NOTATION")) return scanner.fail(error.InvalidDoctype);
         try scanner.requireWhitespace();
-        _ = try scanner.scanName();
+        const notation_name = try scanner.scanName();
+        if (self.options.namespaces and
+            std.mem.indexOfScalar(u8, notation_name, ':') != null)
+        {
+            return scanner.fail(error.InvalidQualifiedName);
+        }
         try scanner.requireWhitespace();
         if (scanner.eatKeyword("SYSTEM")) {
             try scanner.requireWhitespace();
@@ -2049,6 +2168,21 @@ pub const Parser = struct {
         return false;
     }
 
+    fn isTokenizedAttribute(
+        self: *const Parser,
+        element: []const u8,
+        name: []const u8,
+    ) bool {
+        for (self.tokenized_attrs[0..self.tokenized_attr_count]) |decl| {
+            if (std.mem.eql(u8, decl.element, element) and
+                std.mem.eql(u8, decl.name, name))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     fn startsWith(self: *const Parser, prefix: []const u8) bool {
         return std.mem.startsWith(u8, self.input[self.pos..], prefix);
     }
@@ -2261,13 +2395,14 @@ fn scanContentParticle(scanner: *DtdScanner) Error!void {
     }
 }
 
-fn scanAttType(scanner: *DtdScanner) Error!void {
+fn scanAttType(scanner: *DtdScanner) Error!bool {
+    if (scanner.eatKeyword("CDATA")) return false;
     const tokenized = [_][]const u8{
-        "CDATA",    "IDREFS",  "IDREF", "ID", "ENTITIES", "ENTITY",
+        "IDREFS",   "IDREF",   "ID", "ENTITIES", "ENTITY",
         "NMTOKENS", "NMTOKEN",
     };
     for (tokenized) |keyword| {
-        if (scanner.eatKeyword(keyword)) return;
+        if (scanner.eatKeyword(keyword)) return true;
     }
     if (scanner.eatKeyword("NOTATION")) {
         try scanner.requireWhitespace();
@@ -2282,7 +2417,7 @@ fn scanAttType(scanner: *DtdScanner) Error!void {
             _ = scanner.skipWhitespace();
         }
         try scanner.expectByte(')');
-        return;
+        return true;
     }
     if (scanner.peek() == '(') {
         scanner.index += 1;
@@ -2296,7 +2431,7 @@ fn scanAttType(scanner: *DtdScanner) Error!void {
             _ = scanner.skipWhitespace();
         }
         try scanner.expectByte(')');
-        return;
+        return true;
     }
     return scanner.fail(error.InvalidDoctype);
 }
@@ -2632,6 +2767,35 @@ fn evaluateConditionals(
         }
         pos = scan;
     }
+}
+
+fn hasWhitespace(value: []const u8) bool {
+    for (value) |byte| {
+        if (chars.isWhitespace(byte)) return true;
+    }
+    return false;
+}
+
+fn normalizeTokenizedValue(
+    allocator: std.mem.Allocator,
+    value: []const u8,
+) Error![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var pending_space = false;
+    var started = false;
+    for (value) |byte| {
+        if (chars.isWhitespace(byte)) {
+            if (started) pending_space = true;
+            continue;
+        }
+        if (pending_space) {
+            try out.append(allocator, ' ');
+            pending_space = false;
+        }
+        try out.append(allocator, byte);
+        started = true;
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 fn isPubidChar(byte: u8) bool {

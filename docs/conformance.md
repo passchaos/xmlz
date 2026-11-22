@@ -12,9 +12,9 @@ zig build conformance
 Expected summary:
 
 ```text
-W3C XML conformance: 2585 total, 1926 passed, 0 failed, 635 skipped (XML 1.1/namespace), 24 optional
+W3C XML conformance: 2585 total, 1971 passed, 0 failed, 587 skipped (XML 1.1), 27 optional
   entities=parameter: 169/169 passed (0 failed)
-  entities=unspecified: 471/471 passed (0 failed)
+  entities=unspecified: 516/516 passed (0 failed)
   entities=both: 61/61 passed (0 failed)
   entities=general: 17/17 passed (0 failed)
   entities=none: 1208/1208 passed (0 failed)
@@ -32,13 +32,13 @@ W3C XML conformance: 2585 total, 1926 passed, 0 failed, 635 skipped (XML 1.1/nam
 Entries are skipped when any of the following applies:
 
 - the suite marks the test as XML 1.1 (`VERSION="1.1"` or an XML 1.1 profile),
-- the test is in the namespace test catalogues,
 - the suite marks the test for XML 1.0 editions 1-4 only (`EDITION` without
   `5`). xmlz implements the Fifth Edition character and name productions, so
   those tests assert the opposite verdict.
 
-External subsets and external parsed entities are resolved relative to the
-document under test. The harness supplies an allocator and a file resolver to
+Namespace tests run with `Parser.Options.namespaces = true`; all XML 1.0
+namespace tests pass. External subsets and external parsed entities are
+resolved relative to the document under test. The harness supplies an allocator and a file resolver to
 the parser; the parser itself never touches the filesystem.
 
 ## Notes

@@ -25,9 +25,12 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **Encoding normalization.** UTF-8, UTF-16 LE/BE, UTF-32 LE/BE, Windows-1251,
   and BOM handling are provided before scanning. Declared encodings are
   validated instead of silently ignored.
+- **Namespaces in XML 1.0.** QName validation, binding stacks, reserved
+  prefixes, default-namespace rules, duplicate expanded attributes, and
+  namespace-aware URI normalization are enforced at pull-parser level.
 - **W3C conformance evidence.** The repository ships the W3C XML conformance
-  suite and a harness. xmlz currently passes **1926/1926 applicable XML 1.0
-  tests** (the remaining suite entries are XML 1.1 or namespace tests; see
+  suite and a harness. xmlz currently passes **1971/1971 applicable XML 1.0
+  and Namespaces 1.0 tests** (the remaining suite entries are XML 1.1; see
   `docs/conformance.md`).
 - **Legacy primitives preserved.** The allocation-free tag/attribute scanners
   extracted from `zsvg` remain available and are used by the pull parser's
@@ -38,7 +41,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | Area | State |
 | --- | --- |
 | XML 1.0 core + DTD | Complete, W3C suite green |
-| Namespaces in XML | In progress |
+| Namespaces in XML | Complete, W3C suite green |
 | DOM tree | In progress |
 | Writer/serializer | In progress |
 | XML 1.1 | Not implemented |
