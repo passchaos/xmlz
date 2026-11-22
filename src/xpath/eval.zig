@@ -5,6 +5,7 @@ const ast = @import("ast.zig");
 const value = @import("value.zig");
 const dom = @import("../dom.zig");
 const namespace = @import("../namespace.zig");
+const exslt = @import("exslt.zig");
 const xmlbase = @import("../xmlbase.zig");
 
 pub const Error = error{
@@ -59,8 +60,37 @@ const Evaluator = struct {
             .filter => |filter| self.evalFilter(filter, context),
             .literal => |literal| .{ .string = literal },
             .number => |number| .{ .number = number },
-            .variable => |name| context.variable(name) orelse
-                error.UndefinedVariable,
+            .variable => |name| blk: {
+                const found = context.variable(name) orelse blk2: {
+                    const resolver = context.variable_resolver orelse
+                        return error.UndefinedVariable;
+                    break :blk2 (resolver.resolve(
+                        resolver.context,
+                        name,
+                    ) catch |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        else => return error.UndefinedVariable,
+                    }) orelse return error.UndefinedVariable;
+                };
+                if (found == .tree) {
+                    // libxslt implicitly treats result tree fragments as
+                    // node-sets containing the fragment root.
+                    const converter = context.tree_converter orelse
+                        break :blk found;
+                    const converted = try converter.convert(
+                        converter.context,
+                        self.allocator,
+                        found.tree,
+                    ) orelse break :blk found;
+                    const nodes = try self.allocator.alloc(
+                        value.NodeRef,
+                        1,
+                    );
+                    nodes[0] = converted;
+                    break :blk .{ .node_set = nodes };
+                }
+                break :blk found;
+            },
             .function_call => |call| self.evalFunction(call, context),
         };
     }
@@ -915,10 +945,17 @@ const Evaluator = struct {
             }
             const number = try self.toNumber(items[0], context);
             const pattern = try self.toString(items[1], context);
-            const format_name = if (items.len == 3)
-                try self.toString(items[2], context)
-            else
-                null;
+            const format_name: ?value.QualifiedName = if (items.len == 3) blk: {
+                const raw = try self.toString(items[2], context);
+                const qname = namespace.splitQName(raw) catch
+                    return error.InvalidArgument;
+                var uri: []const u8 = "";
+                if (qname.prefix.len != 0) {
+                    uri = context.resolvePrefix(qname.prefix) orelse
+                        return error.InvalidArgument;
+                }
+                break :blk .{ .uri = uri, .local = qname.local };
+            } else null;
             const formatter = context.number_formatter orelse
                 return error.UnknownFunction;
             const text = formatter.format(
@@ -1192,6 +1229,9 @@ const Evaluator = struct {
                     "node-set",
                 ) };
             }
+            if (exsltBuiltin(context, raw) != null) {
+                return .{ .boolean = true };
+            }
             if (context.extension_functions) |hooks| {
                 if (hooks.available(hooks.context, qname.uri, qname.local)) {
                     return .{ .boolean = true };
@@ -1283,6 +1323,49 @@ const Evaluator = struct {
                 try out.appendSlice(self.allocator, roots);
             }
             return .{ .node_set = try self.sortDedup(out.items) };
+        }
+        if (exsltBuiltin(context, name)) |builtin| {
+            switch (builtin) {
+                .distinct => {
+                    if (items.len != 1) return error.InvalidArgument;
+                    const nodes = try self.requireNodeSet(items[0]);
+                    var out: std.ArrayList(value.NodeRef) = .empty;
+                    var seen: std.ArrayList([]const u8) = .empty;
+                    for (nodes) |node| {
+                        const text = try self.stringValue(context, node);
+                        var duplicate = false;
+                        for (seen.items) |existing| {
+                            if (std.mem.eql(u8, existing, text)) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (duplicate) continue;
+                        try seen.append(self.allocator, text);
+                        try out.append(self.allocator, node);
+                    }
+                    return .{
+                        .node_set = try out.toOwnedSlice(self.allocator),
+                    };
+                },
+                .replace => {
+                    if (items.len != 3) return error.InvalidArgument;
+                    return .{ .string = try exslt.replaceAll(
+                        self.allocator,
+                        try self.toString(items[0], context),
+                        try self.toString(items[1], context),
+                        try self.toString(items[2], context),
+                    ) };
+                },
+                .date_add => {
+                    if (items.len != 2) return error.InvalidArgument;
+                    return .{ .string = try exslt.dateAdd(
+                        self.allocator,
+                        try self.toString(items[0], context),
+                        try self.toString(items[1], context),
+                    ) };
+                },
+            }
         }
         if (context.extension_functions) |hooks| {
             const extension_name = namespace.splitQName(name) catch null;
@@ -1574,6 +1657,33 @@ const xslt_elements = [_][]const u8{
     "otherwise",
     "decimal-format",
 };
+
+const ExsltBuiltin = enum { distinct, replace, date_add };
+
+fn exsltBuiltin(
+    context: *const value.Context,
+    raw: []const u8,
+) ?ExsltBuiltin {
+    const qname = namespace.splitQName(raw) catch return null;
+    if (qname.prefix.len == 0) return null;
+    const uri = context.resolvePrefix(qname.prefix) orelse return null;
+    if (std.mem.eql(u8, uri, "http://exslt.org/sets") and
+        std.mem.eql(u8, qname.local, "distinct"))
+    {
+        return .distinct;
+    }
+    if (std.mem.eql(u8, uri, "http://exslt.org/strings") and
+        std.mem.eql(u8, qname.local, "replace"))
+    {
+        return .replace;
+    }
+    if (std.mem.eql(u8, uri, "http://exslt.org/dates-and-times") and
+        std.mem.eql(u8, qname.local, "add"))
+    {
+        return .date_add;
+    }
+    return null;
+}
 
 fn isExsltNodeSet(
     context: *const value.Context,

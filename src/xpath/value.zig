@@ -84,6 +84,11 @@ pub const KeyError = error{OutOfMemory};
 pub const NumberFormatError = error{ OutOfMemory, InvalidFormat };
 
 /// XSLT `format-number()` formatter hook.
+pub const QualifiedName = struct {
+    uri: []const u8,
+    local: []const u8,
+};
+
 pub const NumberFormatter = struct {
     context: ?*anyopaque = null,
     format: *const fn (
@@ -91,7 +96,7 @@ pub const NumberFormatter = struct {
         allocator: std.mem.Allocator,
         number: f64,
         pattern: []const u8,
-        format_name: ?[]const u8,
+        format_name: ?QualifiedName,
     ) NumberFormatError![]const u8,
 };
 
@@ -169,6 +174,16 @@ pub const ExtensionFunctionHooks = struct {
     ) anyerror!Value,
 };
 
+/// Resolves variables that are not present in `variables`, such as lazily
+/// evaluated XSLT globals.
+pub const VariableResolver = struct {
+    context: *anyopaque,
+    resolve: *const fn (
+        context: *anyopaque,
+        name: []const u8,
+    ) anyerror!?Value,
+};
+
 pub const Context = struct {
     document: *const dom.Document,
     node: NodeRef,
@@ -189,6 +204,8 @@ pub const Context = struct {
     tree_converter: ?TreeConverter = null,
     /// User-defined extension functions.
     extension_functions: ?ExtensionFunctionHooks = null,
+    /// Resolver for variables outside the local binding list.
+    variable_resolver: ?VariableResolver = null,
     /// Base URI used by `document()` when no second argument is given.
     document_base: []const u8 = "",
     /// Enables XSLT-specific functions such as `generate-id()`,
@@ -238,6 +255,7 @@ pub const Context = struct {
             .document_range = self.document_range,
             .tree_converter = self.tree_converter,
             .extension_functions = self.extension_functions,
+            .variable_resolver = self.variable_resolver,
             .document_base = self.document_base,
             .xslt_functions = self.xslt_functions,
             .position = position,

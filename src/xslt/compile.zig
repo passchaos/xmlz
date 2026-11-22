@@ -42,9 +42,16 @@ pub const KeyDef = struct {
     use: CompiledExpr,
 };
 
+pub const NameRef = struct {
+    uri: []const u8,
+    local: []const u8,
+};
+
 pub const AttributeSet = struct {
+    /// Local name; the namespace is in `name_uri`.
     name: []const u8,
-    uses: []const []const u8,
+    name_uri: []const u8 = "",
+    uses: []const NameRef,
     raw_instructions: []const Instruction,
     expanded: ?[]const Instruction = null,
     visiting: bool = false,
@@ -77,6 +84,7 @@ pub const SpaceRule = struct {
 
 pub const DecimalFormat = struct {
     name: ?[]const u8 = null,
+    name_uri: []const u8 = "",
     decimal_separator: u21 = '.',
     grouping_separator: u21 = ',',
     infinity: []const u8 = "Infinity",
@@ -214,7 +222,7 @@ pub const LiteralElement = struct {
     ns: []const u8,
     namespaces: []const NamespaceDecl,
     attributes: []const LiteralAttribute,
-    attribute_sets: []const []const u8 = &.{},
+    attribute_sets: []const NameRef = &.{},
     body: []const Instruction,
 };
 
@@ -273,7 +281,7 @@ pub const ElementInstruction = struct {
     name: Avt,
     namespace_uri: ?Avt = null,
     namespaces: []const namespace.Binding = &.{},
-    attribute_sets: []const []const u8 = &.{},
+    attribute_sets: []const NameRef = &.{},
     body: []const Instruction,
 };
 
@@ -459,6 +467,15 @@ const Compiler = struct {
         const root_node = document.node(root);
         const full_stylesheet =
             isXsl(root_node, "stylesheet") or isXsl(root_node, "transform");
+        if (full_stylesheet) {
+            if (document.attribute(root, "version")) |version| {
+                if (!std.mem.eql(u8, version, "1.0") and
+                    !std.mem.eql(u8, version, "1.1"))
+                {
+                    return error.InvalidStylesheet;
+                }
+            }
+        }
         if (!full_stylesheet) {
             if (!principal) return error.InvalidStylesheet;
             const precedence = fixed_precedence orelse blk: {
@@ -812,7 +829,11 @@ const Compiler = struct {
 
     fn compileDecimalFormat(self: *Compiler, id: dom.NodeId) Error!void {
         var format: DecimalFormat = .{};
-        format.name = self.document.attribute(id, "name");
+        if (self.document.attribute(id, "name")) |raw_name| {
+            const name = try self.resolveName(id, raw_name);
+            format.name = name.local;
+            format.name_uri = name.uri;
+        }
         if (self.document.attribute(id, "decimal-separator")) |value| {
             format.decimal_separator = try singleCodepoint(value);
         }
@@ -848,6 +869,7 @@ const Compiler = struct {
                 return error.InvalidStylesheet;
             }
             if (existing.name != null and format.name != null and
+                std.mem.eql(u8, existing.name_uri, format.name_uri) and
                 std.mem.eql(u8, existing.name.?, format.name.?))
             {
                 return error.InvalidStylesheet;
@@ -857,11 +879,12 @@ const Compiler = struct {
     }
 
     fn compileAttributeSet(self: *Compiler, id: dom.NodeId) Error!void {
-        const name = self.document.attribute(id, "name") orelse
+        const raw_name = self.document.attribute(id, "name") orelse
             return error.InvalidStylesheet;
-        var uses: []const []const u8 = &.{};
+        const name = try self.resolveName(id, raw_name);
+        var uses: []const NameRef = &.{};
         if (self.document.attribute(id, "use-attribute-sets")) |value| {
-            uses = try self.parseNames(value);
+            uses = try self.parseNameRefs(id, value);
         }
         var instructions: std.ArrayList(Instruction) = .empty;
         var child = self.document.node(id).first_child;
@@ -878,18 +901,23 @@ const Compiler = struct {
             try self.compileInstruction(child, false, &instructions);
         }
         try self.attribute_sets.append(self.arena, .{
-            .name = name,
+            .name = name.local,
+            .name_uri = name.uri,
             .precedence = self.current_precedence,
             .uses = uses,
             .raw_instructions = try instructions.toOwnedSlice(self.arena),
         });
     }
 
-    fn parseNames(self: *Compiler, value: []const u8) Error![]const []const u8 {
-        var names: std.ArrayList([]const u8) = .empty;
+    fn parseNameRefs(
+        self: *Compiler,
+        id: dom.NodeId,
+        value: []const u8,
+    ) Error![]const NameRef {
+        var names: std.ArrayList(NameRef) = .empty;
         var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n");
         while (tokens.next()) |token| {
-            try names.append(self.arena, token);
+            try names.append(self.arena, try self.resolveName(id, token));
         }
         return names.toOwnedSlice(self.arena);
     }
@@ -905,11 +933,15 @@ const Compiler = struct {
     /// declarations therefore run last and override earlier attributes.
     fn expandNamedAttributeSet(
         self: *Compiler,
-        name: []const u8,
+        name: NameRef,
     ) Error![]const Instruction {
         var list: std.ArrayList(Instruction) = .empty;
         for (self.attribute_sets.items, 0..) |set, index| {
-            if (!std.mem.eql(u8, set.name, name)) continue;
+            if (!std.mem.eql(u8, set.name, name.local) or
+                !std.mem.eql(u8, set.name_uri, name.uri))
+            {
+                continue;
+            }
             try list.appendSlice(
                 self.arena,
                 try self.expandAttributeSet(index),
@@ -1045,6 +1077,15 @@ const Compiler = struct {
             });
             return;
         }
+        if (node.ns.len != 0 and
+            !std.mem.eql(u8, node.ns, xsl_namespace) and
+            try self.isExtensionNamespace(id, node.ns))
+        {
+            // Extension instructions are unsupported: process xsl:fallback
+            // children and ignore the rest.
+            try self.compileFallbacks(id, preserve, body);
+            return;
+        }
         if (node.ns.len == 0 or !std.mem.eql(u8, node.ns, xsl_namespace)) {
             try body.append(self.arena, .{
                 .literal_element = try self.compileLiteralElement(id, preserve),
@@ -1132,7 +1173,7 @@ const Compiler = struct {
                 instruction.namespace_uri = try self.compileAvt(id, uri);
             }
             if (self.document.attribute(id, "use-attribute-sets")) |value| {
-                instruction.attribute_sets = try self.parseNames(value);
+                instruction.attribute_sets = try self.parseNameRefs(id, value);
             }
             try body.append(self.arena, .{ .element = instruction });
         } else if (std.mem.eql(u8, local, "attribute")) {
@@ -1297,16 +1338,11 @@ const Compiler = struct {
         return instruction;
     }
 
-    const FunctionName = struct {
-        uri: []const u8,
-        local: []const u8,
-    };
-
-    fn resolveFunctionName(
+    fn resolveName(
         self: *Compiler,
         id: dom.NodeId,
         raw: []const u8,
-    ) Error!FunctionName {
+    ) Error!NameRef {
         const parts = namespace.splitQName(raw) catch
             return error.InvalidStylesheet;
         if (parts.prefix.len == 0) {
@@ -1325,7 +1361,7 @@ const Compiler = struct {
     fn compileFunction(self: *Compiler, id: dom.NodeId) Error!void {
         const raw_name = self.document.attribute(id, "name") orelse
             return error.InvalidStylesheet;
-        const name = try self.resolveFunctionName(id, raw_name);
+        const name = try self.resolveName(id, raw_name);
         var params: std.ArrayList(Variable) = .empty;
         var body: std.ArrayList(Instruction) = .empty;
         const saved_function = self.compiling_function;
@@ -1394,6 +1430,93 @@ const Compiler = struct {
             return .{ .select = try self.parseExpression(id, select) };
         }
         return .{ .body = try self.compileBody(id, false) };
+    }
+
+    fn compileFallbacks(
+        self: *Compiler,
+        id: dom.NodeId,
+        preserve: bool,
+        body: *std.ArrayList(Instruction),
+    ) Error!void {
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const node = self.document.node(child);
+            if (node.kind != .element) continue;
+            if (!isXsl(node, "fallback")) continue;
+            try body.appendSlice(
+                self.arena,
+                try self.compileBody(child, preserve),
+            );
+        }
+    }
+
+    /// True when `uri` is designated by an in-scope
+    /// `extension-element-prefixes` attribute.
+    fn isExtensionNamespace(
+        self: *Compiler,
+        id: dom.NodeId,
+        uri: []const u8,
+    ) Error!bool {
+        var current = id;
+        while (true) {
+            const current_node = self.document.node(current);
+            const current_is_xsl = std.mem.eql(
+                u8,
+                current_node.ns,
+                xsl_namespace,
+            );
+            for (self.document.attributesOf(current)) |attr| {
+                const namespaced = attr.ns.len != 0 and
+                    std.mem.eql(u8, attr.ns, xsl_namespace);
+                if (!namespaced and !(current_is_xsl and attr.ns.len == 0)) {
+                    continue;
+                }
+                if (!std.mem.eql(
+                    u8,
+                    attr.localName(),
+                    "extension-element-prefixes",
+                )) {
+                    continue;
+                }
+                var tokens = std.mem.tokenizeAny(
+                    u8,
+                    attr.value,
+                    " \t\r\n",
+                );
+                while (tokens.next()) |token| {
+                    if (std.mem.eql(u8, token, "#default")) {
+                        const bindings = try self.document.inScopeNamespaces(
+                            self.arena,
+                            current,
+                        );
+                        for (bindings) |binding| {
+                            if (binding.prefix.len == 0 and
+                                std.mem.eql(u8, binding.uri, uri))
+                            {
+                                return true;
+                            }
+                        }
+                        continue;
+                    }
+                    const bindings = try self.document.inScopeNamespaces(
+                        self.arena,
+                        current,
+                    );
+                    for (bindings) |binding| {
+                        if (std.mem.eql(u8, binding.prefix, token) and
+                            std.mem.eql(u8, binding.uri, uri))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            const parent = current_node.parent;
+            if (parent == dom.null_node) break;
+            if (self.document.node(parent).kind != .element) break;
+            current = parent;
+        }
+        return false;
     }
 
     fn compileLiteralElement(
@@ -1518,7 +1641,7 @@ const Compiler = struct {
             xsl_namespace,
             "use-attribute-sets",
         )) |value| {
-            element.attribute_sets = try self.parseNames(value);
+            element.attribute_sets = try self.parseNameRefs(id, value);
         }
         element.body = try self.compileBody(id, preserve);
         return element;

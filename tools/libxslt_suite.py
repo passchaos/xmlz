@@ -23,31 +23,14 @@ except ImportError:  # pragma: no cover
 # functions or libxslt-specific formatting details.
 KNOWN_FAILURES = {
     "bug-100.xsl",
-    "bug-116.xsl",
-    "bug-152.xsl",
     "bug-155.xsl",
-    "bug-157.xsl",
-    "bug-175.xsl",
     "bug-187.xsl",
-    "bug-190.xsl",
-    "bug-192.xsl",
-    "bug-197.xsl",
-    "bug-205.xsl",
-    "bug-211.xsl",
-    "bug-220.xsl",
-    "bug-225.xsl",
-    "bug-54.xsl",
-    "bug-56.xsl",
     "bug-65.xsl",
     "bug-68.xsl",
     "bug-6-.xsl",
-    "bug-82.xsl",
-    "bug-83.xsl",
     "bug-90.xsl",
     "bug-98.xsl",
-    "bug-99.xsl",
     "character.xsl",
-    "date_add.xsl",
 }
 
 
@@ -121,7 +104,9 @@ def main():
             capture_output=True,
         )
         if expected_error.strip():
-            ok = result.returncode != 0
+            # libxslt writes diagnostics but may still exit successfully;
+            # require that xmlz reports something on stderr.
+            ok = len(result.stderr.strip()) != 0
         elif result.returncode != 0:
             ok = False
         else:

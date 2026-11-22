@@ -100,6 +100,9 @@ pub fn main(init: std.process.Init) !void {
     );
     defer result.deinit();
 
+    for (result.messages) |message| {
+        std.debug.print("{s}\n", .{message});
+    }
     const output = try result.toOwnedSliceWithOptions(
         init.gpa,
         .{ .libxslt_compat = true },

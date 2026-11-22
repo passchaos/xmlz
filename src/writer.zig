@@ -40,6 +40,8 @@ pub const Options = struct {
     /// Encoding name written into the XML declaration; null omits the
     /// encoding pseudo-attribute (libxslt omits it for default UTF-8 output).
     encoding_label: ?[]const u8 = null,
+    /// When set, insert an XHTML Content-Type meta element into <head>.
+    html_meta_charset: ?[]const u8 = null,
 };
 
 pub const Error = std.Io.Writer.Error || error{
@@ -255,6 +257,11 @@ fn writeElement(
             if (std.mem.eql(u8, attr.value, default_ns)) continue;
         } else if (std.mem.startsWith(u8, attr.name, "xmlns:")) {
             const prefix = attr.name["xmlns:".len..];
+            if (std.mem.eql(u8, prefix, "xml") and
+                std.mem.eql(u8, attr.value, "http://www.w3.org/XML/1998/namespace"))
+            {
+                continue;
+            }
             if (ancestorBindsPrefix(doc, id, prefix, attr.value)) continue;
         }
         try writer.writeByte(' ');
@@ -273,6 +280,21 @@ fn writeElement(
 
     const block = pretty and isBlockElement(doc, id);
     if (block) try writer.writeByte('\n');
+
+    if (options.html_meta_charset) |charset| {
+        if (std.mem.eql(u8, node.local, "head") and
+            !hasContentTypeMeta(doc, id))
+        {
+            if (block) try writeIndent(writer, depth + 1, options.indent.?);
+            try writer.writeAll(
+                "<meta http-equiv=\"Content-Type\" content=\"text/html; " ++
+                    "charset=",
+            );
+            try escapeAttributeVersion(writer, charset, version);
+            try writer.writeAll("\" />");
+            if (block) try writer.writeByte('\n');
+        }
+    }
 
     var child = node.first_child;
     const cdata = isCdataElement(options, node);
@@ -326,6 +348,21 @@ fn ancestorBindsPrefix(
             return std.mem.eql(u8, attr.value, uri);
         }
         current = node.parent;
+    }
+    return false;
+}
+
+fn hasContentTypeMeta(doc: *const dom.Document, id: dom.NodeId) bool {
+    var child = doc.node(id).first_child;
+    while (child != dom.null_node) : (child = doc.node(child).next_sibling) {
+        const node = doc.node(child);
+        if (node.kind != .element) continue;
+        if (!std.mem.eql(u8, node.local, "meta")) continue;
+        if (doc.attribute(child, "http-equiv") != null or
+            doc.attribute(child, "charset") != null)
+        {
+            return true;
+        }
     }
     return false;
 }

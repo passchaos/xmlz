@@ -1298,10 +1298,11 @@ def main():
                 method = output_element.get("method")
             else:
                 result_root = expected_result.getroot()
-                if result_root is not None and etree.QName(
-                    result_root
-                ).localname.lower() == "html":
-                    method = "html"
+                if result_root is not None:
+                    qname = etree.QName(result_root)
+                    if (qname.namespace in (None, "")) and \
+                            qname.localname.lower() == "html":
+                        method = "html"
             if method == "text":
                 expected_text = str(expected_result)
                 actual_text = actual.stdout.decode("utf-8", "replace")

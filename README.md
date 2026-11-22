@@ -69,10 +69,12 @@ then exposes them through a pull parser and reusable lexical primitives.
   and the core instruction set, reusing the XPath engine for match patterns
   and expressions, with 87/87 differential checks against libxslt (including
   catalog-aware includes and `document()`), plus the libxslt general
-  regression suite (`zig build xslt-suite`, 179 passed with 26 tracked
-  differences). EXSLT `func:function` user-defined functions and
-  `libxslt:node-set` are supported. HTML output matches libxslt's method
-  auto-detection, charset meta element, URI escaping, and formatting.
+  regression suite (`zig build xslt-suite`, 196 passed with 9 tracked
+  differences). EXSLT `func:function` user-defined functions,
+  `libxslt:node-set`, `set:distinct`, `str:replace`, and `date:add` are
+  supported; globals are evaluated lazily and RTFs act as node-sets like
+  libxslt. HTML/XHTML output matches libxslt's method auto-detection,
+  charset meta elements, URI escaping, and formatting.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,

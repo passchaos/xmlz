@@ -100,11 +100,14 @@ pub const Result = struct {
             method == .xml)
         {
             const root = self.document.root();
-            if (root != dom.null_node and std.ascii.eqlIgnoreCase(
-                self.document.node(root).local,
-                "html",
-            )) {
-                method = .html;
+            if (root != dom.null_node) {
+                const root_node = self.document.node(root);
+                if (root_node.ns.len == 0 and std.ascii.eqlIgnoreCase(
+                    root_node.local,
+                    "html",
+                )) {
+                    method = .html;
+                }
             }
         }
         if (method == .text) {
@@ -139,6 +142,21 @@ pub const Result = struct {
             );
             return;
         }
+        const xhtml_charset: ?[]const u8 = blk: {
+            if (!options.libxslt_compat) break :blk null;
+            const root = self.document.root();
+            if (root == dom.null_node) break :blk null;
+            const root_node = self.document.node(root);
+            if (!std.mem.eql(
+                u8,
+                root_node.ns,
+                "http://www.w3.org/1999/xhtml",
+            )) break :blk null;
+            if (!std.ascii.eqlIgnoreCase(root_node.local, "html")) {
+                break :blk null;
+            }
+            break :blk encoding_label orelse "UTF-8";
+        };
         try writer_mod.writeDocument(out, &self.document, .{
             .xml_declaration = method == .xml and
                 !self.output.omit_xml_declaration,
@@ -146,6 +164,7 @@ pub const Result = struct {
             .doctype = doctype,
             .cdata_elements = self.output.cdata_elements,
             .encoding_label = encoding_label,
+            .html_meta_charset = xhtml_charset,
         });
         // libxslt's XML serialization ends with a newline.
         if (options.libxslt_compat and !self.output.indent) {
@@ -229,7 +248,6 @@ pub fn apply(
     try runtime.buildTemplateMatches();
     runtime.suppress_refresh = false;
     try runtime.evaluateGlobals(options.parameters);
-    runtime.global_count = runtime.variables.items.len;
     try runtime.applyTemplates(&.{.{ .node = 0 }}, null, &.{});
     runtime.deinitMergedSource();
     runtime.deinitLoadedDocuments();
@@ -382,6 +400,11 @@ const Runtime = struct {
     global_count: usize = 0,
     /// Value produced by the most recent EXSLT `func:result`.
     function_result: ?xpath.Value = null,
+    /// Lazy global variable evaluation state.
+    globals: []const compile.Variable = &.{},
+    global_values: []?xpath.Value = &.{},
+    global_states: []u8 = &.{},
+    supplied_parameters: []const xpath.Variable = &.{},
     template_states: []TemplateState = &.{},
     messages: std.ArrayList([]const u8) = .empty,
     key_map: KeyMap,
@@ -725,13 +748,12 @@ const Runtime = struct {
         namespace_uri: []const u8,
         local: []const u8,
     ) bool {
-        var strip = false;
+        // The last matching declaration wins (imports are compiled first).
+        var winner: ?compile.SpaceRule = null;
         for (self.stylesheet.space_rules) |rule| {
-            if (!rule.matches(namespace_uri, local)) continue;
-            if (!rule.strip) return false;
-            strip = true;
+            if (rule.matches(namespace_uri, local)) winner = rule;
         }
-        return strip;
+        return if (winner) |rule| rule.strip else false;
     }
 
     fn buildKeys(self: *Runtime) Error!void {
@@ -804,6 +826,10 @@ const Runtime = struct {
                 .context = self,
                 .available = extensionFunctionAvailable,
                 .call = callExtensionFunction,
+            },
+            .variable_resolver = .{
+                .context = self,
+                .resolve = resolveGlobalVariable,
             },
             .document_base = self.base_uri,
         };
@@ -909,6 +935,10 @@ const Runtime = struct {
                 .available = extensionFunctionAvailable,
                 .call = callExtensionFunction,
             },
+            .variable_resolver = .{
+                .context = self,
+                .resolve = resolveGlobalVariable,
+            },
             .document_base = self.base_uri,
         };
         var result = xpath_eval.evaluate(
@@ -934,27 +964,56 @@ const Runtime = struct {
         self: *Runtime,
         parameters: []const xpath.Variable,
     ) Error!void {
-        for (self.stylesheet.globals) |global| {
-            var supplied: ?xpath.Value = null;
-            if (global.param) {
-                for (parameters) |parameter| {
-                    if (std.mem.eql(u8, parameter.name, global.name)) {
-                        supplied = parameter.value;
-                        break;
-                    }
+        self.globals = self.stylesheet.globals;
+        self.supplied_parameters = parameters;
+        self.global_values = try self.allocator.alloc(
+            ?xpath.Value,
+            self.globals.len,
+        );
+        @memset(self.global_values, null);
+        self.global_states = try self.allocator.alloc(u8, self.globals.len);
+        @memset(self.global_states, 0);
+        for (0..self.globals.len) |index| {
+            _ = try self.ensureGlobal(index);
+        }
+    }
+
+    /// Evaluate a global on demand so globals can reference each other in any
+    /// order, including through templates applied from a global's body.
+    fn ensureGlobal(self: *Runtime, index: usize) Error!xpath.Value {
+        switch (self.global_states[index]) {
+            2 => return self.global_values[index].?,
+            1 => return error.InvalidStylesheet,
+            else => {},
+        }
+        self.global_states[index] = 1;
+        const global = self.globals[index];
+        var supplied: ?xpath.Value = null;
+        if (global.param) {
+            for (self.supplied_parameters) |parameter| {
+                if (std.mem.eql(u8, parameter.name, global.name)) {
+                    supplied = parameter.value;
+                    break;
                 }
             }
-            const value = supplied orelse try self.evaluateVariableValue(
+        }
+        var value: xpath.Value = undefined;
+        if (supplied) |provided| {
+            value = provided;
+        } else {
+            value = self.evaluateVariableValue(
                 global.value,
                 .{ .node = 0 },
                 1,
                 1,
-            );
-            try self.variables.append(self.allocator, .{
-                .name = global.name,
-                .value = value,
-            });
+            ) catch |err| {
+                self.global_states[index] = 0;
+                return err;
+            };
         }
+        self.global_values[index] = value;
+        self.global_states[index] = 2;
+        return value;
     }
 
     fn evaluateVariableValue(
@@ -1011,6 +1070,10 @@ const Runtime = struct {
                 .context = self,
                 .available = extensionFunctionAvailable,
                 .call = callExtensionFunction,
+            },
+            .variable_resolver = .{
+                .context = self,
+                .resolve = resolveGlobalVariable,
             },
             .document_base = self.base_uri,
         };
@@ -1618,11 +1681,14 @@ const Runtime = struct {
                 }
             }
             if (current == .namespace_node) {
-                try self.addNamespaceDecl(
-                    self.parent,
-                    current.namespace_node.prefix,
-                    current.namespace_node.uri,
-                );
+                const ns = current.namespace_node;
+                // libxslt does not materialize default or implicit xml
+                // namespace nodes when copying.
+                if (ns.prefix.len != 0 and
+                    !std.mem.eql(u8, ns.prefix, "xml"))
+                {
+                    try self.addNamespaceDecl(self.parent, ns.prefix, ns.uri);
+                }
                 continue;
             }
             try self.copyDeepNode(current);
@@ -1653,7 +1719,11 @@ const Runtime = struct {
                 );
             },
             .namespace_node => |ns| {
-                try self.addNamespaceDecl(self.parent, ns.prefix, ns.uri);
+                if (ns.prefix.len != 0 and
+                    !std.mem.eql(u8, ns.prefix, "xml"))
+                {
+                    try self.addNamespaceDecl(self.parent, ns.prefix, ns.uri);
+                }
             },
             .node => |id| {
                 const node_value = self.source.node(id);
@@ -1759,14 +1829,18 @@ const Runtime = struct {
 
     fn executeAttributeSet(
         self: *Runtime,
-        name: []const u8,
+        name: compile.NameRef,
         node: xpath.NodeRef,
         position: usize,
         size: usize,
     ) Error!void {
         var found = false;
         for (self.stylesheet.attribute_sets) |set| {
-            if (!std.mem.eql(u8, set.name, name)) continue;
+            if (!std.mem.eql(u8, set.name, name.local) or
+                !std.mem.eql(u8, set.name_uri, name.uri))
+            {
+                continue;
+            }
             found = true;
             const instructions = set.expanded orelse set.raw_instructions;
             try self.executeInstructions(
@@ -1815,9 +1889,9 @@ const Runtime = struct {
                 // The xml namespace always uses the implicit xml prefix.
                 prefix = "xml";
             } else {
-                // Serializing an unprefixed namespaced attribute would lose
-                // its namespace; require a prefix.
-                return error.InvalidArgument;
+                // libxslt synthesizes an ns_N prefix for unprefixed
+                // namespaced attributes.
+                prefix = try self.generatedPrefix(uri);
             }
         }
         const value = try self.captureString(
@@ -1938,41 +2012,61 @@ const Runtime = struct {
         node: xpath.NodeRef,
         format_text: []const u8,
     ) Error!void {
-        var boundary: ?xpath.NodeRef = null;
-        if (instruction.from) |from| {
-            var current = node;
-            while (true) {
-                if (try self.selectorMatches(from, current)) {
-                    boundary = current;
-                    break;
-                }
-                current = self.parentRef(current) orelse break;
-            }
-        }
+        // Walk backwards in document order like libxslt: attributes collapse
+        // to their element, and attribute nodes of other elements are never
+        // visited.
         var count: usize = 0;
-        if (instruction.count) |count_selector| {
-            const entry = try self.selectorEntry(count_selector);
-            for (entry.nodes) |candidate| {
-                if (!numberInRange(candidate, node, boundary)) continue;
+        var current: ?xpath.NodeRef = node;
+        while (current) |candidate| {
+            if (try self.matchesCount(instruction, node, candidate)) {
                 count += 1;
             }
-        } else {
-            for (self.source.nodes, 0..) |_, index| {
-                const candidate: xpath.NodeRef = .{
-                    .node = @intCast(index),
-                };
-                if (!defaultCountMatches(self.source, node, candidate)) {
-                    continue;
-                }
-                if (!numberInRange(candidate, node, boundary)) continue;
-                count += 1;
+            if (instruction.from) |from| {
+                if (try self.selectorMatches(from, candidate)) break;
             }
+            current = self.previousInDocumentOrder(candidate);
         }
         if (count != 0) {
             try self.appendText(try self.formatPositions(
                 &.{count},
                 format_text,
             ));
+        }
+    }
+
+    fn previousInDocumentOrder(
+        self: *Runtime,
+        node: xpath.NodeRef,
+    ) ?xpath.NodeRef {
+        switch (node) {
+            .attribute => |attribute| return .{ .node = attribute.element },
+            .namespace_node => |namespace_node| return .{
+                .node = namespace_node.element,
+            },
+            .node => |id| {
+                const value = self.source.node(id);
+                if (value.kind == .document) return null;
+                const parent = value.parent;
+                if (parent != dom.null_node) {
+                    var sibling = self.source.node(parent).first_child;
+                    var previous: dom.NodeId = dom.null_node;
+                    while (sibling != dom.null_node and sibling != id) {
+                        previous = sibling;
+                        sibling = self.source.node(sibling).next_sibling;
+                    }
+                    if (previous != dom.null_node) {
+                        var deepest = previous;
+                        while (self.source.node(deepest).last_child !=
+                            dom.null_node)
+                        {
+                            deepest = self.source.node(deepest).last_child;
+                        }
+                        return .{ .node = deepest };
+                    }
+                }
+                if (parent == dom.null_node) return null;
+                return .{ .node = parent };
+            },
         }
     }
 
@@ -2011,6 +2105,10 @@ const Runtime = struct {
                 .context = self,
                 .available = extensionFunctionAvailable,
                 .call = callExtensionFunction,
+            },
+            .variable_resolver = .{
+                .context = self,
+                .resolve = resolveGlobalVariable,
             },
             .document_base = self.base_uri,
         };
@@ -2152,13 +2250,19 @@ const Runtime = struct {
 
     fn findDecimalFormat(
         self: *Runtime,
-        name: ?[]const u8,
+        name: ?xpath_value.QualifiedName,
     ) ?*const compile.DecimalFormat {
         for (self.stylesheet.decimal_formats) |*format| {
-            if (name == null) {
-                if (format.name == null) return format;
-            } else if (format.name) |format_name| {
-                if (std.mem.eql(u8, format_name, name.?)) return format;
+            if (name) |wanted| {
+                if (format.name) |local| {
+                    if (std.mem.eql(u8, local, wanted.local) and
+                        std.mem.eql(u8, format.name_uri, wanted.uri))
+                    {
+                        return format;
+                    }
+                }
+            } else if (format.name == null) {
+                return format;
             }
         }
         if (name == null) return &default_decimal_format;
@@ -2457,6 +2561,48 @@ const Runtime = struct {
                 value,
             ) catch |err| return mapBuilderError(err);
         }
+    }
+
+    fn generatedPrefix(self: *Runtime, uri: []const u8) Error![]const u8 {
+        var buffer: [32]u8 = undefined;
+        var index: usize = 1;
+        while (index < 1000) : (index += 1) {
+            const candidate = std.fmt.bufPrint(
+                &buffer,
+                "ns_{d}",
+                .{index},
+            ) catch break;
+            if (self.outputPrefixUri(self.parent, candidate)) |bound| {
+                if (std.mem.eql(u8, bound, uri)) {
+                    return self.allocator.dupe(u8, candidate);
+                }
+                continue;
+            }
+            return self.allocator.dupe(u8, candidate);
+        }
+        return error.InvalidArgument;
+    }
+
+    fn outputPrefixUri(
+        self: *Runtime,
+        id: dom.NodeId,
+        prefix: []const u8,
+    ) ?[]const u8 {
+        var current = id;
+        while (current != dom.null_node) {
+            const node = self.builder.nodeAt(current);
+            if (node.kind != .element) break;
+            for (self.builder.attributesOf(current)) |attr| {
+                if (attr.name.len != "xmlns:".len + prefix.len) continue;
+                if (!std.mem.startsWith(u8, attr.name, "xmlns:")) continue;
+                if (!std.mem.eql(u8, attr.name["xmlns:".len..], prefix)) {
+                    continue;
+                }
+                return attr.value;
+            }
+            current = node.parent;
+        }
+        return null;
     }
 
     fn addNamespaceDecl(
@@ -3020,7 +3166,7 @@ fn formatNumberCallback(
     allocator: std.mem.Allocator,
     number: f64,
     pattern: []const u8,
-    format_name: ?[]const u8,
+    format_name: ?xpath_value.QualifiedName,
 ) xpath_value.NumberFormatError![]const u8 {
     const runtime: *Runtime = @ptrCast(@alignCast(context.?));
     const format = runtime.findDecimalFormat(format_name) orelse
@@ -3590,6 +3736,18 @@ fn orderKeysEqual(
         a.index == b.index;
 }
 
+fn resolveGlobalVariable(
+    context: *anyopaque,
+    name: []const u8,
+) anyerror!?xpath.Value {
+    const self: *Runtime = @ptrCast(@alignCast(context));
+    for (self.globals, 0..) |global, index| {
+        if (!std.mem.eql(u8, global.name, name)) continue;
+        return try self.ensureGlobal(index);
+    }
+    return null;
+}
+
 fn findExtensionFunction(
     stylesheet: *const compile.Stylesheet,
     uri: []const u8,
@@ -4103,7 +4261,7 @@ fn writeHtmlUriAttribute(
             '>' => try out.writeAll("&gt;"),
             '"' => try out.writeAll("&quot;"),
             else => {
-                if (byte >= 0x80) {
+                if (byte >= 0x80 or byte == ' ') {
                     try out.writeByte('%');
                     try out.writeByte(hex[byte >> 4]);
                     try out.writeByte(hex[byte & 0x0F]);
