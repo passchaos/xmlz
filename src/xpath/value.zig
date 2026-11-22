@@ -150,6 +150,25 @@ pub const DocumentResolver = struct {
     ) DocumentError![]const NodeRef,
 };
 
+/// Extension function hooks used by XSLT implementations that define their
+/// own functions (for example EXSLT `func:function`).
+pub const ExtensionFunctionHooks = struct {
+    context: *anyopaque,
+    available: *const fn (
+        context: *anyopaque,
+        uri: []const u8,
+        local: []const u8,
+    ) bool,
+    call: *const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        uri: []const u8,
+        local: []const u8,
+        args: []const Value,
+        xpath_context: *const Context,
+    ) anyerror!Value,
+};
+
 pub const Context = struct {
     document: *const dom.Document,
     node: NodeRef,
@@ -168,6 +187,8 @@ pub const Context = struct {
     document_range: ?NodeRange = null,
     /// EXSLT `node-set()` converter.
     tree_converter: ?TreeConverter = null,
+    /// User-defined extension functions.
+    extension_functions: ?ExtensionFunctionHooks = null,
     /// Base URI used by `document()` when no second argument is given.
     document_base: []const u8 = "",
     /// Enables XSLT-specific functions such as `generate-id()`,
@@ -216,6 +237,7 @@ pub const Context = struct {
             .document_resolver = self.document_resolver,
             .document_range = self.document_range,
             .tree_converter = self.tree_converter,
+            .extension_functions = self.extension_functions,
             .document_base = self.document_base,
             .xslt_functions = self.xslt_functions,
             .position = position,

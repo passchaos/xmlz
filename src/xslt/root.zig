@@ -1590,3 +1590,46 @@ test "XSLT key and id stay scoped to the context document" {
         output,
     );
 }
+
+test "XSLT EXSLT functions return values and node-sets" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:func="http://exslt.org/functions"
+        \\  xmlns:f="urn:f"
+        \\  extension-element-prefixes="func">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <func:function name="f:fact">
+        \\    <xsl:param name="n"/>
+        \\    <xsl:choose>
+        \\      <xsl:when test="$n &lt;= 1"><func:result select="1"/></xsl:when>
+        \\      <xsl:otherwise>
+        \\        <func:result select="$n * f:fact($n - 1)"/>
+        \\      </xsl:otherwise>
+        \\    </xsl:choose>
+        \\  </func:function>
+        \\  <func:function name="f:box">
+        \\    <func:result><box><value>7</value></box></func:result>
+        \\  </func:function>
+        \\  <func:function name="f:empty"/>
+        \\  <xsl:template match="/">
+        \\    <out>
+        \\      <fact><xsl:value-of select="f:fact(5)"/></fact>
+        \\      <avail><xsl:value-of select="function-available('f:fact')"/></avail>
+        \\      <copied><xsl:copy-of select="f:box()"/></copied>
+        \\      <empty><xsl:value-of select="f:empty()"/></empty>
+        \\      <scoped><xsl:variable name="n" select="99"/>
+        \\        <xsl:value-of select="f:fact(3)"/></scoped>
+        \\    </out>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out xmlns:f=\"urn:f\"><fact>120</fact><avail>true</avail>" ++
+            "<copied><box><value>7</value></box></copied>" ++
+            "<empty/><scoped>6</scoped></out>",
+        output,
+    );
+}

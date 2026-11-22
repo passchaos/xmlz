@@ -15,6 +15,7 @@ const xpath_variable = @import("../xpath/value.zig");
 const writer_mod = @import("../writer.zig");
 
 pub const xsl_namespace = namespace.xsl_uri;
+pub const exslt_functions_namespace = "http://exslt.org/functions";
 
 pub const Error = error{
     OutOfMemory,
@@ -156,6 +157,7 @@ pub const Stylesheet = struct {
     templates: []const Template = &.{},
     globals: []const Variable = &.{},
     keys: []const KeyDef = &.{},
+    functions: []const FunctionDef = &.{},
     attribute_sets: []const AttributeSet = &.{},
     space_rules: []const SpaceRule = &.{},
     decimal_formats: []const DecimalFormat = &.{},
@@ -308,6 +310,20 @@ pub const MessageInstruction = struct {
     terminate: bool = false,
 };
 
+pub const FunctionResult = struct {
+    select: ?CompiledExpr = null,
+    body: []const Instruction = &.{},
+};
+
+pub const FunctionDef = struct {
+    name: []const u8,
+    namespace_uri: []const u8,
+    params: []const Variable = &.{},
+    body: []const Instruction = &.{},
+    precedence: usize = 0,
+    order: usize = 0,
+};
+
 pub const Instruction = union(enum) {
     literal_element: LiteralElement,
     literal_text: []const u8,
@@ -329,6 +345,7 @@ pub const Instruction = union(enum) {
     number: NumberInstruction,
     message: MessageInstruction,
     apply_imports: ApplyImports,
+    function_result: FunctionResult,
 };
 
 /// Compile a stylesheet document without external includes or imports.
@@ -367,6 +384,7 @@ pub fn compileWithOptions(
         .templates = try compiler.templates.toOwnedSlice(compiler.arena),
         .globals = try compiler.dedupeGlobals(),
         .keys = try compiler.keys.toOwnedSlice(compiler.arena),
+        .functions = try compiler.functions.toOwnedSlice(compiler.arena),
         .attribute_sets = try compiler.attribute_sets.toOwnedSlice(
             compiler.arena,
         ),
@@ -391,6 +409,9 @@ const Compiler = struct {
     globals: std.ArrayList(Variable) = .empty,
     keys: std.ArrayList(KeyDef) = .empty,
     attribute_sets: std.ArrayList(AttributeSet) = .empty,
+    functions: std.ArrayList(FunctionDef) = .empty,
+    next_function_order: usize = 0,
+    compiling_function: bool = false,
     space_rules: std.ArrayList(SpaceRule) = .empty,
     decimal_formats: std.ArrayList(DecimalFormat) = .empty,
     aliases: std.ArrayList(NamespaceAlias) = .empty,
@@ -479,6 +500,14 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = document.node(child).next_sibling) {
             const child_node = document.node(child);
             if (child_node.kind != .element) continue;
+            if (std.mem.eql(
+                u8,
+                child_node.ns,
+                exslt_functions_namespace,
+            ) and std.mem.eql(u8, child_node.local, "function")) {
+                try self.compileFunction(child);
+                continue;
+            }
             if (!isXsl(child_node, null)) continue;
             const local = child_node.local;
             if (std.mem.eql(u8, local, "import")) continue;
@@ -1007,6 +1036,15 @@ const Compiler = struct {
         body: *std.ArrayList(Instruction),
     ) Error!void {
         const node = self.document.node(id);
+        if (self.compiling_function and
+            std.mem.eql(u8, node.ns, exslt_functions_namespace) and
+            std.mem.eql(u8, node.local, "result"))
+        {
+            try body.append(self.arena, .{
+                .function_result = try self.compileFunctionResult(id),
+            });
+            return;
+        }
         if (node.ns.len == 0 or !std.mem.eql(u8, node.ns, xsl_namespace)) {
             try body.append(self.arena, .{
                 .literal_element = try self.compileLiteralElement(id, preserve),
@@ -1257,6 +1295,88 @@ const Compiler = struct {
             instruction.from = try self.compilePatternExpression(id, from);
         }
         return instruction;
+    }
+
+    const FunctionName = struct {
+        uri: []const u8,
+        local: []const u8,
+    };
+
+    fn resolveFunctionName(
+        self: *Compiler,
+        id: dom.NodeId,
+        raw: []const u8,
+    ) Error!FunctionName {
+        const parts = namespace.splitQName(raw) catch
+            return error.InvalidStylesheet;
+        if (parts.prefix.len == 0) {
+            return .{ .uri = "", .local = parts.local };
+        }
+        const bindings = try self.document.inScopeNamespaces(self.arena, id);
+        for (bindings) |binding| {
+            if (std.mem.eql(u8, binding.prefix, parts.prefix)) {
+                return .{ .uri = binding.uri, .local = parts.local };
+            }
+        }
+        return error.InvalidStylesheet;
+    }
+
+    /// Compile an EXSLT `func:function` definition.
+    fn compileFunction(self: *Compiler, id: dom.NodeId) Error!void {
+        const raw_name = self.document.attribute(id, "name") orelse
+            return error.InvalidStylesheet;
+        const name = try self.resolveFunctionName(id, raw_name);
+        var params: std.ArrayList(Variable) = .empty;
+        var body: std.ArrayList(Instruction) = .empty;
+        const saved_function = self.compiling_function;
+        self.compiling_function = true;
+        defer self.compiling_function = saved_function;
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const child_node = self.document.node(child);
+            switch (child_node.kind) {
+                .element => {
+                    if (isXsl(child_node, "param")) {
+                        try params.append(
+                            self.arena,
+                            try self.compileVariable(child, true),
+                        );
+                    } else {
+                        try self.compileInstruction(child, false, &body);
+                    }
+                },
+                .text => {
+                    if (isWhitespaceOnly(child_node.value)) continue;
+                    try body.append(self.arena, .{
+                        .literal_text = child_node.value,
+                    });
+                },
+                .comment, .processing_instruction => {},
+                .document => unreachable,
+            }
+        }
+        try self.functions.append(self.arena, .{
+            .name = name.local,
+            .namespace_uri = name.uri,
+            .params = try params.toOwnedSlice(self.arena),
+            .body = try body.toOwnedSlice(self.arena),
+            .precedence = self.current_precedence,
+            .order = self.next_function_order,
+        });
+        self.next_function_order += 1;
+    }
+
+    fn compileFunctionResult(
+        self: *Compiler,
+        id: dom.NodeId,
+    ) Error!FunctionResult {
+        var result: FunctionResult = .{};
+        if (self.document.attribute(id, "select")) |select| {
+            result.select = try self.parseExpression(id, select);
+        } else {
+            result.body = try self.compileBody(id, false);
+        }
+        return result;
     }
 
     fn compileVariable(self: *Compiler, id: dom.NodeId, param: bool) Error!Variable {

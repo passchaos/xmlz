@@ -249,6 +249,14 @@ fn writeElement(
         }
     }
     for (doc.attributesOf(id)) |attr| {
+        if (std.mem.eql(u8, attr.name, "xmlns")) {
+            // Skip a default-namespace declaration that repeats the
+            // inherited binding.
+            if (std.mem.eql(u8, attr.value, default_ns)) continue;
+        } else if (std.mem.startsWith(u8, attr.name, "xmlns:")) {
+            const prefix = attr.name["xmlns:".len..];
+            if (ancestorBindsPrefix(doc, id, prefix, attr.value)) continue;
+        }
         try writer.writeByte(' ');
         try writer.writeAll(attr.name);
         try writer.writeAll("=\"");
@@ -299,6 +307,27 @@ fn writeElement(
     try writer.writeAll(node.name);
     try writer.writeByte('>');
     if (pretty) try writer.writeByte('\n');
+}
+
+fn ancestorBindsPrefix(
+    doc: *const dom.Document,
+    id: dom.NodeId,
+    prefix: []const u8,
+    uri: []const u8,
+) bool {
+    var current = doc.node(id).parent;
+    while (current != dom.null_node) {
+        const node = doc.node(current);
+        if (node.kind != .element) break;
+        for (doc.attributesOf(current)) |attr| {
+            if (attr.name.len != "xmlns:".len + prefix.len) continue;
+            if (!std.mem.startsWith(u8, attr.name, "xmlns:")) continue;
+            if (!std.mem.eql(u8, attr.name["xmlns:".len..], prefix)) continue;
+            return std.mem.eql(u8, attr.value, uri);
+        }
+        current = node.parent;
+    }
+    return false;
 }
 
 fn isBlockElement(doc: *const dom.Document, id: dom.NodeId) bool {

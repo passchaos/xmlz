@@ -111,18 +111,21 @@ zig build xslt-suite
 
 Each stylesheet is applied to its companion document and compared with the
 reference output (structurally for XML, exactly for text). The current
-baseline is **170 passed, 35 known differences, 28 include-only skips**.
+baseline is **179 passed, 26 known differences, 28 include-only skips**.
 Known differences are tracked in `tools/libxslt_suite.py`; unexpected
-failures or newly fixed tests fail the gate. Most remaining differences need
-EXSLT extension functions or libxslt-specific formatting details.
+failures or newly fixed tests fail the gate. Remaining differences mostly
+need the EXSLT string/set/date modules or libxslt-specific formatting
+details.
 
 ## Limitations
 
 - XPath node-set operations directly on result tree fragments require the
   EXSLT `exsl:node-set()` extension; after conversion, normal node-set
   operations and template matching work.
-- EXSLT modules other than `exsl:node-set()` (regexp, strings, math, date,
-  functions) are not implemented.
+- EXSLT `func:function` user-defined functions are supported (including
+  recursion, parameter defaults, and `func:result` values/fragments);
+  `libxslt:node-set` is accepted as an alias of `exsl:node-set`. The EXSLT
+  regexp, strings, math, sets, and date modules are not implemented.
 - `function-available()` reports XSLT functions in the XSLT namespace as
   available, as required by XSLT 1.0; libxslt reports them as unavailable
   unless registered as extensions.

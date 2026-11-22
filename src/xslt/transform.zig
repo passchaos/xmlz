@@ -24,6 +24,8 @@ pub const Error = error{
     InvalidArgument,
     Terminated,
     InvalidOutput,
+    /// Internal control flow for EXSLT `func:result`.
+    FunctionResultReturned,
 };
 
 pub const Options = compile.Options;
@@ -378,6 +380,8 @@ const Runtime = struct {
     /// Number of leading entries in `variables` that are global bindings.
     /// Templates only see these plus their own parameters and locals.
     global_count: usize = 0,
+    /// Value produced by the most recent EXSLT `func:result`.
+    function_result: ?xpath.Value = null,
     template_states: []TemplateState = &.{},
     messages: std.ArrayList([]const u8) = .empty,
     key_map: KeyMap,
@@ -796,6 +800,11 @@ const Runtime = struct {
                 .context = self,
                 .convert = convertTree,
             },
+            .extension_functions = .{
+                .context = self,
+                .available = extensionFunctionAvailable,
+                .call = callExtensionFunction,
+            },
             .document_base = self.base_uri,
         };
         var selected = xpath_eval.evaluate(
@@ -895,6 +904,11 @@ const Runtime = struct {
                 .context = self,
                 .convert = convertTree,
             },
+            .extension_functions = .{
+                .context = self,
+                .available = extensionFunctionAvailable,
+                .call = callExtensionFunction,
+            },
             .document_base = self.base_uri,
         };
         var result = xpath_eval.evaluate(
@@ -992,6 +1006,11 @@ const Runtime = struct {
             .tree_converter = .{
                 .context = self,
                 .convert = convertTree,
+            },
+            .extension_functions = .{
+                .context = self,
+                .available = extensionFunctionAvailable,
+                .call = callExtensionFunction,
             },
             .document_base = self.base_uri,
         };
@@ -1326,6 +1345,24 @@ const Runtime = struct {
                 position,
                 size,
             ),
+            .function_result => |result| {
+                if (result.select) |select| {
+                    self.function_result = try self.evalOwned(
+                        select,
+                        node,
+                        position,
+                        size,
+                    );
+                } else {
+                    self.function_result = try self.captureTree(
+                        result.body,
+                        node,
+                        position,
+                        size,
+                    );
+                }
+                return error.FunctionResultReturned;
+            },
         }
     }
 
@@ -1969,6 +2006,11 @@ const Runtime = struct {
             .tree_converter = .{
                 .context = self,
                 .convert = convertTree,
+            },
+            .extension_functions = .{
+                .context = self,
+                .available = extensionFunctionAvailable,
+                .call = callExtensionFunction,
             },
             .document_base = self.base_uri,
         };
@@ -3546,6 +3588,123 @@ fn orderKeysEqual(
 ) bool {
     return a.primary == b.primary and a.phase == b.phase and
         a.index == b.index;
+}
+
+fn findExtensionFunction(
+    stylesheet: *const compile.Stylesheet,
+    uri: []const u8,
+    local: []const u8,
+) ?*const compile.FunctionDef {
+    var found: ?*const compile.FunctionDef = null;
+    for (stylesheet.functions) |*function| {
+        if (!std.mem.eql(u8, function.namespace_uri, uri) or
+            !std.mem.eql(u8, function.name, local))
+        {
+            continue;
+        }
+        if (found) |current| {
+            if (function.precedence < current.precedence) continue;
+            if (function.precedence == current.precedence and
+                function.order < current.order)
+            {
+                continue;
+            }
+        }
+        found = function;
+    }
+    return found;
+}
+
+fn extensionFunctionAvailable(
+    context: *anyopaque,
+    uri: []const u8,
+    local: []const u8,
+) bool {
+    const self: *Runtime = @ptrCast(@alignCast(context));
+    return findExtensionFunction(self.stylesheet, uri, local) != null;
+}
+
+fn callExtensionFunction(
+    context: *anyopaque,
+    allocator: std.mem.Allocator,
+    uri: []const u8,
+    local: []const u8,
+    args: []const xpath.Value,
+    xpath_context: *const xpath_value.Context,
+) anyerror!xpath.Value {
+    _ = allocator;
+    const self: *Runtime = @ptrCast(@alignCast(context));
+    const function = findExtensionFunction(
+        self.stylesheet,
+        uri,
+        local,
+    ) orelse return error.UnknownFunction;
+
+    // Function bodies see globals and their own parameters, never the
+    // caller's local bindings.
+    const saved_variables = self.variables.items.len;
+    var hidden: []xpath.Variable = &.{};
+    if (saved_variables > self.global_count) {
+        hidden = try self.allocator.dupe(
+            xpath.Variable,
+            self.variables.items[self.global_count..saved_variables],
+        );
+        self.variables.shrinkRetainingCapacity(self.global_count);
+    }
+    const saved_result = self.function_result;
+    self.function_result = null;
+    const value = runExtensionFunction(
+        self,
+        function,
+        args,
+        xpath_context,
+    ) catch |err| {
+        self.function_result = saved_result;
+        self.variables.shrinkRetainingCapacity(self.global_count);
+        self.variables.appendSlice(self.allocator, hidden) catch {};
+        return err;
+    };
+    self.function_result = saved_result;
+    self.variables.shrinkRetainingCapacity(self.global_count);
+    try self.variables.appendSlice(self.allocator, hidden);
+    return value;
+}
+
+fn runExtensionFunction(
+    self: *Runtime,
+    function: *const compile.FunctionDef,
+    args: []const xpath.Value,
+    xpath_context: *const xpath_value.Context,
+) Error!xpath.Value {
+    const node = xpath_context.node;
+    const position = xpath_context.position;
+    const size = xpath_context.size;
+    var index: usize = 0;
+    for (function.params) |param| {
+        const value = if (index < args.len)
+            args[index]
+        else
+            try self.evaluateVariableValue(
+                param.value,
+                node,
+                position,
+                size,
+            );
+        try self.variables.append(self.allocator, .{
+            .name = param.name,
+            .value = value,
+        });
+        index += 1;
+    }
+    if (self.executeInstructions(function.body, node, position, size)) |_| {
+        // EXSLT functions without a result return an empty string.
+        return self.function_result orelse .{ .string = "" };
+    } else |err| {
+        if (err == error.FunctionResultReturned) {
+            return self.function_result orelse .{ .string = "" };
+        }
+        return err;
+    }
 }
 
 fn prefixOf(node: *const dom.Node) []const u8 {
