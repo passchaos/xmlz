@@ -29,6 +29,7 @@ test {
     _ = dom;
     _ = writer;
     _ = xpath;
+    _ = @import("fuzz_tests.zig");
 }
 
 pub const XmlTag = struct {

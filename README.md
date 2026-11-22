@@ -148,6 +148,7 @@ zig build conformance   # W3C XML conformance suite
 zig build check         # both
 zig build bench         # parser/DOM benchmarks vs expat, pugixml, libxml2
 zig build xpath-diff    # XPath differential checks vs libxml2 xmllint
+zig build test          # includes deterministic mutation/fuzz smoke tests
 ```
 
 The conformance step needs `testdata/xmlconf/manifest.json`. Regenerate it with:
