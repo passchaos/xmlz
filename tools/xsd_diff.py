@@ -1024,6 +1024,73 @@ CASES = [
         ],
     ),
     (
+        "identity-namespaced-keyref",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t"
+          xmlns:t="urn:t" elementFormDefault="qualified">
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:element name="item" maxOccurs="unbounded">
+                  <xs:complexType>
+                    <xs:attribute name="id" type="xs:string" use="required"/>
+                  </xs:complexType>
+                </xs:element>
+                <xs:element name="ref" maxOccurs="unbounded">
+                  <xs:complexType>
+                    <xs:attribute name="item" type="xs:string" use="required"/>
+                  </xs:complexType>
+                </xs:element>
+              </xs:sequence>
+            </xs:complexType>
+            <xs:key name="itemKey">
+              <xs:selector xpath="t:item"/>
+              <xs:field xpath="@id"/>
+            </xs:key>
+            <xs:keyref name="itemRef" refer="t:itemKey">
+              <xs:selector xpath="t:ref"/>
+              <xs:field xpath="@item"/>
+            </xs:keyref>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t'><item id='a'/><ref item='a'/></root>",
+            "<root xmlns='urn:t'><item id='a'/><ref item='z'/></root>",
+        ],
+    ),
+    (
+        "identity-keyref-to-unique",
+        f"""<xs:schema xmlns:xs="{XS}">
+          <xs:element name="root">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:element name="item" maxOccurs="unbounded">
+                  <xs:complexType>
+                    <xs:attribute name="id" type="xs:string"/>
+                  </xs:complexType>
+                </xs:element>
+                <xs:element name="ref" maxOccurs="unbounded">
+                  <xs:complexType>
+                    <xs:attribute name="item" type="xs:string" use="required"/>
+                  </xs:complexType>
+                </xs:element>
+              </xs:sequence>
+            </xs:complexType>
+            <xs:unique name="itemUnique">
+              <xs:selector xpath="item"/>
+              <xs:field xpath="@id"/>
+            </xs:unique>
+            <xs:keyref name="itemRef" refer="itemUnique">
+              <xs:selector xpath="ref"/>
+              <xs:field xpath="@item"/>
+            </xs:keyref>
+          </xs:element>
+        </xs:schema>""",
+        [
+            "<root><item id='a'/><ref item='a'/></root>",
+            "<root><item id='a'/><ref item='z'/></root>",
+        ],
+    ),
+    (
         "any-wildcard",
         f"""<xs:schema xmlns:xs="{XS}">
           <xs:element name="root">

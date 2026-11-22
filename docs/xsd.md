@@ -67,6 +67,8 @@ for (result.errors) |validation_error| {
 - Duration ordering is a partial order; facets on durations use a simplified
   comparison.
 - Validation does not inject default attribute values into the instance.
+- Keyref values are matched against all evaluated scopes of the referenced
+  constraint rather than strictly the nearest declaring element's scope.
 - Schema component validity checking is intentionally partial; malformed
   schemas are rejected, but not every XSD constraint on schema documents is
   enforced.
@@ -83,5 +85,5 @@ attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
 
 ```text
-189/189 XSD differential checks passed
+193/193 XSD differential checks passed
 ```
