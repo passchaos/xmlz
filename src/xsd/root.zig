@@ -431,3 +431,166 @@ test "XSD rejects circular group references" {
             "</xs:schema>",
     );
 }
+
+const key_schema =
+    \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    \\  <xs:element name="root">
+    \\    <xs:complexType>
+    \\      <xs:sequence>
+    \\        <xs:element name="item" maxOccurs="unbounded">
+    \\          <xs:complexType>
+    \\            <xs:attribute name="id" type="xs:string" use="required"/>
+    \\          </xs:complexType>
+    \\        </xs:element>
+    \\      </xs:sequence>
+    \\    </xs:complexType>
+    \\    <xs:key name="itemKey">
+    \\      <xs:selector xpath="item"/>
+    \\      <xs:field xpath="@id"/>
+    \\    </xs:key>
+    \\  </xs:element>
+    \\</xs:schema>
+;
+
+test "XSD validates key uniqueness and presence" {
+    try expectValid(key_schema, "<root><item id='a'/><item id='b'/></root>");
+    try expectInvalid(key_schema, "<root><item id='a'/><item id='a'/></root>");
+    try expectInvalid(key_schema, "<root><item id='a'/><item/></root>");
+}
+
+test "XSD validates unique constraints" {
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        \\  <xs:element name="root">
+        \\    <xs:complexType>
+        \\      <xs:sequence>
+        \\        <xs:element name="item" maxOccurs="unbounded">
+        \\          <xs:complexType>
+        \\            <xs:attribute name="id" type="xs:string"/>
+        \\          </xs:complexType>
+        \\        </xs:element>
+        \\      </xs:sequence>
+        \\    </xs:complexType>
+        \\    <xs:unique name="itemUnique">
+        \\      <xs:selector xpath="item"/>
+        \\      <xs:field xpath="@id"/>
+        \\    </xs:unique>
+        \\  </xs:element>
+        \\</xs:schema>
+    ;
+    try expectValid(
+        schema_source,
+        "<root><item id='a'/><item/><item id='b'/></root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root><item id='a'/><item id='a'/></root>",
+    );
+}
+
+test "XSD validates keyref constraints" {
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        \\  <xs:element name="root">
+        \\    <xs:complexType>
+        \\      <xs:sequence>
+        \\        <xs:element name="item" maxOccurs="unbounded">
+        \\          <xs:complexType>
+        \\            <xs:attribute name="id" type="xs:string" use="required"/>
+        \\          </xs:complexType>
+        \\        </xs:element>
+        \\        <xs:element name="ref" maxOccurs="unbounded">
+        \\          <xs:complexType>
+        \\            <xs:attribute name="item" type="xs:string" use="required"/>
+        \\          </xs:complexType>
+        \\        </xs:element>
+        \\      </xs:sequence>
+        \\    </xs:complexType>
+        \\    <xs:key name="itemKey">
+        \\      <xs:selector xpath="item"/>
+        \\      <xs:field xpath="@id"/>
+        \\    </xs:key>
+        \\    <xs:keyref name="itemRef" refer="itemKey">
+        \\      <xs:selector xpath="ref"/>
+        \\      <xs:field xpath="@item"/>
+        \\    </xs:keyref>
+        \\  </xs:element>
+        \\</xs:schema>
+    ;
+    try expectValid(
+        schema_source,
+        "<root><item id='a'/><item id='b'/><ref item='a'/><ref item='b'/></root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root><item id='a'/><ref item='z'/></root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root><item id='a'/><ref/></root>",
+    );
+}
+
+test "XSD validates composite identity constraints" {
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        \\  <xs:element name="root">
+        \\    <xs:complexType>
+        \\      <xs:sequence>
+        \\        <xs:element name="item" maxOccurs="unbounded">
+        \\          <xs:complexType>
+        \\            <xs:attribute name="a" type="xs:string" use="required"/>
+        \\            <xs:attribute name="b" type="xs:string" use="required"/>
+        \\          </xs:complexType>
+        \\        </xs:element>
+        \\      </xs:sequence>
+        \\    </xs:complexType>
+        \\    <xs:key name="itemKey">
+        \\      <xs:selector xpath="item"/>
+        \\      <xs:field xpath="@a"/>
+        \\      <xs:field xpath="@b"/>
+        \\    </xs:key>
+        \\  </xs:element>
+        \\</xs:schema>
+    ;
+    try expectValid(
+        schema_source,
+        "<root><item a='1' b='2'/><item a='1' b='3'/></root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root><item a='1' b='2'/><item a='1' b='2'/></root>",
+    );
+}
+
+test "XSD identity constraints select nested nodes" {
+    const schema_source =
+        \\<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        \\  <xs:element name="root">
+        \\    <xs:complexType>
+        \\      <xs:sequence>
+        \\        <xs:element name="item" maxOccurs="unbounded">
+        \\          <xs:complexType>
+        \\            <xs:sequence>
+        \\              <xs:element name="name" type="xs:string"/>
+        \\            </xs:sequence>
+        \\          </xs:complexType>
+        \\        </xs:element>
+        \\      </xs:sequence>
+        \\    </xs:complexType>
+        \\    <xs:key name="nameKey">
+        \\      <xs:selector xpath="item/name"/>
+        \\      <xs:field xpath="."/>
+        \\    </xs:key>
+        \\  </xs:element>
+        \\</xs:schema>
+    ;
+    try expectValid(
+        schema_source,
+        "<root><item><name>a</name></item><item><name>b</name></item></root>",
+    );
+    try expectInvalid(
+        schema_source,
+        "<root><item><name>a</name></item><item><name>a</name></item></root>",
+    );
+}

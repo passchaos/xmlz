@@ -5,6 +5,8 @@ const dom = @import("../dom.zig");
 const namespace = @import("../namespace.zig");
 const datatypes = @import("datatypes.zig");
 const schema = @import("schema.zig");
+const xpath_value = @import("../xpath/value.zig");
+const xpath_eval = @import("../xpath/eval.zig");
 
 pub const Error = error{ OutOfMemory, InvalidSchema };
 
@@ -53,6 +55,22 @@ const ContentSummary = struct {
     has_text: bool,
 };
 
+const RecordedElement = struct {
+    id: dom.NodeId,
+    decl: *const schema.ElementDecl,
+};
+
+const IdentityTuple = struct {
+    values: []const []const u8,
+    node: dom.NodeId,
+};
+
+const IdentityScope = struct {
+    constraint: *const schema.IdentityConstraint,
+    element: dom.NodeId,
+    tuples: std.ArrayList(IdentityTuple) = .empty,
+};
+
 const Assignment = struct {
     child: dom.NodeId,
     decl: ?*const schema.ElementDecl,
@@ -64,6 +82,7 @@ const Validator = struct {
     schema: *const schema.Schema,
     document: *const dom.Document,
     errors: std.ArrayList(ValidationError) = .empty,
+    recorded: std.ArrayList(RecordedElement) = .empty,
 
     fn run(self: *Validator) Error!void {
         const root = self.document.root();
@@ -77,6 +96,7 @@ const Validator = struct {
             return;
         };
         try self.validateElement(root, decl);
+        try self.checkIdentityConstraints();
     }
 
     fn validateElement(
@@ -87,6 +107,7 @@ const Validator = struct {
         if (decl.abstract) {
             try self.addError(id, "abstract element must be substituted");
         }
+        try self.recorded.append(self.allocator, .{ .id = id, .decl = decl });
         const effective = try self.effectiveType(id, decl.type_info);
         const nil = try self.nilValue(id);
         if (nil) {
@@ -401,6 +422,188 @@ const Validator = struct {
             }
         }
         return .{ .namespace_uri = namespace_uri, .local = raw };
+    }
+
+    fn checkIdentityConstraints(self: *Validator) Error!void {
+        var scopes: std.ArrayList(IdentityScope) = .empty;
+        for (self.recorded.items) |record| {
+            for (record.decl.identity) |constraint| {
+                const scope = try self.identityScope(
+                    &scopes,
+                    constraint,
+                    record.id,
+                );
+                const selected = try self.evalIdentityNodes(
+                    constraint.selector,
+                    .{ .node = record.id },
+                );
+                for (selected) |selected_node| {
+                    const selected_id = identityNodeId(selected_node);
+                    var values: std.ArrayList([]const u8) = .empty;
+                    var missing = false;
+                    for (constraint.fields) |field| {
+                        const field_nodes = try self.evalIdentityNodes(
+                            field,
+                            selected_node,
+                        );
+                        if (field_nodes.len == 0) {
+                            missing = true;
+                            break;
+                        }
+                        if (field_nodes.len > 1) {
+                            try self.addError(
+                                selected_id,
+                                "identity field selects more than one node",
+                            );
+                            missing = true;
+                            break;
+                        }
+                        try values.append(
+                            self.allocator,
+                            try self.identityString(field_nodes[0]),
+                        );
+                    }
+                    if (missing) {
+                        if (constraint.kind != .unique) {
+                            try self.addError(
+                                selected_id,
+                                "identity field is missing",
+                            );
+                        }
+                        continue;
+                    }
+                    try scope.tuples.append(self.allocator, .{
+                        .values = try values.toOwnedSlice(self.allocator),
+                        .node = selected_id,
+                    });
+                }
+            }
+        }
+
+        for (scopes.items) |scope| {
+            if (scope.constraint.kind == .keyref) continue;
+            for (scope.tuples.items, 0..) |tuple, index| {
+                for (scope.tuples.items[index + 1 ..]) |other| {
+                    if (identityTuplesEqual(tuple, other)) {
+                        try self.addError(
+                            tuple.node,
+                            "duplicate identity value",
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (scopes.items) |scope| {
+            if (scope.constraint.kind != .keyref) continue;
+            const referenced = scope.constraint.referenced orelse continue;
+            for (scope.tuples.items) |tuple| {
+                var found = false;
+                for (scopes.items) |candidate| {
+                    if (candidate.constraint != referenced) continue;
+                    for (candidate.tuples.items) |other| {
+                        if (identityTuplesEqual(tuple, other)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
+                if (!found) {
+                    try self.addError(
+                        tuple.node,
+                        "keyref value does not match a key",
+                    );
+                }
+            }
+        }
+    }
+
+    fn identityScope(
+        self: *Validator,
+        scopes: *std.ArrayList(IdentityScope),
+        constraint: *const schema.IdentityConstraint,
+        element: dom.NodeId,
+    ) Error!*IdentityScope {
+        for (scopes.items) |*scope| {
+            if (scope.constraint == constraint and scope.element == element) {
+                return scope;
+            }
+        }
+        try scopes.append(self.allocator, .{
+            .constraint = constraint,
+            .element = element,
+        });
+        return &scopes.items[scopes.items.len - 1];
+    }
+
+    fn evalIdentityNodes(
+        self: *Validator,
+        compiled: schema.CompiledXPath,
+        node: xpath_value.NodeRef,
+    ) Error![]const xpath_value.NodeRef {
+        var context: xpath_value.Context = .{
+            .document = self.document,
+            .node = node,
+            .namespaces = compiled.namespaces,
+        };
+        var result = xpath_eval.evaluate(
+            self.allocator,
+            compiled.expr,
+            &context,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidSchema,
+        };
+        defer result.deinit();
+        return switch (result.value) {
+            .node_set => |nodes| try self.allocator.dupe(
+                xpath_value.NodeRef,
+                nodes,
+            ),
+            else => error.InvalidSchema,
+        };
+    }
+
+    fn identityString(
+        self: *Validator,
+        node: xpath_value.NodeRef,
+    ) Error![]const u8 {
+        switch (node) {
+            .attribute => |attr| return self.document
+                .attributesOf(attr.element)[attr.index].value,
+            .namespace_node => |ns| return ns.uri,
+            .node => |id| {
+                const node_value = self.document.node(id);
+                switch (node_value.kind) {
+                    .text, .comment, .processing_instruction => {
+                        return node_value.value;
+                    },
+                    .element, .document => {
+                        var out: std.ArrayList(u8) = .empty;
+                        try self.appendIdentityText(id, &out);
+                        return out.toOwnedSlice(self.allocator);
+                    },
+                }
+            },
+        }
+    }
+
+    fn appendIdentityText(
+        self: *Validator,
+        id: dom.NodeId,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        const node = self.document.node(id);
+        if (node.kind == .text) {
+            try out.appendSlice(self.allocator, node.value);
+            return;
+        }
+        var child = node.first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            try self.appendIdentityText(child, out);
+        }
     }
 
     fn nilValue(self: *Validator, id: dom.NodeId) Error!bool {
@@ -820,6 +1023,22 @@ const Matcher = struct {
         return null;
     }
 };
+
+fn identityNodeId(node: xpath_value.NodeRef) dom.NodeId {
+    return switch (node) {
+        .node => |id| id,
+        .attribute => |attr| attr.element,
+        .namespace_node => |ns| ns.element,
+    };
+}
+
+fn identityTuplesEqual(a: IdentityTuple, b: IdentityTuple) bool {
+    if (a.values.len != b.values.len) return false;
+    for (a.values, b.values) |left, right| {
+        if (!std.mem.eql(u8, left, right)) return false;
+    }
+    return true;
+}
 
 fn particleOccurs(particle: *const schema.Particle) struct {
     min: usize,

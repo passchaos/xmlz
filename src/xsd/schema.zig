@@ -3,12 +3,15 @@
 //! Supported: global/local elements and attributes, simple types with
 //! restriction/list/union and facets, complex types with sequence/choice/all
 //! particles, groups, attribute groups, wildcards, substitution groups,
-//! attribute uses, and simple/complex content extension and restriction.
-//! Includes/imports, identity constraints, and abstract-type enforcement are
-//! not implemented.
+//! identity constraints, attribute uses, and simple/complex content extension
+//! and restriction. Includes/imports and abstract-type enforcement are not
+//! implemented.
 
 const std = @import("std");
 const dom = @import("../dom.zig");
+const namespace = @import("../namespace.zig");
+const xpath_ast = @import("../xpath/ast.zig");
+const xpath_parser = @import("../xpath/parser.zig");
 const datatypes = @import("datatypes.zig");
 const regex = @import("regex.zig");
 
@@ -108,6 +111,7 @@ pub const ElementDecl = struct {
     global: bool = false,
     substitution_qname: ?QName = null,
     substitution_group: ?*const ElementDecl = null,
+    identity: []const *const IdentityConstraint = &.{},
     node: dom.NodeId = dom.null_node,
 };
 
@@ -129,6 +133,24 @@ pub const AttributeGroupDecl = struct {
     any_attribute: ?Wildcard = null,
     parsed: bool = false,
     resolving: bool = false,
+    node: dom.NodeId = dom.null_node,
+};
+
+pub const CompiledXPath = struct {
+    expr: *xpath_ast.Expr,
+    namespaces: []const namespace.Binding,
+};
+
+pub const IdentityKind = enum { key, keyref, unique };
+
+pub const IdentityConstraint = struct {
+    kind: IdentityKind,
+    name: []const u8,
+    namespace_uri: []const u8,
+    selector: CompiledXPath,
+    fields: []const CompiledXPath,
+    refer: ?QName = null,
+    referenced: ?*const IdentityConstraint = null,
     node: dom.NodeId = dom.null_node,
 };
 
@@ -350,6 +372,7 @@ const Compiler = struct {
     types: std.ArrayList(*const TypeDecl) = .empty,
     groups: std.ArrayList(*const GroupDecl) = .empty,
     attribute_groups: std.ArrayList(*const AttributeGroupDecl) = .empty,
+    identity_constraints: std.ArrayList(*const IdentityConstraint) = .empty,
     local_elements: std.ArrayList(*const ElementDecl) = .empty,
     local_attributes: std.ArrayList(*const AttributeDecl) = .empty,
     root: dom.NodeId = dom.null_node,
@@ -376,6 +399,7 @@ const Compiler = struct {
         try self.collectGlobals();
         try self.parseGlobalBodies();
         try self.resolveSubstitutions();
+        try self.resolveIdentityReferences();
         try self.resolveAllTypes();
         try self.resolveAllDeclarations();
     }
@@ -467,6 +491,7 @@ const Compiler = struct {
             .default_value = self.document.attribute(id, "default"),
             .fixed_value = self.document.attribute(id, "fixed"),
             .substitution_qname = substitution_qname,
+            .identity = try self.parseIdentityConstraints(id),
         };
         return decl;
     }
@@ -649,6 +674,135 @@ const Compiler = struct {
         @constCast(decl).any_attribute = any_attribute;
         @constCast(decl).parsed = true;
         @constCast(decl).resolving = false;
+    }
+
+    fn parseIdentityConstraints(
+        self: *Compiler,
+        id: dom.NodeId,
+    ) Error![]const *const IdentityConstraint {
+        var constraints: std.ArrayList(*const IdentityConstraint) = .empty;
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const child_node = self.document.node(child);
+            if (child_node.kind != .element or !isXsd(child_node, null)) {
+                continue;
+            }
+            var kind: ?IdentityKind = null;
+            if (std.mem.eql(u8, child_node.local, "key")) {
+                kind = .key;
+            } else if (std.mem.eql(u8, child_node.local, "keyref")) {
+                kind = .keyref;
+            } else if (std.mem.eql(u8, child_node.local, "unique")) {
+                kind = .unique;
+            }
+            if (kind == null) continue;
+            const constraint = try self.parseIdentityConstraint(child, kind.?);
+            if (self.findIdentityConstraint(.{
+                .namespace_uri = constraint.namespace_uri,
+                .local = constraint.name,
+            }) != null) {
+                return error.InvalidSchema;
+            }
+            try self.identity_constraints.append(self.arena, constraint);
+            try constraints.append(self.arena, constraint);
+        }
+        return constraints.toOwnedSlice(self.arena);
+    }
+
+    fn parseIdentityConstraint(
+        self: *Compiler,
+        id: dom.NodeId,
+        kind: IdentityKind,
+    ) Error!*const IdentityConstraint {
+        const name = self.document.attribute(id, "name") orelse
+            return error.InvalidSchema;
+        var selector: ?CompiledXPath = null;
+        var fields: std.ArrayList(CompiledXPath) = .empty;
+        var refer: ?QName = null;
+        if (kind == .keyref) {
+            const refer_value = self.document.attribute(id, "refer") orelse
+                return error.InvalidSchema;
+            refer = try self.resolveQName(id, refer_value);
+        }
+        var child = self.document.node(id).first_child;
+        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
+            const child_node = self.document.node(child);
+            if (child_node.kind != .element or !isXsd(child_node, null)) {
+                continue;
+            }
+            if (std.mem.eql(u8, child_node.local, "selector")) {
+                if (selector != null) return error.InvalidSchema;
+                const xpath_value = self.document.attribute(child, "xpath") orelse
+                    return error.InvalidSchema;
+                selector = try self.compileIdentityXPath(child, xpath_value);
+            } else if (std.mem.eql(u8, child_node.local, "field")) {
+                const xpath_value = self.document.attribute(child, "xpath") orelse
+                    return error.InvalidSchema;
+                try fields.append(
+                    self.arena,
+                    try self.compileIdentityXPath(child, xpath_value),
+                );
+            }
+        }
+        if (selector == null or fields.items.len == 0) {
+            return error.InvalidSchema;
+        }
+        const constraint = try self.arena.create(IdentityConstraint);
+        constraint.* = .{
+            .kind = kind,
+            .name = name,
+            .namespace_uri = self.target_namespace,
+            .selector = selector.?,
+            .fields = try fields.toOwnedSlice(self.arena),
+            .refer = refer,
+            .node = id,
+        };
+        return constraint;
+    }
+
+    fn compileIdentityXPath(
+        self: *Compiler,
+        id: dom.NodeId,
+        text: []const u8,
+    ) Error!CompiledXPath {
+        var parser = xpath_parser.Parser.init(self.arena, text) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidSchema,
+        };
+        const expr = parser.parse() catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidSchema,
+        };
+        return .{
+            .expr = expr,
+            .namespaces = try self.document.inScopeNamespaces(self.arena, id),
+        };
+    }
+
+    fn findIdentityConstraint(
+        self: *Compiler,
+        qname: QName,
+    ) ?*const IdentityConstraint {
+        for (self.identity_constraints.items) |constraint| {
+            if (std.mem.eql(
+                u8,
+                constraint.namespace_uri,
+                qname.namespace_uri,
+            ) and std.mem.eql(u8, constraint.name, qname.local)) {
+                return constraint;
+            }
+        }
+        return null;
+    }
+
+    fn resolveIdentityReferences(self: *Compiler) Error!void {
+        for (self.identity_constraints.items) |constraint| {
+            const refer = constraint.refer orelse continue;
+            const referenced = self.findIdentityConstraint(refer) orelse
+                return error.InvalidSchema;
+            if (referenced.kind == .keyref) return error.InvalidSchema;
+            @constCast(constraint).referenced = referenced;
+        }
     }
 
     fn resolveSubstitutions(self: *Compiler) Error!void {
@@ -1264,6 +1418,7 @@ const Compiler = struct {
             .fixed_value = self.document.attribute(id, "fixed"),
         };
         decl.type_use = try self.elementTypeUse(id, null);
+        decl.identity = try self.parseIdentityConstraints(id);
         try self.local_elements.append(self.arena, decl);
         return decl;
     }

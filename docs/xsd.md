@@ -43,6 +43,8 @@ for (result.errors) |validation_error| {
   attribute groups, and circular group detection.
 - Substitution groups, including transitive members and abstract head
   elements.
+- Identity constraints: `xs:key`, `xs:unique`, and `xs:keyref`, including
+  composite fields, nested selectors, and `refer` resolution.
 - `xs:simpleContent` and `xs:complexContent` extension and restriction,
   including attribute inheritance from base types.
 - `targetNamespace`, `elementFormDefault`, `attributeFormDefault`, and local
@@ -53,8 +55,8 @@ for (result.errors) |validation_error| {
 
 ## Limitations
 
-- `xs:include`, `xs:import`, `xs:redefine`, `xs:notation`, and identity
-  constraints (`xs:key`, `xs:keyref`, `xs:unique`) are not implemented.
+- `xs:include`, `xs:import`, `xs:redefine`, and `xs:notation` are not
+  implemented.
 - Abstract types and `block`/`final` enforcement are not implemented.
 - Substitution group members are not checked for valid type derivation from
   the head.
@@ -81,5 +83,5 @@ attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
 
 ```text
-172/172 XSD differential checks passed
+189/189 XSD differential checks passed
 ```
