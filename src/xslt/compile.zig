@@ -206,6 +206,9 @@ pub const Options = struct {
     resolver: ?Resolver = null,
     /// Base URI of the principal stylesheet.
     base: []const u8 = "",
+    /// Current date/time in xs:dateTime form for EXSLT date functions that
+    /// default to "now". Callers without a clock leave this null.
+    now: ?[]const u8 = null,
 };
 
 pub const NamespaceDecl = struct {

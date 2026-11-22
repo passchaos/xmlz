@@ -224,6 +224,9 @@ pub const Context = struct {
     variable_resolver: ?VariableResolver = null,
     /// Builder for node-set results of EXSLT functions.
     fragment_factory: ?FragmentFactory = null,
+    /// Current date/time in xs:dateTime form, used by EXSLT date functions
+    /// that default to "now".
+    current_date_time: ?[]const u8 = null,
     /// Base URI used by `document()` when no second argument is given.
     document_base: []const u8 = "",
     /// Enables XSLT-specific functions such as `generate-id()`,
@@ -275,6 +278,7 @@ pub const Context = struct {
             .extension_functions = self.extension_functions,
             .variable_resolver = self.variable_resolver,
             .fragment_factory = self.fragment_factory,
+            .current_date_time = self.current_date_time,
             .document_base = self.document_base,
             .xslt_functions = self.xslt_functions,
             .position = position,

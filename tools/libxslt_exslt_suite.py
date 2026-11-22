@@ -28,7 +28,7 @@ KNOWN_FAILURES = {
     "common/object-type.1.xsl",
 }
 
-MODULES = ("common", "functions", "math", "sets", "strings")
+MODULES = ("common", "date", "functions", "math", "sets", "strings")
 
 
 def main():

@@ -73,6 +73,12 @@ pub fn main(init: std.process.Init) !void {
         };
         loader.catalog = &catalog.?;
     }
+    const timestamp = std.Io.Clock.real.now(init.io);
+    const now = xmlz.xpath.exslt_date.formatUnixSeconds(
+        init.gpa,
+        @intCast(@divFloor(timestamp.nanoseconds, 1_000_000_000)),
+    ) catch null;
+    defer if (now) |value| init.gpa.free(value);
     var compiled = try xmlz.xslt.parseWithOptions(
         init.gpa,
         &stylesheet.document,
@@ -83,6 +89,7 @@ pub fn main(init: std.process.Init) !void {
                 .load = loadStylesheet,
             },
             .base = stylesheet_file_path,
+            .now = now,
         },
     );
     defer compiled.deinit();
@@ -96,6 +103,7 @@ pub fn main(init: std.process.Init) !void {
                 .load = loadStylesheet,
             },
             .base = stylesheet_file_path,
+            .now = now,
         },
     );
     defer result.deinit();

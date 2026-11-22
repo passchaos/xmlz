@@ -262,6 +262,7 @@ pub fn apply(
         .document_cache = std.StringHashMap(dom.NodeId).init(arena_allocator),
         .resolver = options.resolver,
         .base_uri = options.base,
+        .now = options.now,
         .selector_cache = std.AutoHashMap(
             *const xpath_ast.Expr,
             *SelectorEntry,
@@ -456,6 +457,7 @@ const Runtime = struct {
     fragment_documents: std.ArrayList(*dom.Document) = .empty,
     current_template: ?*const compile.Template = null,
     current_mode: ?[]const u8 = null,
+    now: ?[]const u8 = null,
 
     fn copyOutput(self: *Runtime) Error!compile.Output {
         var output = self.stylesheet.output;
@@ -749,6 +751,7 @@ const Runtime = struct {
             .variables = &.{},
             .document_range = self.documentRange(root_ref),
             .xslt_functions = true,
+            .current_date_time = self.now,
             .document_base = self.base_uri,
         };
         var result = xpath_eval.evaluate(
@@ -959,6 +962,7 @@ const Runtime = struct {
                 .lookup = lookupKey,
             } else null,
             .xslt_functions = true,
+            .current_date_time = self.now,
             .node_id_generator = .{
                 .context = self,
                 .generate = generateNodeId,
@@ -1071,6 +1075,7 @@ const Runtime = struct {
                 .lookup = lookupKey,
             } else null,
             .xslt_functions = true,
+            .current_date_time = self.now,
             .node_id_generator = .{
                 .context = self,
                 .generate = generateNodeId,
@@ -1211,6 +1216,7 @@ const Runtime = struct {
                 .format = formatNumberCallback,
             },
             .xslt_functions = true,
+            .current_date_time = self.now,
             .node_id_generator = .{
                 .context = self,
                 .generate = generateNodeId,
@@ -2313,6 +2319,7 @@ const Runtime = struct {
                 .lookup = lookupKey,
             } else null,
             .xslt_functions = true,
+            .current_date_time = self.now,
             .node_id_generator = .{
                 .context = self,
                 .generate = generateNodeId,

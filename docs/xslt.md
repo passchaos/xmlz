@@ -127,7 +127,7 @@ zig build xslt-exslt-suite
 Expected summary:
 
 ```text
-libxslt EXSLT suite: 47 passed, 1 failed, 0 skipped
+libxslt EXSLT suite: 75 passed, 1 failed, 1 skipped
 ```
 
 The single tracked difference (`common/object-type.1.xsl`) requires the
@@ -178,10 +178,12 @@ reproduces.
   `set:distinct`, `set:intersection`, `set:difference`, `set:has-same-node`,
   `set:leading`, `set:trailing`, `str:replace`, `str:tokenize`,
   `str:split`, `str:concat`, `str:padding`, `str:align`, `str:encode-uri`,
-  `str:decode-uri`, `date:add`, `math:max`, `math:min`, `math:highest`,
-  `math:lowest`, `math:power`, `math:abs`, `math:sqrt`, and
+  `str:decode-uri`, the `date:*` dates-and-times functions (`date-time`,
+  `date`, `time`, year/month/day/week fields, `add`, `add-duration`,
+  `difference`, `duration`, `seconds`, and `sum`), `math:max`, `math:min`,
+  `math:highest`, `math:lowest`, `math:power`, `math:abs`, `math:sqrt`, and
   `common:object-type` are implemented. The EXSLT regexp, remaining math,
-  remaining string/date, crypto, dynamic, and Saxon modules are not
+  remaining string functions, crypto, dynamic, and Saxon modules are not
   implemented.
 - Global variables are evaluated lazily on first use, so globals can
   reference each other in any order, including through templates applied

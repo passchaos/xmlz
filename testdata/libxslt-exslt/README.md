@@ -4,8 +4,8 @@ Copied from the libxslt repository (`tests/exslt`) so the EXSLT modules can
 be checked against the reference implementation's own regression corpus.
 Licensed under the MIT license; see `COPYING`.
 
-Modules covered: `common`, `functions`, `math`, `sets`, and `strings`.
-The `date`, `crypto`, `dynamic`, and `saxon` corpora are not vendored
+Modules covered: `common`, `date`, `functions`, `math`, `sets`, and
+`strings`. The `crypto`, `dynamic`, and `saxon` corpora are not vendored
 because those modules are not implemented.
 
 Run with:

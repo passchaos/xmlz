@@ -6,6 +6,7 @@ const value = @import("value.zig");
 const dom = @import("../dom.zig");
 const namespace = @import("../namespace.zig");
 const exslt = @import("exslt.zig");
+const exslt_date = @import("exslt_date.zig");
 const xmlbase = @import("../xmlbase.zig");
 
 pub const Error = error{
@@ -1607,13 +1608,69 @@ const Evaluator = struct {
                         try self.toString(items[0], context),
                     ) };
                 },
-                .date_add => {
-                    if (items.len != 2) return error.InvalidArgument;
-                    return .{ .string = try exslt.dateAdd(
+                .date_datetime,
+                .date_date,
+                .date_time,
+                .date_year,
+                .date_leap_year,
+                .date_month_in_year,
+                .date_month_name,
+                .date_month_abbreviation,
+                .date_week_in_year,
+                .date_week_in_month,
+                .date_day_in_year,
+                .date_day_in_month,
+                .date_day_of_week_in_month,
+                .date_day_in_week,
+                .date_day_name,
+                .date_day_abbreviation,
+                .date_hour_in_day,
+                .date_minute_in_hour,
+                .date_second_in_minute,
+                .date_add,
+                .date_add_duration,
+                .date_difference,
+                .date_duration,
+                .date_seconds,
+                => {
+                    const qname = namespace.splitQName(name) catch
+                        return error.InvalidArgument;
+                    var text_args: [2][]const u8 = undefined;
+                    var count: usize = 0;
+                    for (items) |item| {
+                        if (count == text_args.len) {
+                            return error.InvalidArgument;
+                        }
+                        text_args[count] = try self.toString(item, context);
+                        count += 1;
+                    }
+                    const result = exslt_date.call(
                         self.allocator,
-                        try self.toString(items[0], context),
-                        try self.toString(items[1], context),
-                    ) };
+                        qname.local,
+                        text_args[0..count],
+                        context.current_date_time,
+                    ) orelse return error.InvalidArgument;
+                    return switch (result) {
+                        .string => |text| .{ .string = text },
+                        .number => |number| .{ .number = number },
+                        .boolean => |boolean| .{ .boolean = boolean },
+                    };
+                },
+                .date_sum => {
+                    if (items.len != 1) return error.InvalidArgument;
+                    const nodes = try self.requireNodeSet(items[0], context);
+                    const values = try self.allocator.alloc(
+                        []const u8,
+                        nodes.len,
+                    );
+                    for (nodes, 0..) |node, index| {
+                        values[index] = try self.stringValue(context, node);
+                    }
+                    const summed = try exslt_date.sumDurations(
+                        self.allocator,
+                        values,
+                    );
+                    return .{ .string = summed orelse "" };
                 },
                 .set_intersection, .set_difference, .set_has_same_node => {
                     if (items.len != 2) return error.InvalidArgument;
@@ -2125,7 +2182,31 @@ const xslt_elements = [_][]const u8{
 const ExsltBuiltin = enum {
     distinct,
     replace,
+    date_datetime,
+    date_date,
+    date_time,
+    date_year,
+    date_leap_year,
+    date_month_in_year,
+    date_month_name,
+    date_month_abbreviation,
+    date_week_in_year,
+    date_week_in_month,
+    date_day_in_year,
+    date_day_in_month,
+    date_day_of_week_in_month,
+    date_day_in_week,
+    date_day_name,
+    date_day_abbreviation,
+    date_hour_in_day,
+    date_minute_in_hour,
+    date_second_in_minute,
     date_add,
+    date_add_duration,
+    date_difference,
+    date_duration,
+    date_seconds,
+    date_sum,
     str_tokenize,
     str_split,
     str_concat,
@@ -2174,10 +2255,68 @@ fn exsltBuiltin(
             return .str_decode_uri;
         }
     }
-    if (std.mem.eql(u8, uri, "http://exslt.org/dates-and-times") and
-        std.mem.eql(u8, qname.local, "add"))
-    {
-        return .date_add;
+    if (std.mem.eql(u8, uri, "http://exslt.org/dates-and-times")) {
+        if (std.mem.eql(u8, qname.local, "date-time")) {
+            return .date_datetime;
+        }
+        if (std.mem.eql(u8, qname.local, "date")) return .date_date;
+        if (std.mem.eql(u8, qname.local, "time")) return .date_time;
+        if (std.mem.eql(u8, qname.local, "year")) return .date_year;
+        if (std.mem.eql(u8, qname.local, "leap-year")) {
+            return .date_leap_year;
+        }
+        if (std.mem.eql(u8, qname.local, "month-in-year")) {
+            return .date_month_in_year;
+        }
+        if (std.mem.eql(u8, qname.local, "month-name")) {
+            return .date_month_name;
+        }
+        if (std.mem.eql(u8, qname.local, "month-abbreviation")) {
+            return .date_month_abbreviation;
+        }
+        if (std.mem.eql(u8, qname.local, "week-in-year")) {
+            return .date_week_in_year;
+        }
+        if (std.mem.eql(u8, qname.local, "week-in-month")) {
+            return .date_week_in_month;
+        }
+        if (std.mem.eql(u8, qname.local, "day-in-year")) {
+            return .date_day_in_year;
+        }
+        if (std.mem.eql(u8, qname.local, "day-in-month")) {
+            return .date_day_in_month;
+        }
+        if (std.mem.eql(u8, qname.local, "day-of-week-in-month")) {
+            return .date_day_of_week_in_month;
+        }
+        if (std.mem.eql(u8, qname.local, "day-in-week")) {
+            return .date_day_in_week;
+        }
+        if (std.mem.eql(u8, qname.local, "day-name")) {
+            return .date_day_name;
+        }
+        if (std.mem.eql(u8, qname.local, "day-abbreviation")) {
+            return .date_day_abbreviation;
+        }
+        if (std.mem.eql(u8, qname.local, "hour-in-day")) {
+            return .date_hour_in_day;
+        }
+        if (std.mem.eql(u8, qname.local, "minute-in-hour")) {
+            return .date_minute_in_hour;
+        }
+        if (std.mem.eql(u8, qname.local, "second-in-minute")) {
+            return .date_second_in_minute;
+        }
+        if (std.mem.eql(u8, qname.local, "add")) return .date_add;
+        if (std.mem.eql(u8, qname.local, "add-duration")) {
+            return .date_add_duration;
+        }
+        if (std.mem.eql(u8, qname.local, "difference")) {
+            return .date_difference;
+        }
+        if (std.mem.eql(u8, qname.local, "duration")) return .date_duration;
+        if (std.mem.eql(u8, qname.local, "seconds")) return .date_seconds;
+        if (std.mem.eql(u8, qname.local, "sum")) return .date_sum;
     }
     if (std.mem.eql(u8, uri, "http://exslt.org/sets")) {
         if (std.mem.eql(u8, qname.local, "intersection")) {

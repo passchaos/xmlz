@@ -7,6 +7,7 @@ const eval_mod = @import("eval.zig");
 
 pub const lexer = @import("lexer.zig");
 pub const value = @import("value.zig");
+pub const exslt_date = @import("exslt_date.zig");
 
 pub const Context = value.Context;
 pub const Value = value.Value;

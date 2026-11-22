@@ -71,7 +71,7 @@ then exposes them through a pull parser and reusable lexical primitives.
   catalog-aware includes and `document()`), the complete libxslt general
   regression suite (`zig build xslt-suite`, 205 passed with no tracked
   differences), the libxslt EXSLT corpus (`zig build xslt-exslt-suite`,
-  47 passed with one Saxon-module test tracked), the libxslt REC corpus
+  75 passed with one Saxon-module test tracked), the libxslt REC corpus
   (`zig build xslt-rec-suite`, 79 passed with one locale-collation test
   tracked), and libxslt's feature corpora (`zig build xslt-misc-suite`,
   27 passed with one debug-dump test tracked). EXSLT `func:function`
@@ -79,7 +79,8 @@ then exposes them through a pull parser and reusable lexical primitives.
   functions, `str:replace`, `str:tokenize`, `str:split`, `str:concat`,
   `str:padding`, `str:align`, `str:encode-uri`, `str:decode-uri`, `date:add`,
   `math:max`, `math:min`, `math:highest`, `math:lowest`, `math:power`,
-  `math:abs`, `math:sqrt`, and `common:object-type` are supported; globals
+  `math:abs`, `math:sqrt`, the `date:*` dates-and-times module, and
+  `common:object-type` are supported; globals
   are evaluated lazily and RTFs keep their type like libxslt. HTML/XHTML
   output matches libxslt's method auto-detection, charset meta elements,
   URI escaping, and formatting.

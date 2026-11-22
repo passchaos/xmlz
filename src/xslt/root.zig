@@ -1873,3 +1873,39 @@ test "XSLT format-number empty negative subpattern suppresses the sign" {
     defer testing.allocator.free(output);
     try testing.expectEqualStrings("<out>1,234.50|-1,234.50</out>", output);
 }
+
+test "XSLT EXSLT date functions and current time" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+        \\  xmlns:date="http://exslt.org/dates-and-times"
+        \\  xmlns:exsl="http://exslt.org/common"
+        \\  exclude-result-prefixes="date exsl">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:variable name="durs"><d>P1D</d><d>PT1H</d></xsl:variable>
+        \\  <xsl:template match="/"><out>
+        \\    <y><xsl:value-of select="date:year('2000-02-29')"/></y>
+        \\    <leap><xsl:value-of select="date:leap-year('2000-02-29')"/></leap>
+        \\    <week><xsl:value-of select="date:week-in-year('1999-01-03')"/></week>
+        \\    <day><xsl:value-of select="date:day-name('1999-01-03')"/></day>
+        \\    <add><xsl:value-of select="date:add('2000-01-01T00:00:00Z','PT1H1M')"/></add>
+        \\    <diff><xsl:value-of select="date:difference('2000-01-01','2000-01-02')"/></diff>
+        \\    <dur><xsl:value-of select="date:duration(3661.5)"/></dur>
+        \\    <sec><xsl:value-of select="date:seconds('P1D')"/></sec>
+        \\    <sum><xsl:value-of select="date:sum(exsl:node-set($durs)/d)"/></sum>
+        \\    <now><xsl:value-of select="date:date-time()"/></now>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{
+        .now = "2001-02-03T04:05:06Z",
+    });
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><y>2000</y><leap>true</leap><week>53</week><day>Sunday</day>" ++
+            "<add>2000-01-01T01:01:00Z</add><diff>P1D</diff>" ++
+            "<dur>PT1H1M1.5S</dur><sec>86400</sec><sum>P1DT1H</sum>" ++
+            "<now>2001-02-03T04:05:06Z</now></out>",
+        output,
+    );
+}
