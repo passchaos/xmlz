@@ -35,7 +35,8 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **DOM and writer.** The arena-backed DOM exposes resolved namespaces,
   decoded/normalized values, DTD attribute defaults, child traversal, and text
   content queries. The writer round-trips documents with correct escaping and
-  optional safe pretty printing.
+  optional safe pretty printing. A mutable `dom_builder.Builder` supports
+  programmatic construction with namespace-aware elements and attributes.
 - **XPath 1.0.** Location paths, all core axes, predicates, operators,
   variables, and the core function library are implemented over the DOM, with
   namespace-aware name tests and 65/65 differential checks against libxml2.
@@ -60,6 +61,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | XML 1.1 | Complete, W3C suite green |
 | Namespaces 1.0 / 1.1 | Complete, W3C suite green |
 | DOM tree | Complete |
+| DOM builder | Complete |
 | Writer/serializer | Complete |
 | XPath 1.0 | Complete (core library + differential checks) |
 | XPath / XSD / XSLT | Out of scope for the core engine |
@@ -108,6 +110,27 @@ The resolver owns the returned bytes and must keep them valid for the parser's
 lifetime. Without a resolver, external references remain declared-but-opaque
 and external subsets are not read.
 
+## Programmatic documents
+
+```zig
+var builder = try xmlz.dom_builder.Builder.init(allocator);
+defer builder.deinit();
+
+const root = try builder.createElement("svg");
+try builder.setAttribute(root, "width", "10");
+const rect = try builder.createElement("rect");
+try builder.setAttribute(rect, "x", "1");
+try builder.appendChild(root, rect);
+try builder.appendChild(builder.document(), root);
+
+var document = try builder.finish();
+defer document.deinit();
+```
+
+After `finish` the document owns the builder arena; the builder must not be
+used again. Namespace-aware creation is available through `createElementNs`
+and `setAttributeNs`.
+
 ## Trusted fast mode
 
 `Parser.Options.trusted = true` skips character, name, duplicate-attribute,
@@ -143,6 +166,7 @@ src/encoding.zig        byte-encoding detection and normalization
 src/markup.zig          quote-aware tag/declaration end scanners
 src/character_data.zig  character-data spans with CDATA provenance
 src/dom.zig             arena-backed document tree
+src/dom_builder.zig     programmatic document construction
 src/validation.zig      optional DTD validity checking
 src/writer.zig          XML serializer
 src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
