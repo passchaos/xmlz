@@ -150,6 +150,38 @@ const Evaluator = struct {
         path: ast.Path,
         context: *const value.Context,
     ) Error!value.Value {
+        // Single-step relative paths (`@href`, `title`, `text()`, `.`) are
+        // extremely common. Evaluate them directly instead of allocating an
+        // axis result, a filtered result, and a sorted copy.
+        if (path.start == null and !path.absolute and path.steps.len == 1) {
+            const step = path.steps[0];
+            if (step.predicates.len == 0) {
+                switch (step.axis) {
+                    .self_axis => {
+                        if (try self.matchesTest(
+                            context,
+                            context.node,
+                            step.node_test,
+                            step.axis,
+                        )) {
+                            const nodes = try self.allocator.alloc(
+                                value.NodeRef,
+                                1,
+                            );
+                            nodes[0] = context.node;
+                            return .{ .node_set = nodes };
+                        }
+                        return .{ .node_set = &.{} };
+                    },
+                    .child, .attribute => {
+                        if (try self.singleStep(context, step)) |nodes| {
+                            return .{ .node_set = nodes };
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
         var current: []const value.NodeRef = undefined;
         if (path.start) |start_expression| {
             current = try self.requireNodeSet(
@@ -170,6 +202,72 @@ const Evaluator = struct {
             current = try self.applyStep(context, current, step);
         }
         return .{ .node_set = current };
+    }
+
+    /// Evaluate a single child or attribute step from one context node.
+    /// Returns null when the context node kind cannot have that axis, so the
+    /// general path can handle it.
+    fn singleStep(
+        self: *Evaluator,
+        context: *const value.Context,
+        step: ast.Step,
+    ) Error!?[]const value.NodeRef {
+        const id = switch (context.node) {
+            .node => |node_id| node_id,
+            else => return null,
+        };
+        var out: std.ArrayList(value.NodeRef) = .empty;
+        switch (step.axis) {
+            .child => {
+                const node_value = context.document.node(id);
+                if (node_value.kind != .document and
+                    node_value.kind != .element)
+                {
+                    return null;
+                }
+                var child = node_value.first_child;
+                while (child != dom.null_node) : (child =
+                    context.document.node(child).next_sibling)
+                {
+                    const candidate: value.NodeRef = .{ .node = child };
+                    if (try self.matchesTest(
+                        context,
+                        candidate,
+                        step.node_test,
+                        step.axis,
+                    )) {
+                        try out.append(self.allocator, candidate);
+                    }
+                }
+            },
+            .attribute => {
+                if (context.document.node(id).kind != .element) return null;
+                const attributes = context.document.attributesOf(id);
+                for (attributes, 0..) |attribute, index| {
+                    if (namespace.Resolver.isNamespaceDeclaration(
+                        attribute.name,
+                    )) continue;
+                    const candidate: value.NodeRef = .{ .attribute = .{
+                        .element = id,
+                        .index = @intCast(index),
+                    } };
+                    if (try self.matchesTest(
+                        context,
+                        candidate,
+                        step.node_test,
+                        step.axis,
+                    )) {
+                        try out.append(self.allocator, candidate);
+                    }
+                }
+            },
+            else => return null,
+        }
+        if (out.items.len == 0) return &.{};
+        const owned: ?[]const value.NodeRef = try out.toOwnedSlice(
+            self.allocator,
+        );
+        return owned;
     }
 
     fn evalFilter(
@@ -215,6 +313,15 @@ const Evaluator = struct {
                 step.predicates,
             );
             try result.appendSlice(self.allocator, filtered);
+        }
+        // A single input node on a forward axis produces document-ordered,
+        // duplicate-free results, so the sort/dedup pass is unnecessary.
+        if (input.len == 1 and isForwardAxis(step.axis)) {
+            if (result.items.len == 0) return &.{};
+            const owned: []const value.NodeRef = try result.toOwnedSlice(
+                self.allocator,
+            );
+            return owned;
         }
         return self.sortDedup(result.items);
     }
@@ -2120,6 +2227,26 @@ const Evaluator = struct {
 /// Root of the document that owns `node`. Absolute location paths start
 /// here, even when the context node belongs to a document loaded through
 /// `document()` rather than the principal source document.
+fn isForwardAxis(axis: ast.Axis) bool {
+    return switch (axis) {
+        .self_axis,
+        .child,
+        .attribute,
+        .descendant,
+        .descendant_or_self,
+        .following,
+        .following_sibling,
+        .namespace_axis,
+        => true,
+        .parent,
+        .ancestor,
+        .ancestor_or_self,
+        .preceding,
+        .preceding_sibling,
+        => false,
+    };
+}
+
 fn documentRootOf(
     context: *const value.Context,
     node: value.NodeRef,

@@ -704,6 +704,14 @@ const Runtime = struct {
     supplied_parameters: []const xpath.Variable = &.{},
     template_states: []TemplateState = &.{},
     template_index: TemplateIndex,
+    /// Winning template for each `xsl:template name`, keyed by name.
+    named_templates: std.StringHashMapUnmanaged(
+        *const compile.Template,
+    ) = .empty,
+    /// Global variable index by name.
+    global_index: std.StringHashMapUnmanaged(usize) = .empty,
+    /// Attribute sets by expanded name, in declaration order.
+    attribute_set_index: NameTemplateMap = .empty,
     /// Documents whose template matches have been indexed, keyed by the
     /// merged document-root node id.
     built_match_roots: std.AutoHashMapUnmanaged(usize, void) = .empty,
@@ -1494,6 +1502,23 @@ const Runtime = struct {
         self.template_states = try self.allocator.alloc(TemplateState, templates.len);
         for (templates, 0..) |*template, index| {
             self.template_states[index] = .{ .template = template };
+            if (template.name) |name| {
+                const entry = try self.named_templates.getOrPut(
+                    self.allocator,
+                    name,
+                );
+                if (!entry.found_existing) {
+                    entry.value_ptr.* = template;
+                } else {
+                    const current = entry.value_ptr.*;
+                    if (template.precedence > current.precedence or
+                        (template.precedence == current.precedence and
+                            template.order > current.order))
+                    {
+                        entry.value_ptr.* = template;
+                    }
+                }
+            }
             if (template.selector == null) continue;
             const matcher: PatternMatcher = if (simplePattern(template)) |pattern|
                 .{ .simple = pattern }
@@ -1507,6 +1532,7 @@ const Runtime = struct {
             self.template_states[index].matcher = matcher;
             try self.template_index.addMatcher(@intCast(index), matcher);
         }
+        try self.buildAttributeSetIndex();
         // The source document is indexed eagerly; documents loaded later by
         // `document()` are indexed on first use. Patterns that compile to a
         // structural chain are matched directly and never precomputed.
@@ -1605,6 +1631,9 @@ const Runtime = struct {
         parameters: []const xpath.Variable,
     ) Error!void {
         self.globals = self.stylesheet.globals;
+        for (self.globals, 0..) |global, index| {
+            try self.global_index.put(self.allocator, global.name, index);
+        }
         self.supplied_parameters = parameters;
         self.global_values = try self.allocator.alloc(
             ?xpath.Value,
@@ -2758,21 +2787,8 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!void {
-        var template: ?*const compile.Template = null;
-        for (self.stylesheet.templates) |*candidate| {
-            const name = candidate.name orelse continue;
-            if (!std.mem.eql(u8, name, call.name)) continue;
-            if (template) |current| {
-                if (candidate.precedence < current.precedence) continue;
-                if (candidate.precedence == current.precedence and
-                    candidate.order < current.order)
-                {
-                    continue;
-                }
-            }
-            template = candidate;
-        }
-        const found = template orelse return error.InvalidStylesheet;
+        const found = self.named_templates.get(call.name) orelse
+            return error.InvalidStylesheet;
         const params = try self.evaluateParams(
             call.params,
             node,
@@ -3021,6 +3037,17 @@ const Runtime = struct {
         try self.executeInstructions(instruction.body, node, position, size);
     }
 
+    fn buildAttributeSetIndex(self: *Runtime) Error!void {
+        for (self.stylesheet.attribute_sets, 0..) |*set, index| {
+            try appendName(
+                &self.attribute_set_index,
+                self.allocator,
+                .{ .uri = set.name_uri, .local = set.name },
+                @intCast(index),
+            );
+        }
+    }
+
     fn executeAttributeSet(
         self: *Runtime,
         name: compile.NameRef,
@@ -3028,14 +3055,12 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!void {
-        var found = false;
-        for (self.stylesheet.attribute_sets) |set| {
-            if (!std.mem.eql(u8, set.name, name.local) or
-                !std.mem.eql(u8, set.name_uri, name.uri))
-            {
-                continue;
-            }
-            found = true;
+        const sets = self.attribute_set_index.get(.{
+            .uri = name.uri,
+            .local = name.local,
+        }) orelse return error.InvalidStylesheet;
+        for (sets.items) |index| {
+            const set = &self.stylesheet.attribute_sets[index];
             const instructions = set.expanded orelse set.raw_instructions;
             try self.executeInstructions(
                 instructions,
@@ -3044,7 +3069,6 @@ const Runtime = struct {
                 size,
             );
         }
-        if (!found) return error.InvalidStylesheet;
     }
 
     fn executeAttribute(
@@ -5557,11 +5581,8 @@ fn resolveGlobalVariable(
     name: []const u8,
 ) anyerror!?xpath.Value {
     const self: *Runtime = @ptrCast(@alignCast(context));
-    for (self.globals, 0..) |global, index| {
-        if (!std.mem.eql(u8, global.name, name)) continue;
-        return try self.ensureGlobal(index);
-    }
-    return null;
+    const index = self.global_index.get(name) orelse return null;
+    return try self.ensureGlobal(index);
 }
 
 fn findExtensionFunction(
