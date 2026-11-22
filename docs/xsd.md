@@ -63,12 +63,12 @@ for (result.errors) |validation_error| {
   `block` enforcement, abstract type rejection, and `xsi:nil`.
 - XML Schema regular expressions: branches, groups, classes, ranges,
   `\d \s \w \i \c`, `\p{...}` categories, and quantifiers.
+- Duration facets use the XML Schema partial order; incomparable values (such
+  as `P1M` and `P30D`) fail relational facets.
 
 ## Limitations
 
 - Unicode category coverage in `\p{...}` is approximate for non-ASCII scripts.
-- Duration ordering is a partial order; facets on durations use a simplified
-  comparison.
 - Validation does not inject default attribute values into the instance.
 - Keyref values are matched against all evaluated scopes of the referenced
   constraint rather than strictly the nearest declaring element's scope.
@@ -88,5 +88,5 @@ attributes, simple content, extension/restriction, namespaces, wildcards,
 `xsi:type`, `xsi:nil`, built-in datatypes, and facets. Expected output:
 
 ```text
-236/236 XSD differential checks passed
+245/245 XSD differential checks passed
 ```

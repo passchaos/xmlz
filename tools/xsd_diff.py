@@ -1252,6 +1252,43 @@ CASES = [
             "<root xmlns='urn:t' xmlns:t='urn:t'>t:jpg</root>",
         ],
     ),
+    (
+        "duration-min-inclusive",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t" xmlns:t="urn:t"
+          elementFormDefault="qualified">
+          <xs:simpleType name="D">
+            <xs:restriction base="xs:duration">
+              <xs:minInclusive value="P1M"/>
+            </xs:restriction>
+          </xs:simpleType>
+          <xs:element name="root" type="t:D"/>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t'>P1M</root>",
+            "<root xmlns='urn:t'>P2M</root>",
+            "<root xmlns='urn:t'>P1Y</root>",
+            "<root xmlns='urn:t'>-P1M</root>",
+            "<root xmlns='urn:t'>PT0S</root>",
+        ],
+    ),
+    (
+        "duration-max-inclusive",
+        f"""<xs:schema xmlns:xs="{XS}" targetNamespace="urn:t" xmlns:t="urn:t"
+          elementFormDefault="qualified">
+          <xs:simpleType name="D">
+            <xs:restriction base="xs:duration">
+              <xs:maxInclusive value="P1M"/>
+            </xs:restriction>
+          </xs:simpleType>
+          <xs:element name="root" type="t:D"/>
+        </xs:schema>""",
+        [
+            "<root xmlns='urn:t'>P1M</root>",
+            "<root xmlns='urn:t'>-P1M</root>",
+            "<root xmlns='urn:t'>PT0S</root>",
+            "<root xmlns='urn:t'>P2M</root>",
+        ],
+    ),
 ]
 
 

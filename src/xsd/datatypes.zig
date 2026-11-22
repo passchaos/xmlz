@@ -1182,15 +1182,53 @@ fn compareDateTimes(a: DateTimeValue, b: DateTimeValue) std.math.Order {
     }
 }
 
-fn compareDurations(a: DurationValue, b: DurationValue) std.math.Order {
-    const a_months = if (a.negative) -a.months else a.months;
-    const b_months = if (b.negative) -b.months else b.months;
-    if (a_months != b_months) return if (a_months < b_months) .lt else .gt;
-    const a_seconds = if (a.negative) -a.seconds else a.seconds;
-    const b_seconds = if (b.negative) -b.seconds else b.seconds;
-    if (a_seconds != b_seconds) return if (a_seconds < b_seconds) .lt else .gt;
-    if (a.nanos == b.nanos) return .eq;
-    return if (a.nanos < b.nanos) .lt else .gt;
+fn compareDurations(a: DurationValue, b: DurationValue) ?std.math.Order {
+    const a_sign: i64 = if (a.negative) -1 else 1;
+    const b_sign: i64 = if (b.negative) -1 else 1;
+    const a_months = a_sign * a.months;
+    const b_months = b_sign * b.months;
+    const a_seconds = a_sign * a.seconds;
+    const b_seconds = b_sign * b.seconds;
+    const a_nanos = a_sign * @as(i64, a.nanos);
+    const b_nanos = b_sign * @as(i64, b.nanos);
+    const seconds = compareDurationSeconds(
+        a_seconds,
+        a_nanos,
+        b_seconds,
+        b_nanos,
+    );
+    if (a_months == b_months and seconds == .eq) return .eq;
+    const months_lt = a_months < b_months;
+    const months_le = a_months <= b_months;
+    const seconds_lt = seconds == .lt;
+    const seconds_le = seconds == .lt or seconds == .eq;
+    if ((months_lt and seconds_le) or (months_le and seconds_lt)) {
+        return .lt;
+    }
+    const reverse_months_lt = b_months < a_months;
+    const reverse_months_le = b_months <= a_months;
+    const seconds_gt = seconds == .gt;
+    const seconds_ge = seconds == .gt or seconds == .eq;
+    if ((reverse_months_lt and seconds_ge) or
+        (reverse_months_le and seconds_gt))
+    {
+        return .gt;
+    }
+    // Incomparable durations (for example P1M and P30D).
+    return null;
+}
+
+fn compareDurationSeconds(
+    a_seconds: i64,
+    a_nanos: i64,
+    b_seconds: i64,
+    b_nanos: i64,
+) std.math.Order {
+    if (a_seconds != b_seconds) {
+        return if (a_seconds < b_seconds) .lt else .gt;
+    }
+    if (a_nanos == b_nanos) return .eq;
+    return if (a_nanos < b_nanos) .lt else .gt;
 }
 
 const testing = std.testing;
@@ -1281,6 +1319,35 @@ test "XSD facets constrain values" {
     try testing.expect(try validate(testing.allocator, .decimal, facets, "12.3"));
     try testing.expect(!try validate(testing.allocator, .decimal, facets, "123.4"));
     try testing.expect(!try validate(testing.allocator, .decimal, facets, "1.23"));
+}
+
+test "XSD duration facets use the partial order" {
+    var facets: Facets = .{ .min_inclusive = "P1M" };
+    try testing.expect(try validate(testing.allocator, .duration, facets, "P1M"));
+    try testing.expect(try validate(testing.allocator, .duration, facets, "P2M"));
+    try testing.expect(try validate(testing.allocator, .duration, facets, "P1Y"));
+    try testing.expect(!try validate(testing.allocator, .duration, facets, "-P1M"));
+    try testing.expect(!try validate(testing.allocator, .duration, facets, "PT0S"));
+    // P30D and P1M are incomparable under the XML Schema partial order.
+    try testing.expect(!try validate(testing.allocator, .duration, facets, "P30D"));
+    try testing.expect(!try validate(testing.allocator, .duration, facets, "P32D"));
+
+    facets = .{ .max_inclusive = "P1M" };
+    try testing.expect(try validate(testing.allocator, .duration, facets, "P1M"));
+    try testing.expect(try validate(testing.allocator, .duration, facets, "-P1M"));
+    try testing.expect(try validate(testing.allocator, .duration, facets, "PT0S"));
+    try testing.expect(!try validate(testing.allocator, .duration, facets, "P2M"));
+    try testing.expect(!try validate(testing.allocator, .duration, facets, "P30D"));
+
+    facets = .{ .min_exclusive = "P1M" };
+    try testing.expect(!try validate(testing.allocator, .duration, facets, "P1M"));
+    try testing.expect(try validate(testing.allocator, .duration, facets, "P2M"));
+    try testing.expect(try validate(testing.allocator, .duration, facets, "P1Y"));
+
+    facets = .{ .max_exclusive = "P1M" };
+    try testing.expect(!try validate(testing.allocator, .duration, facets, "P1M"));
+    try testing.expect(try validate(testing.allocator, .duration, facets, "-P1M"));
+    try testing.expect(!try validate(testing.allocator, .duration, facets, "P2M"));
 }
 
 test "XSD pattern facets" {
