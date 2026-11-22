@@ -161,11 +161,17 @@ pub const Context = struct {
     }
 };
 
+pub const TreeFragment = struct {
+    document: *const dom.Document,
+};
+
 pub const Value = union(enum) {
     node_set: []const NodeRef,
     boolean: bool,
     number: f64,
     string: []const u8,
+    /// XSLT result tree fragment.
+    tree: *const TreeFragment,
 
     pub fn toBoolean(self: Value) bool {
         return switch (self) {
@@ -173,6 +179,7 @@ pub const Value = union(enum) {
             .boolean => |value| value,
             .number => |value| value != 0 and !std.math.isNan(value),
             .string => |value| value.len != 0,
+            .tree => true,
         };
     }
 };

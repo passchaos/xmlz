@@ -67,6 +67,9 @@ defer result.deinit();
 - `xsl:decimal-format` declarations and `format-number()` patterns: grouping,
   optional and required digits, percent/per-mille scaling, negative
   subpatterns, named formats, and NaN/Infinity rendering.
+- Result tree fragments from `xsl:variable`/`xsl:param` bodies: `copy-of`
+  copies fragment markup, and string/number/boolean conversions use the
+  fragment text.
 - `xsl:output` methods `xml`, `html`, and `text`, `omit-xml-declaration`,
   `indent`, and `version`. HTML output uses HTML void elements, minimizes
   common boolean attributes, and keeps `script`/`style` content raw. Result
@@ -81,8 +84,9 @@ template priority its specified default behavior.
 ## Limitations
 
 - `xsl:decimal-format` and `xsl:namespace-alias` are not implemented.
-- Result tree fragments in variables are stored as strings; node-set operations
-  on them are not supported.
+- XPath node-set operations on result tree fragments (for example `$v/foo`
+  or `count($v)`) are not supported; XSLT 1.0 requires an extension for those.
+  Fragment markup is supported through `copy-of`.
 - `cdata-section-elements` and DOCTYPE output are not emitted, and
   `xsl:output encoding` is recorded but not transcoded (the result is always
   UTF-8).
@@ -104,5 +108,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-69/69 XSLT differential checks passed
+71/71 XSLT differential checks passed
 ```

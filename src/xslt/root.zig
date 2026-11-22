@@ -1038,3 +1038,60 @@ test "XSLT format-number rejects unknown decimal formats" {
         transformToString(stylesheet, "<root/>", .{}),
     );
 }
+
+test "XSLT result tree fragments support copy-of and string conversion" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:variable name="v">
+        \\    <b><xsl:value-of select="root/x"/></b>
+        \\  </xsl:variable>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:copy-of select="$v"/>
+        \\    <s><xsl:value-of select="$v"/></s>
+        \\    <t><xsl:value-of select="string($v)"/></t>
+        \\    <f><xsl:value-of select="boolean($v)"/></f>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root><x>text</x></root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out><b>text</b><s>text</s><t>text</t><f>true</f></out>",
+        output,
+    );
+}
+
+test "XSLT result tree fragments support multiple nodes and globals" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:variable name="global"><g>global</g></xsl:variable>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:variable name="local">pre<a/>post</xsl:variable>
+        \\    <xsl:copy-of select="$local"/>
+        \\    <xsl:copy-of select="$global"/>
+        \\    <xsl:for-each select="root/item">
+        \\      <xsl:variable name="item"><i><xsl:value-of select="@id"/></i></xsl:variable>
+        \\      <xsl:copy-of select="$item"/>
+        \\    </xsl:for-each>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(
+        stylesheet,
+        "<root><item id='a'/><item id='b'/></root>",
+        .{},
+    );
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out>pre<a/>post<g>global</g><i>a</i><i>b</i></out>",
+        output,
+    );
+}

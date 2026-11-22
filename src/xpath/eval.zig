@@ -734,6 +734,7 @@ const Evaluator = struct {
                     break :blk std.math.nan(f64);
                 break :blk value.parseNumber(try self.stringValue(context, node));
             },
+            .tree => |tree| value.parseNumber(try self.treeStringValue(tree)),
         };
     }
 
@@ -751,7 +752,38 @@ const Evaluator = struct {
                     break :blk "";
                 break :blk try self.stringValue(context, node);
             },
+            .tree => |tree| try self.treeStringValue(tree),
         };
+    }
+
+    fn treeStringValue(
+        self: *Evaluator,
+        tree: *const value.TreeFragment,
+    ) Error![]const u8 {
+        var out: std.ArrayList(u8) = .empty;
+        try self.appendDocumentText(
+            tree.document,
+            tree.document.documentNode(),
+            &out,
+        );
+        return out.toOwnedSlice(self.allocator);
+    }
+
+    fn appendDocumentText(
+        self: *Evaluator,
+        document: *const dom.Document,
+        id: dom.NodeId,
+        out: *std.ArrayList(u8),
+    ) Error!void {
+        const node = document.node(id);
+        if (node.kind == .text) {
+            try out.appendSlice(self.allocator, node.value);
+            return;
+        }
+        var child = node.first_child;
+        while (child != dom.null_node) : (child = document.node(child).next_sibling) {
+            try self.appendDocumentText(document, child, out);
+        }
     }
 
     fn compare(

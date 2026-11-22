@@ -106,6 +106,7 @@ pub fn apply(
     try runtime.evaluateGlobals(options.parameters);
     try runtime.applyTemplates(&.{.{ .node = 0 }}, null, &.{});
     runtime.deinitFilteredSource();
+    runtime.deinitFragments();
 
     const document = builder.finish() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -202,6 +203,7 @@ const Runtime = struct {
     selector_cache: std.AutoHashMap(*const xpath_ast.Expr, *SelectorEntry),
     keys_ready: bool = false,
     filtered_source: ?*dom.Document = null,
+    fragment_documents: std.ArrayList(*dom.Document) = .empty,
     current_template: ?*const compile.Template = null,
     current_mode: ?[]const u8 = null,
 
@@ -490,9 +492,7 @@ const Runtime = struct {
     ) Error!xpath.Value {
         return switch (value) {
             .select => |expression| self.evalOwned(expression, node, position, size),
-            .body => |body| .{
-                .string = try self.captureString(body, node, position, size),
-            },
+            .body => |body| try self.captureTree(body, node, position, size),
         };
     }
 
@@ -535,6 +535,7 @@ const Runtime = struct {
             .string => |string| .{
                 .string = try self.allocator.dupe(u8, string),
             },
+            .tree => |tree| .{ .tree = tree },
         };
     }
 
@@ -1039,12 +1040,17 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!void {
-        const nodes = try self.requireNodeSet(try self.evalOwned(
+        const value = try self.evalOwned(
             instruction.select,
             node,
             position,
             size,
-        ));
+        );
+        if (value == .tree) {
+            try self.copyFragment(value.tree);
+            return;
+        }
+        const nodes = try self.requireNodeSet(value);
         var last_element: ?dom.NodeId = null;
         for (nodes) |current| {
             if (last_element) |copied| {
@@ -1730,6 +1736,48 @@ const Runtime = struct {
         return out.toOwnedSlice(self.allocator);
     }
 
+    fn captureTree(
+        self: *Runtime,
+        body: []const compile.Instruction,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+    ) Error!xpath.Value {
+        var temp = dom_builder.Builder.init(self.allocator) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidStylesheet,
+        };
+        const saved_builder = self.builder;
+        const saved_parent = self.parent;
+        self.builder = &temp;
+        self.parent = temp.document();
+        var finished = false;
+        defer {
+            self.builder = saved_builder;
+            self.parent = saved_parent;
+            if (!finished) temp.deinit();
+        }
+        try self.executeInstructions(body, node, position, size);
+        const document = temp.finish() catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidStylesheet,
+        };
+        finished = true;
+        const pointer = try self.allocator.create(dom.Document);
+        pointer.* = document;
+        try self.fragment_documents.append(self.allocator, pointer);
+        const fragment = try self.allocator.create(xpath_value.TreeFragment);
+        fragment.* = .{ .document = pointer };
+        return .{ .tree = fragment };
+    }
+
+    fn deinitFragments(self: *Runtime) void {
+        for (self.fragment_documents.items) |document| {
+            document.deinit();
+        }
+        self.fragment_documents.clearRetainingCapacity();
+    }
+
     fn captureString(
         self: *Runtime,
         body: []const compile.Instruction,
@@ -1850,10 +1898,30 @@ const Runtime = struct {
         }
     }
 
+    fn copyFragment(
+        self: *Runtime,
+        fragment: *const xpath_value.TreeFragment,
+    ) Error!void {
+        var child = fragment.document.node(
+            fragment.document.documentNode(),
+        ).first_child;
+        while (child != dom.null_node) : (child = fragment.document.node(child).next_sibling) {
+            try self.copyDeepNodeFrom(fragment.document, .{ .node = child });
+        }
+    }
+
     fn copyDeepNode(self: *Runtime, node: xpath.NodeRef) Error!void {
+        try self.copyDeepNodeFrom(self.source, node);
+    }
+
+    fn copyDeepNodeFrom(
+        self: *Runtime,
+        source: *const dom.Document,
+        node: xpath.NodeRef,
+    ) Error!void {
         switch (node) {
             .attribute => |attr| {
-                const attribute = self.source.attributesOf(attr.element)[attr.index];
+                const attribute = source.attributesOf(attr.element)[attr.index];
                 try self.appendAttribute(
                     attribute.name,
                     attribute.prefixName(),
@@ -1865,17 +1933,21 @@ const Runtime = struct {
             .namespace_node => |ns| {
                 try self.addNamespaceDecl(self.parent, ns.prefix, ns.uri);
             },
-            .node => |id| try self.copyDeepNodeId(id),
+            .node => |id| try self.copyDeepNodeIdFrom(source, id),
         }
     }
 
-    fn copyDeepNodeId(self: *Runtime, id: dom.NodeId) Error!void {
-        const node_value = self.source.node(id);
+    fn copyDeepNodeIdFrom(
+        self: *Runtime,
+        source: *const dom.Document,
+        id: dom.NodeId,
+    ) Error!void {
+        const node_value = source.node(id);
         switch (node_value.kind) {
             .document => {
                 var child = node_value.first_child;
-                while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
-                    try self.copyDeepNodeId(child);
+                while (child != dom.null_node) : (child = source.node(child).next_sibling) {
+                    try self.copyDeepNodeIdFrom(source, child);
                 }
             },
             .element => {
@@ -1886,8 +1958,8 @@ const Runtime = struct {
                 ) catch |err| return mapBuilderError(err);
                 self.builder.appendChild(self.parent, new_id) catch |err|
                     return mapBuilderError(err);
-                try self.copyElementNamespaces(id, new_id);
-                for (self.source.attributesOf(id)) |attr| {
+                try self.copyElementNamespacesFrom(source, id, new_id);
+                for (source.attributesOf(id)) |attr| {
                     if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
                         continue;
                     }
@@ -1911,8 +1983,8 @@ const Runtime = struct {
                 self.parent = new_id;
                 defer self.parent = saved_parent;
                 var child = node_value.first_child;
-                while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
-                    try self.copyDeepNodeId(child);
+                while (child != dom.null_node) : (child = source.node(child).next_sibling) {
+                    try self.copyDeepNodeIdFrom(source, child);
                 }
             },
             .text => try self.appendText(node_value.value),
@@ -1924,16 +1996,17 @@ const Runtime = struct {
         }
     }
 
-    fn copyElementNamespaces(
+    fn copyElementNamespacesFrom(
         self: *Runtime,
+        source: *const dom.Document,
         id: dom.NodeId,
         new_id: dom.NodeId,
     ) Error!void {
-        const node_value = self.source.node(id);
+        const node_value = source.node(id);
         const prefix = prefixOf(node_value);
         var has_default = false;
         var has_prefix = false;
-        for (self.source.attributesOf(id)) |attr| {
+        for (source.attributesOf(id)) |attr| {
             if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
             self.builder.setAttribute(new_id, attr.name, attr.value) catch |err|
                 return mapBuilderError(err);
@@ -1947,7 +2020,7 @@ const Runtime = struct {
             try self.addNamespaceDecl(new_id, "", node_value.ns);
         }
         if (prefix.len != 0 and !has_prefix) {
-            const bindings = try self.source.inScopeNamespaces(self.allocator, id);
+            const bindings = try source.inScopeNamespaces(self.allocator, id);
             for (bindings) |binding| {
                 if (std.mem.eql(u8, binding.prefix, prefix)) {
                     try self.addNamespaceDecl(new_id, prefix, binding.uri);
@@ -1956,7 +2029,7 @@ const Runtime = struct {
             }
         }
         // Attributes may use prefixes declared on an ancestor.
-        for (self.source.attributesOf(id)) |attr| {
+        for (source.attributesOf(id)) |attr| {
             if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
             const attr_prefix = attr.prefixName();
             if (attr_prefix.len == 0 or std.mem.eql(u8, attr_prefix, "xml")) {
@@ -1974,7 +2047,7 @@ const Runtime = struct {
                 }
             }
             if (declared) continue;
-            const bindings = try self.source.inScopeNamespaces(self.allocator, id);
+            const bindings = try source.inScopeNamespaces(self.allocator, id);
             for (bindings) |binding| {
                 if (std.mem.eql(u8, binding.prefix, attr_prefix)) {
                     try self.addNamespaceDecl(new_id, attr_prefix, binding.uri);
@@ -2070,6 +2143,19 @@ const Runtime = struct {
                 if (best) |node| break :blk try self.stringValue(node);
                 break :blk "";
             },
+            .tree => |tree| try self.fragmentString(tree),
+        };
+    }
+
+    fn fragmentString(
+        self: *Runtime,
+        tree: *const xpath_value.TreeFragment,
+    ) Error![]const u8 {
+        return tree.document.textContentAlloc(
+            self.allocator,
+            tree.document.documentNode(),
+        ) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
         };
     }
 
@@ -2079,6 +2165,7 @@ const Runtime = struct {
             .boolean => |boolean| if (boolean) 1 else 0,
             .string => |string| xpath_value.parseNumber(string),
             .node_set => xpath_value.parseNumber(try self.toString(value)),
+            .tree => xpath_value.parseNumber(try self.toString(value)),
         };
     }
 
