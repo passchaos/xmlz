@@ -29,14 +29,23 @@ pub const Options = struct {
     emit_doctype: bool = false,
     /// Emit an explicit DOCTYPE instead of the parsed one.
     doctype: ?Doctype = null,
-    /// Indentation unit. When non-null, block-structured elements are
-    /// pretty-printed. Mixed-content elements stay inline to preserve text.
+    /// Indentation unit. When non-null, elements whose children contain no
+    /// text are pretty-printed like libxml2's serializer; mixed-content
+    /// subtrees stay inline to preserve text.
     indent: ?[]const u8 = null,
+    /// Append a newline after the last top-level node. libxslt's serializer
+    /// does this unless `indent="no"` was explicit.
+    trailing_newline: bool = false,
     /// Escape `>` as `&gt;` in character data. Escaping is always safe and
     /// avoids accidental `]]>` sequences.
     escape_gt: bool = true,
     /// Elements whose text children are serialized as CDATA sections.
     cdata_elements: []const ExpandedName = &.{},
+    /// XML version written into the declaration; null keeps the document's
+    /// version (or 1.0).
+    version: ?[]const u8 = null,
+    /// `standalone` pseudo-attribute; null keeps the document's value.
+    standalone: ?bool = null,
     /// Encoding name written into the XML declaration; null omits the
     /// encoding pseudo-attribute (libxslt omits it for default UTF-8 output).
     encoding_label: ?[]const u8 = null,
@@ -56,10 +65,12 @@ pub fn writeDocument(
     doc: *const dom.Document,
     options: Options,
 ) Error!void {
-    const version = documentVersion(doc);
+    const version = outputVersion(options, doc);
     if (options.xml_declaration) {
         try writer.writeAll("<?xml version=\"");
-        if (doc.declaration) |declaration| {
+        if (options.version) |value| {
+            try writer.writeAll(value);
+        } else if (doc.declaration) |declaration| {
             try writer.writeAll(declaration.version);
         } else {
             try writer.writeAll("1.0");
@@ -70,13 +81,13 @@ pub fn writeDocument(
             try writer.writeAll(label);
             try writer.writeByte('"');
         }
-        if (doc.declaration) |declaration| {
-            if (declaration.standalone) |standalone| {
-                try writer.writeAll(if (standalone)
-                    " standalone=\"yes\""
-                else
-                    " standalone=\"no\"");
-            }
+        const standalone: ?bool = options.standalone orelse
+            (if (doc.declaration) |declaration| declaration.standalone else null);
+        if (standalone) |value| {
+            try writer.writeAll(if (value)
+                " standalone=\"yes\""
+            else
+                " standalone=\"no\"");
         }
         try writer.writeAll("?>");
         try writer.writeByte('\n');
@@ -105,7 +116,16 @@ pub fn writeDocument(
             version,
             "",
         );
+        // libxslt separates top-level comments that have a following node
+        // when indenting; elements are not separated.
+        if (options.indent != null and
+            doc.node(child).kind == .comment and
+            doc.node(child).next_sibling != dom.null_node)
+        {
+            try writer.writeByte('\n');
+        }
     }
+    if (options.trailing_newline) try writer.writeByte('\n');
 }
 
 fn documentVersion(doc: *const dom.Document) chars.Version {
@@ -113,6 +133,14 @@ fn documentVersion(doc: *const dom.Document) chars.Version {
         if (std.mem.eql(u8, declaration.version, "1.1")) return .xml_1_1;
     }
     return .xml_1_0;
+}
+
+fn outputVersion(options: Options, doc: *const dom.Document) chars.Version {
+    if (options.version) |version| {
+        if (std.mem.eql(u8, version, "1.1")) return .xml_1_1;
+        return .xml_1_0;
+    }
+    return documentVersion(doc);
 }
 
 /// Write an explicit DOCTYPE declaration.
@@ -206,12 +234,10 @@ fn writeNode(
         .comment => {
             if (pretty) try writeIndent(writer, depth, options.indent.?);
             try writeComment(writer, node.value);
-            if (pretty) try writer.writeByte('\n');
         },
         .processing_instruction => {
             if (pretty) try writeIndent(writer, depth, options.indent.?);
             try writePi(writer, node.name, node.value);
-            if (pretty) try writer.writeByte('\n');
         },
         .document => unreachable,
     }
@@ -273,40 +299,58 @@ fn writeElement(
 
     if (node.first_child == dom.null_node) {
         try writer.writeAll("/>");
-        if (pretty) try writer.writeByte('\n');
         return;
     }
     try writer.writeByte('>');
 
-    const block = pretty and isBlockElement(doc, id);
-    if (block) try writer.writeByte('\n');
-
-    if (options.html_meta_charset) |charset| {
-        if (std.mem.eql(u8, node.local, "head") and
-            !hasContentTypeMeta(doc, id))
+    // XHTML serialization inserts a Content-Type meta element into <head>
+    // (libxml2's xmlNodeDumpOutput behavior for XHTML doctypes).
+    const meta_charset: ?[]const u8 = blk: {
+        const charset = options.html_meta_charset orelse break :blk null;
+        if (!std.mem.eql(u8, node.local, "head")) break :blk null;
+        if (node.parent == dom.null_node) break :blk null;
+        const parent = doc.node(node.parent);
+        if (parent.kind != .element or
+            !std.mem.eql(u8, parent.local, "html"))
         {
-            if (block) try writeIndent(writer, depth + 1, options.indent.?);
-            try writer.writeAll(
-                "<meta http-equiv=\"Content-Type\" content=\"text/html; " ++
-                    "charset=",
-            );
-            try escapeAttributeVersion(writer, charset, version);
-            try writer.writeAll("\" />");
-            if (block) try writer.writeByte('\n');
+            break :blk null;
         }
+        if (hasContentTypeMeta(doc, id)) break :blk null;
+        break :blk charset;
+    };
+    if (meta_charset) |charset| {
+        if (pretty) {
+            try writer.writeByte('\n');
+            try writeIndent(writer, depth + 1, options.indent.?);
+        }
+        try writer.writeAll(
+            "<meta http-equiv=\"Content-Type\" content=\"text/html; " ++
+                "charset=",
+        );
+        try escapeAttributeVersion(writer, charset, version);
+        try writer.writeAll("\" />");
     }
 
-    var child = node.first_child;
+    // Any text child disables formatting for the whole subtree, exactly like
+    // libxml2: whitespace is then preserved verbatim instead of re-indented.
+    var format = pretty;
+    if (format) {
+        var scan = node.first_child;
+        while (scan != dom.null_node) : (scan = doc.node(scan).next_sibling) {
+            if (doc.node(scan).kind == .text) {
+                format = false;
+                break;
+            }
+        }
+    }
+    if (format) try writer.writeByte('\n');
+
     const cdata = isCdataElement(options, node);
+    var child = node.first_child;
     while (child != dom.null_node) : (child = doc.node(child).next_sibling) {
         const child_node = doc.node(child);
         const child_cdata = cdata and child_node.kind == .text and
             !child_node.raw_text;
-        if (block and child_node.kind == .text and
-            isWhitespaceOnly(child_node.value) and !child_cdata)
-        {
-            continue;
-        }
         if (child_cdata) {
             try writeCdata(writer, child_node.value, version);
         } else {
@@ -316,19 +360,18 @@ fn writeElement(
                 child,
                 depth + 1,
                 options,
-                block,
+                format,
                 version,
                 child_default,
             );
         }
-        if (block and child_node.kind == .text) try writer.writeByte('\n');
+        if (format) try writer.writeByte('\n');
     }
 
-    if (block) try writeIndent(writer, depth, options.indent.?);
+    if (format) try writeIndent(writer, depth, options.indent.?);
     try writer.writeAll("</");
     try writer.writeAll(node.name);
     try writer.writeByte('>');
-    if (pretty) try writer.writeByte('\n');
 }
 
 fn ancestorBindsPrefix(
@@ -358,35 +401,11 @@ fn hasContentTypeMeta(doc: *const dom.Document, id: dom.NodeId) bool {
         const node = doc.node(child);
         if (node.kind != .element) continue;
         if (!std.mem.eql(u8, node.local, "meta")) continue;
-        if (doc.attribute(child, "http-equiv") != null or
-            doc.attribute(child, "charset") != null)
-        {
-            return true;
+        if (doc.attribute(child, "http-equiv")) |value| {
+            if (std.ascii.eqlIgnoreCase(value, "Content-Type")) return true;
         }
     }
     return false;
-}
-
-fn isBlockElement(doc: *const dom.Document, id: dom.NodeId) bool {
-    const node = doc.node(id);
-    var child = node.first_child;
-    var has_markup = false;
-    while (child != dom.null_node) : (child = doc.node(child).next_sibling) {
-        const child_node = doc.node(child);
-        if (child_node.kind == .text) {
-            if (!isWhitespaceOnly(child_node.value)) return false;
-        } else {
-            has_markup = true;
-        }
-    }
-    return has_markup;
-}
-
-fn isWhitespaceOnly(value: []const u8) bool {
-    for (value) |byte| {
-        if (!chars.isWhitespace(byte)) return false;
-    }
-    return true;
 }
 
 fn writeIndent(writer: *std.Io.Writer, depth: usize, unit: []const u8) Error!void {

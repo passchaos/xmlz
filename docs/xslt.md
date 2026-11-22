@@ -111,11 +111,9 @@ zig build xslt-suite
 
 Each stylesheet is applied to its companion document and compared with the
 reference output (structurally for XML, exactly for text). The current
-baseline is **196 passed, 9 known differences, 28 include-only skips**.
+baseline is **205 passed, 0 known differences, 28 include-only skips**.
 Known differences are tracked in `tools/libxslt_suite.py`; unexpected
-failures or newly fixed tests fail the gate. The remaining differences are
-libxslt's extension test plugin, its indentation quirks, and a few
-version-dependent expectations.
+failures or newly fixed tests fail the gate.
 
 ## Limitations
 
@@ -125,16 +123,23 @@ version-dependent expectations.
 - EXSLT `func:function` user-defined functions are supported (including
   recursion, parameter defaults, and `func:result` values/fragments);
   `libxslt:node-set` is accepted as an alias of `exsl:node-set`.
-  `set:distinct`, `str:replace`, and `date:add` are implemented. The EXSLT
-  regexp, math, and remaining string/date functions are not implemented.
+  `set:distinct`, `set:intersection`, `set:difference`, `set:has-same-node`,
+  `set:leading`, `set:trailing`, `str:replace`, `str:tokenize`,
+  `str:split`, `str:concat`, `str:padding`, `str:align`, `str:encode-uri`,
+  `str:decode-uri`, `date:add`, `math:max`, `math:min`, `math:highest`,
+  `math:lowest`, `math:power`, `math:abs`, `math:sqrt`, and
+  `common:object-type` are implemented. The EXSLT regexp, remaining math,
+  and remaining string/date functions are not implemented.
 - Global variables are evaluated lazily on first use, so globals can
   reference each other in any order, including through templates applied
   from a global's body.
 - Result tree fragments behave as node-sets when used with node-set
   operations, matching libxslt.
 - Extension elements designated by `extension-element-prefixes` process
-  `xsl:fallback` children.
-- XHTML output inserts libxslt's Content-Type meta element.
+  `xsl:fallback` children; libxslt's built-in `test` extension element is
+  also recognized.
+- XHTML output inserts libxslt's Content-Type meta element when the output
+  doctype identifies an XHTML DTD.
 - `function-available()` reports XSLT functions in the XSLT namespace as
   available, as required by XSLT 1.0; libxslt reports them as unavailable
   unless registered as extensions.

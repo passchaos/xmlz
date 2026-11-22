@@ -144,32 +144,28 @@ pub const Result = struct {
         }
         const xhtml_charset: ?[]const u8 = blk: {
             if (!options.libxslt_compat) break :blk null;
-            const root = self.document.root();
-            if (root == dom.null_node) break :blk null;
-            const root_node = self.document.node(root);
-            if (!std.mem.eql(
-                u8,
-                root_node.ns,
-                "http://www.w3.org/1999/xhtml",
+            // libxml2 only switches to XHTML serialization (and inserts the
+            // Content-Type meta element) when the output doctype identifies
+            // an XHTML DTD.
+            if (!isXhtmlDoctype(
+                self.output.doctype_public,
+                self.output.doctype_system,
             )) break :blk null;
-            if (!std.ascii.eqlIgnoreCase(root_node.local, "html")) {
-                break :blk null;
-            }
             break :blk encoding_label orelse "UTF-8";
         };
         try writer_mod.writeDocument(out, &self.document, .{
             .xml_declaration = method == .xml and
                 !self.output.omit_xml_declaration,
             .indent = if (self.output.indent) "  " else null,
+            .trailing_newline = options.libxslt_compat and
+                !(self.output.indent_specified and !self.output.indent),
             .doctype = doctype,
             .cdata_elements = self.output.cdata_elements,
+            .version = self.output.version,
+            .standalone = self.output.standalone,
             .encoding_label = encoding_label,
             .html_meta_charset = xhtml_charset,
         });
-        // libxslt's XML serialization ends with a newline.
-        if (options.libxslt_compat and !self.output.indent) {
-            try out.writeByte('\n');
-        }
     }
 
     fn outputDoctype(self: *const Result) ?writer_mod.Doctype {
@@ -185,6 +181,35 @@ pub const Result = struct {
             .public_id = self.output.doctype_public,
             .system_id = self.output.doctype_system,
         };
+    }
+
+    /// libxml2's `xmlIsXHTML`: the doctype must name one of the XHTML 1.0
+    /// DTDs for XHTML serialization to kick in.
+    fn isXhtmlDoctype(
+        public_id: ?[]const u8,
+        system_id: ?[]const u8,
+    ) bool {
+        const public_ids = [_][]const u8{
+            "-//W3C//DTD XHTML 1.0 Strict//EN",
+            "-//W3C//DTD XHTML 1.0 Frameset//EN",
+            "-//W3C//DTD XHTML 1.0 Transitional//EN",
+        };
+        const system_ids = [_][]const u8{
+            "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd",
+            "http://www.w3.org/TR/xhtml1/DTD/xhtml1-frameset.dtd",
+            "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd",
+        };
+        if (public_id) |value| {
+            for (public_ids) |candidate| {
+                if (std.mem.eql(u8, value, candidate)) return true;
+            }
+        }
+        if (system_id) |value| {
+            for (system_ids) |candidate| {
+                if (std.mem.eql(u8, value, candidate)) return true;
+            }
+        }
+        return false;
     }
 
     pub fn toOwnedSlice(
@@ -831,6 +856,10 @@ const Runtime = struct {
                 .context = self,
                 .resolve = resolveGlobalVariable,
             },
+            .fragment_factory = .{
+                .context = self,
+                .build = buildFragmentNodes,
+            },
             .document_base = self.base_uri,
         };
         var selected = xpath_eval.evaluate(
@@ -938,6 +967,10 @@ const Runtime = struct {
             .variable_resolver = .{
                 .context = self,
                 .resolve = resolveGlobalVariable,
+            },
+            .fragment_factory = .{
+                .context = self,
+                .build = buildFragmentNodes,
             },
             .document_base = self.base_uri,
         };
@@ -1074,6 +1107,10 @@ const Runtime = struct {
             .variable_resolver = .{
                 .context = self,
                 .resolve = resolveGlobalVariable,
+            },
+            .fragment_factory = .{
+                .context = self,
+                .build = buildFragmentNodes,
             },
             .document_base = self.base_uri,
         };
@@ -1929,6 +1966,13 @@ const Runtime = struct {
                 try self.appendText(if (number < 0) "-Infinity" else "Infinity");
                 return;
             }
+            if (number < 0) {
+                // libxslt reports the negative value and formats it as 0.
+                try self.messages.append(
+                    self.allocator,
+                    "xsl-number : negative value",
+                );
+            }
             const rounded = @max(std.math.floor(number + 0.5), 0);
             try self.appendText(try self.formatPositions(
                 &.{@intFromFloat(rounded)},
@@ -2109,6 +2153,10 @@ const Runtime = struct {
             .variable_resolver = .{
                 .context = self,
                 .resolve = resolveGlobalVariable,
+            },
+            .fragment_factory = .{
+                .context = self,
+                .build = buildFragmentNodes,
             },
             .document_base = self.base_uri,
         };
@@ -2501,6 +2549,7 @@ const Runtime = struct {
 
     fn appendText(self: *Runtime, text: []const u8) Error!void {
         if (text.len == 0) return;
+        if (try self.mergeIntoLastText(text, false)) return;
         const id = self.builder.createText(text) catch |err|
             return mapBuilderError(err);
         self.builder.appendChild(self.parent, id) catch |err|
@@ -2509,10 +2558,28 @@ const Runtime = struct {
 
     fn appendTextRaw(self: *Runtime, text: []const u8) Error!void {
         if (text.len == 0) return;
+        if (try self.mergeIntoLastText(text, true)) return;
         const id = self.builder.createTextRaw(text) catch |err|
             return mapBuilderError(err);
         self.builder.appendChild(self.parent, id) catch |err|
             return mapBuilderError(err);
+    }
+
+    /// XSLT result trees merge adjacent text nodes; disable-output-escaping
+    /// text only merges with other raw text so serializers keep its meaning.
+    fn mergeIntoLastText(
+        self: *Runtime,
+        text: []const u8,
+        raw: bool,
+    ) Error!bool {
+        if (self.parent == dom.null_node) return false;
+        const parent_node = self.builder.nodeAt(self.parent);
+        if (parent_node.last_child == dom.null_node) return false;
+        const last = self.builder.nodeAt(parent_node.last_child);
+        if (last.kind != .text or last.raw_text != raw) return false;
+        self.builder.appendToText(parent_node.last_child, text) catch |err|
+            return mapBuilderError(err);
+        return true;
     }
 
     fn appendComment(self: *Runtime, text: []const u8) Error!void {
@@ -3011,6 +3078,75 @@ fn refNodeId(node: xpath.NodeRef) usize {
         .attribute => |attribute| attribute.element,
         .namespace_node => |namespace_node| namespace_node.element,
     };
+}
+
+fn buildFragmentNodes(
+    context: *anyopaque,
+    allocator: std.mem.Allocator,
+    nodes: []const xpath_value.FragmentNode,
+) anyerror![]const xpath.NodeRef {
+    const self: *Runtime = @ptrCast(@alignCast(context));
+    var temp = dom_builder.Builder.init(self.allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidStylesheet,
+    };
+    temp.allow_multiple_roots = true;
+    var finished = false;
+    defer if (!finished) temp.deinit();
+    const ids = try allocator.alloc(dom.NodeId, nodes.len);
+    const document_id = temp.document();
+    for (nodes, 0..) |spec, index| {
+        if (spec.name) |name| {
+            const element = temp.createElement(name) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidStylesheet,
+            };
+            if (spec.text.len != 0) {
+                const text = temp.createText(spec.text) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.InvalidStylesheet,
+                };
+                temp.appendChild(element, text) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => return error.InvalidStylesheet,
+                };
+            }
+            temp.appendChild(document_id, element) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidStylesheet,
+            };
+            ids[index] = element;
+        } else {
+            const text = temp.createText(spec.text) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidStylesheet,
+            };
+            temp.appendChild(document_id, text) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.InvalidStylesheet,
+            };
+            ids[index] = text;
+        }
+    }
+    const document = temp.finish() catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidStylesheet,
+    };
+    finished = true;
+    const pointer = try self.allocator.create(dom.Document);
+    pointer.* = document;
+    try self.fragment_documents.append(self.allocator, pointer);
+    // Merge the fragment into the shared view without rebuilding keys and
+    // template matches: generated nodes are not part of the source document.
+    const root_id = self.appendDocumentNodes(pointer) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidArgument,
+    };
+    const refs = try allocator.alloc(xpath.NodeRef, nodes.len);
+    for (ids, 0..) |id, index| {
+        refs[index] = .{ .node = root_id + id };
+    }
+    return refs;
 }
 
 fn convertTree(
@@ -4231,7 +4367,7 @@ const html_tag_table = [_]HtmlTagInfo{
 
 fn htmlTagInfo(name: []const u8) ?HtmlTagInfo {
     for (html_tag_table) |info| {
-        if (std.mem.eql(u8, info.name, name)) return info;
+        if (std.ascii.eqlIgnoreCase(info.name, name)) return info;
     }
     return null;
 }

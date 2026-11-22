@@ -16,6 +16,9 @@ const writer_mod = @import("../writer.zig");
 
 pub const xsl_namespace = namespace.xsl_uri;
 pub const exslt_functions_namespace = "http://exslt.org/functions";
+/// Namespace of libxslt's built-in extension module (xsltproc registers the
+/// `test` element and function in it).
+pub const libxslt_namespace = "http://xmlsoft.org/XSLT/";
 
 pub const Error = error{
     OutOfMemory,
@@ -150,6 +153,8 @@ pub const Output = struct {
     /// True when `indent` came from an explicit `xsl:output` attribute.
     indent_specified: bool = false,
     version: ?[]const u8 = null,
+    /// `standalone` pseudo-attribute in the XML declaration.
+    standalone: ?bool = null,
     /// Explicit `encoding` attribute; empty means the default UTF-8 output
     /// without an encoding pseudo-attribute in the XML declaration.
     encoding: []const u8 = "",
@@ -996,6 +1001,13 @@ const Compiler = struct {
         if (self.document.attribute(id, "version")) |value| {
             self.output.version = value;
         }
+        if (self.document.attribute(id, "standalone")) |value| {
+            if (std.mem.eql(u8, value, "yes")) {
+                self.output.standalone = true;
+            } else if (std.mem.eql(u8, value, "no")) {
+                self.output.standalone = false;
+            }
+        }
         if (self.document.attribute(id, "encoding")) |value| {
             self.output.encoding = value;
         }
@@ -1081,8 +1093,22 @@ const Compiler = struct {
             !std.mem.eql(u8, node.ns, xsl_namespace) and
             try self.isExtensionNamespace(id, node.ns))
         {
-            // Extension instructions are unsupported: process xsl:fallback
-            // children and ignore the rest.
+            // libxslt's built-in test module: the `test` element emits a
+            // comment so extension dispatch can be exercised by the suite.
+            if (std.mem.eql(u8, node.ns, libxslt_namespace) and
+                std.mem.eql(u8, node.local, "test"))
+            {
+                const comment_body = try self.arena.alloc(Instruction, 1);
+                comment_body[0] = .{
+                    .literal_text = "libxslt:test element test worked",
+                };
+                try body.append(self.arena, .{
+                    .comment = .{ .body = comment_body },
+                });
+                return;
+            }
+            // Other extension instructions are unsupported: process
+            // xsl:fallback children and ignore the rest.
             try self.compileFallbacks(id, preserve, body);
             return;
         }

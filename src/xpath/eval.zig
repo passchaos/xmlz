@@ -161,7 +161,7 @@ const Evaluator = struct {
             );
         } else if (path.absolute) {
             const nodes = try self.allocator.alloc(value.NodeRef, 1);
-            nodes[0] = .{ .node = 0 };
+            nodes[0] = documentRootOf(context, context.node);
             current = nodes;
         } else {
             const nodes = try self.allocator.alloc(value.NodeRef, 1);
@@ -740,6 +740,119 @@ const Evaluator = struct {
         return best;
     }
 
+    fn buildTextNodeSet(
+        self: *Evaluator,
+        context: *const value.Context,
+        text: []const u8,
+    ) Error!value.Value {
+        const factory = context.fragment_factory orelse
+            return error.InvalidArgument;
+        const nodes = factory.build(
+            factory.context,
+            self.allocator,
+            &.{.{ .name = null, .text = text }},
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidArgument,
+        };
+        return .{ .node_set = nodes };
+    }
+
+    fn buildTokenNodeSet(
+        self: *Evaluator,
+        context: *const value.Context,
+        tokens: []const []const u8,
+    ) Error!value.Value {
+        const factory = context.fragment_factory orelse
+            return error.InvalidArgument;
+        const specs = try self.allocator.alloc(value.FragmentNode, tokens.len);
+        for (tokens, 0..) |token, index| {
+            specs[index] = .{ .name = "token", .text = token };
+        }
+        const nodes = factory.build(
+            factory.context,
+            self.allocator,
+            specs,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidArgument,
+        };
+        return .{ .node_set = nodes };
+    }
+
+    fn stringList(
+        self: *Evaluator,
+        context: *const value.Context,
+        input: value.Value,
+    ) Error![]const []const u8 {
+        switch (input) {
+            .node_set => |nodes| {
+                const out = try self.allocator.alloc([]const u8, nodes.len);
+                for (nodes, 0..) |node, index| {
+                    out[index] = try self.stringValue(context, node);
+                }
+                return out;
+            },
+            else => {
+                const out = try self.allocator.alloc([]const u8, 1);
+                out[0] = try self.toString(input, context);
+                return out;
+            },
+        }
+    }
+
+    fn optionalStringList(
+        self: *Evaluator,
+        context: *const value.Context,
+        input: value.Value,
+        count: usize,
+    ) Error![]const ?[]const u8 {
+        switch (input) {
+            .node_set => |nodes| {
+                const out = try self.allocator.alloc(?[]const u8, count);
+                for (0..count) |index| {
+                    out[index] = if (index < nodes.len)
+                        try self.stringValue(context, nodes[index])
+                    else
+                        null;
+                }
+                return out;
+            },
+            else => {
+                const out = try self.allocator.alloc(?[]const u8, count);
+                const text = try self.toString(input, context);
+                out[0] = text;
+                for (out[1..]) |*entry| entry.* = null;
+                return out;
+            },
+        }
+    }
+
+    /// Convert a value to a node-set, accepting result tree fragments like
+    /// libxslt.
+    fn toNodeSet(
+        self: *Evaluator,
+        context: *const value.Context,
+        input: value.Value,
+    ) Error![]const value.NodeRef {
+        return switch (input) {
+            .node_set => |nodes| nodes,
+            .tree => |tree| blk: {
+                const converter = context.tree_converter orelse
+                    return error.InvalidArgument;
+                const converted = try converter.convert(
+                    converter.context,
+                    self.allocator,
+                    tree,
+                ) orelse return error.InvalidArgument;
+                const nodes = try self.allocator.alloc(value.NodeRef, 1);
+                nodes[0] = converted;
+                break :blk nodes;
+            },
+            else => error.InvalidArgument,
+        };
+    }
+
     fn requireNodeSet(self: *Evaluator, result: value.Value) Error![]const value.NodeRef {
         _ = self;
         return switch (result) {
@@ -1266,7 +1379,10 @@ const Evaluator = struct {
                     nodes[0] = converted;
                     return .{ .node_set = nodes };
                 },
-                else => return error.InvalidArgument,
+                else => return self.buildTextNodeSet(
+                    context,
+                    try self.toString(items[0], context),
+                ),
             }
         }
         if (std.mem.eql(u8, name, "document")) {
@@ -1350,11 +1466,132 @@ const Evaluator = struct {
                 },
                 .replace => {
                     if (items.len != 3) return error.InvalidArgument;
-                    return .{ .string = try exslt.replaceAll(
+                    const text = try self.toString(items[0], context);
+                    const search = try self.stringList(context, items[1]);
+                    const replacements = try self.optionalStringList(
+                        context,
+                        items[2],
+                        search.len,
+                    );
+                    const replaced = try exslt.replaceNodes(
+                        self.allocator,
+                        text,
+                        search,
+                        replacements,
+                    );
+                    return self.buildTextNodeSet(context, replaced);
+                },
+                .str_tokenize => {
+                    if (items.len < 1 or items.len > 2) {
+                        return error.InvalidArgument;
+                    }
+                    const text = try self.toString(items[0], context);
+                    const delimiters = if (items.len == 2)
+                        try self.toString(items[1], context)
+                    else
+                        "\t\r\n ";
+                    const tokens = try exslt.tokenize(
+                        self.allocator,
+                        text,
+                        delimiters,
+                    );
+                    return self.buildTokenNodeSet(context, tokens);
+                },
+                .str_split => {
+                    if (items.len < 1 or items.len > 2) {
+                        return error.InvalidArgument;
+                    }
+                    const text = try self.toString(items[0], context);
+                    const delimiter = if (items.len == 2)
+                        try self.toString(items[1], context)
+                    else
+                        " ";
+                    const tokens = try exslt.split(
+                        self.allocator,
+                        text,
+                        delimiter,
+                    );
+                    return self.buildTokenNodeSet(context, tokens);
+                },
+                .str_concat => {
+                    if (items.len != 1) return error.InvalidArgument;
+                    const nodes = try self.toNodeSet(context, items[0]);
+                    var out: std.ArrayList(u8) = .empty;
+                    for (nodes) |node| {
+                        try out.appendSlice(
+                            self.allocator,
+                            try self.stringValue(context, node),
+                        );
+                    }
+                    return .{ .string = try out.toOwnedSlice(
+                        self.allocator,
+                    ) };
+                },
+                .str_padding => {
+                    if (items.len < 1 or items.len > 2) {
+                        return error.InvalidArgument;
+                    }
+                    const length = try self.toNumber(items[0], context);
+                    const pattern = if (items.len == 2)
+                        try self.toString(items[1], context)
+                    else
+                        "";
+                    return .{ .string = try exslt.padding(
+                        self.allocator,
+                        length,
+                        pattern,
+                    ) };
+                },
+                .str_align => {
+                    if (items.len < 2 or items.len > 3) {
+                        return error.InvalidArgument;
+                    }
+                    const text = try self.toString(items[0], context);
+                    const pad = try self.toString(items[1], context);
+                    const alignment = if (items.len == 3)
+                        try self.toString(items[2], context)
+                    else
+                        "";
+                    return .{ .string = try exslt.alignString(
+                        self.allocator,
+                        text,
+                        pad,
+                        alignment,
+                    ) };
+                },
+                .str_encode_uri => {
+                    if (items.len < 1 or items.len > 3) {
+                        return error.InvalidArgument;
+                    }
+                    if (items.len == 3) {
+                        const encoding = try self.toString(items[2], context);
+                        if (!std.mem.eql(u8, encoding, "UTF-8")) {
+                            return .{ .string = "" };
+                        }
+                    }
+                    const escape_reserved = if (items.len >= 2)
+                        items[1].toBoolean()
+                    else
+                        true;
+                    return .{ .string = try exslt.encodeUri(
                         self.allocator,
                         try self.toString(items[0], context),
-                        try self.toString(items[1], context),
-                        try self.toString(items[2], context),
+                        escape_reserved,
+                    ) };
+                },
+                .str_decode_uri => {
+                    if (items.len < 1 or items.len > 2) {
+                        return error.InvalidArgument;
+                    }
+                    if (items.len == 2) {
+                        const encoding = try self.toString(items[1], context);
+                        if (!std.mem.eql(u8, encoding, "UTF-8")) {
+                            return .{ .string = "" };
+                        }
+                    }
+                    return .{ .string = try exslt.decodeUri(
+                        self.allocator,
+                        try self.toString(items[0], context),
                     ) };
                 },
                 .date_add => {
@@ -1364,6 +1601,187 @@ const Evaluator = struct {
                         try self.toString(items[0], context),
                         try self.toString(items[1], context),
                     ) };
+                },
+                .set_intersection, .set_difference, .set_has_same_node => {
+                    if (items.len != 2) return error.InvalidArgument;
+                    const first = try self.toNodeSet(context, items[0]);
+                    const second = try self.toNodeSet(context, items[1]);
+                    switch (builtin) {
+                        .set_has_same_node => {
+                            for (first) |a| {
+                                for (second) |b| {
+                                    if (nodeRefEqual(a, b)) {
+                                        return .{ .boolean = true };
+                                    }
+                                }
+                            }
+                            return .{ .boolean = false };
+                        },
+                        .set_intersection => {
+                            var out: std.ArrayList(value.NodeRef) = .empty;
+                            for (first) |a| {
+                                for (second) |b| {
+                                    if (nodeRefEqual(a, b)) {
+                                        try out.append(self.allocator, a);
+                                        break;
+                                    }
+                                }
+                            }
+                            return .{ .node_set = try self.sortDedup(
+                                out.items,
+                            ) };
+                        },
+                        else => {
+                            var out: std.ArrayList(value.NodeRef) = .empty;
+                            for (first) |a| {
+                                var found = false;
+                                for (second) |b| {
+                                    if (nodeRefEqual(a, b)) {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found) try out.append(self.allocator, a);
+                            }
+                            return .{ .node_set = try self.sortDedup(
+                                out.items,
+                            ) };
+                        },
+                    }
+                },
+                .set_leading, .set_trailing => {
+                    if (items.len != 2) return error.InvalidArgument;
+                    const first = try self.toNodeSet(context, items[0]);
+                    const second = try self.toNodeSet(context, items[1]);
+                    if (second.len == 0) {
+                        // EXSLT: an empty second node-set returns the first.
+                        return .{
+                            .node_set = try self.sortDedup(first),
+                        };
+                    }
+                    var sorted_second: std.ArrayList(value.NodeRef) = .empty;
+                    try sorted_second.appendSlice(self.allocator, second);
+                    std.mem.sort(
+                        value.NodeRef,
+                        sorted_second.items,
+                        {},
+                        struct {
+                            fn lessThan(
+                                _: void,
+                                a: value.NodeRef,
+                                b: value.NodeRef,
+                            ) bool {
+                                return value.orderKeyLessThan(
+                                    a.orderKey(),
+                                    b.orderKey(),
+                                );
+                            }
+                        }.lessThan,
+                    );
+                    const boundary_node = sorted_second.items[0];
+                    // libxslt requires the boundary node to be part of the
+                    // first node-set.
+                    var contains_boundary = false;
+                    for (first) |node| {
+                        if (nodeRefEqual(node, boundary_node)) {
+                            contains_boundary = true;
+                            break;
+                        }
+                    }
+                    if (!contains_boundary) {
+                        return .{ .node_set = &.{} };
+                    }
+                    const boundary = boundary_node.orderKey();
+                    var out: std.ArrayList(value.NodeRef) = .empty;
+                    for (first) |node| {
+                        const key = node.orderKey();
+                        const before = value.orderKeyLessThan(key, boundary);
+                        const after = value.orderKeyLessThan(boundary, key);
+                        if ((builtin == .set_leading and before) or
+                            (builtin == .set_trailing and after))
+                        {
+                            try out.append(self.allocator, node);
+                        }
+                    }
+                    return .{ .node_set = try out.toOwnedSlice(
+                        self.allocator,
+                    ) };
+                },
+                .math_max, .math_min, .math_highest, .math_lowest => {
+                    if (items.len != 1) return error.InvalidArgument;
+                    const nodes = try self.toNodeSet(context, items[0]);
+                    const want_max = builtin == .math_max or
+                        builtin == .math_highest;
+                    var target: f64 = if (want_max)
+                        -std.math.inf(f64)
+                    else
+                        std.math.inf(f64);
+                    var has_nan = false;
+                    for (nodes) |node| {
+                        const number = value.parseNumber(
+                            try self.stringValue(context, node),
+                        );
+                        if (std.math.isNan(number)) {
+                            has_nan = true;
+                            break;
+                        }
+                        if (want_max) {
+                            if (number > target) target = number;
+                        } else {
+                            if (number < target) target = number;
+                        }
+                    }
+                    if (builtin == .math_max or builtin == .math_min) {
+                        if (has_nan or nodes.len == 0) {
+                            return .{ .number = std.math.nan(f64) };
+                        }
+                        return .{ .number = target };
+                    }
+                    if (has_nan or nodes.len == 0) {
+                        return .{ .node_set = &.{} };
+                    }
+                    var out: std.ArrayList(value.NodeRef) = .empty;
+                    for (nodes) |node| {
+                        const number = value.parseNumber(
+                            try self.stringValue(context, node),
+                        );
+                        if (number == target) {
+                            try out.append(self.allocator, node);
+                        }
+                    }
+                    return .{ .node_set = try out.toOwnedSlice(
+                        self.allocator,
+                    ) };
+                },
+                .math_power => {
+                    if (items.len != 2) return error.InvalidArgument;
+                    return .{ .number = std.math.pow(
+                        f64,
+                        try self.toNumber(items[0], context),
+                        try self.toNumber(items[1], context),
+                    ) };
+                },
+                .math_abs => {
+                    if (items.len != 1) return error.InvalidArgument;
+                    return .{ .number = @abs(
+                        try self.toNumber(items[0], context),
+                    ) };
+                },
+                .math_sqrt => {
+                    if (items.len != 1) return error.InvalidArgument;
+                    return .{ .number = @sqrt(
+                        try self.toNumber(items[0], context),
+                    ) };
+                },
+                .object_type => {
+                    if (items.len != 1) return error.InvalidArgument;
+                    return .{ .string = switch (items[0]) {
+                        .string => "string",
+                        .number => "number",
+                        .boolean => "boolean",
+                        .node_set => "node-set",
+                        .tree => "RTF",
+                    } };
                 },
             }
         }
@@ -1606,6 +2024,39 @@ const Evaluator = struct {
     }
 };
 
+/// Root of the document that owns `node`. Absolute location paths start
+/// here, even when the context node belongs to a document loaded through
+/// `document()` rather than the principal source document.
+fn documentRootOf(
+    context: *const value.Context,
+    node: value.NodeRef,
+) value.NodeRef {
+    var id: dom.NodeId = switch (node) {
+        .node => |node_id| node_id,
+        .attribute => |attribute| attribute.element,
+        .namespace_node => |namespace_node| namespace_node.element,
+    };
+    while (true) {
+        const current = context.document.node(id);
+        if (current.kind == .document or current.parent == dom.null_node) {
+            return .{ .node = id };
+        }
+        id = current.parent;
+    }
+}
+
+fn nodeRefEqual(a: value.NodeRef, b: value.NodeRef) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .node => |id| id == b.node,
+        .attribute => |attribute| attribute.element == b.attribute.element and
+            attribute.index == b.attribute.index,
+        .namespace_node => |namespace_node| namespace_node.element ==
+            b.namespace_node.element and
+            std.mem.eql(u8, namespace_node.prefix, b.namespace_node.prefix),
+    };
+}
+
 const xpath_core_functions = [_][]const u8{
     "last",            "position",      "count",         "id",
     "local-name",      "namespace-uri", "name",          "string",
@@ -1658,7 +2109,31 @@ const xslt_elements = [_][]const u8{
     "decimal-format",
 };
 
-const ExsltBuiltin = enum { distinct, replace, date_add };
+const ExsltBuiltin = enum {
+    distinct,
+    replace,
+    date_add,
+    str_tokenize,
+    str_split,
+    str_concat,
+    str_padding,
+    str_align,
+    str_encode_uri,
+    str_decode_uri,
+    set_intersection,
+    set_difference,
+    set_has_same_node,
+    set_leading,
+    set_trailing,
+    math_max,
+    math_min,
+    math_highest,
+    math_lowest,
+    math_power,
+    math_abs,
+    math_sqrt,
+    object_type,
+};
 
 fn exsltBuiltin(
     context: *const value.Context,
@@ -1672,15 +2147,51 @@ fn exsltBuiltin(
     {
         return .distinct;
     }
-    if (std.mem.eql(u8, uri, "http://exslt.org/strings") and
-        std.mem.eql(u8, qname.local, "replace"))
-    {
-        return .replace;
+    if (std.mem.eql(u8, uri, "http://exslt.org/strings")) {
+        if (std.mem.eql(u8, qname.local, "replace")) return .replace;
+        if (std.mem.eql(u8, qname.local, "tokenize")) return .str_tokenize;
+        if (std.mem.eql(u8, qname.local, "split")) return .str_split;
+        if (std.mem.eql(u8, qname.local, "concat")) return .str_concat;
+        if (std.mem.eql(u8, qname.local, "padding")) return .str_padding;
+        if (std.mem.eql(u8, qname.local, "align")) return .str_align;
+        if (std.mem.eql(u8, qname.local, "encode-uri")) {
+            return .str_encode_uri;
+        }
+        if (std.mem.eql(u8, qname.local, "decode-uri")) {
+            return .str_decode_uri;
+        }
     }
     if (std.mem.eql(u8, uri, "http://exslt.org/dates-and-times") and
         std.mem.eql(u8, qname.local, "add"))
     {
         return .date_add;
+    }
+    if (std.mem.eql(u8, uri, "http://exslt.org/sets")) {
+        if (std.mem.eql(u8, qname.local, "intersection")) {
+            return .set_intersection;
+        }
+        if (std.mem.eql(u8, qname.local, "difference")) {
+            return .set_difference;
+        }
+        if (std.mem.eql(u8, qname.local, "has-same-node")) {
+            return .set_has_same_node;
+        }
+        if (std.mem.eql(u8, qname.local, "leading")) return .set_leading;
+        if (std.mem.eql(u8, qname.local, "trailing")) return .set_trailing;
+    }
+    if (std.mem.eql(u8, uri, "http://exslt.org/math")) {
+        if (std.mem.eql(u8, qname.local, "max")) return .math_max;
+        if (std.mem.eql(u8, qname.local, "min")) return .math_min;
+        if (std.mem.eql(u8, qname.local, "highest")) return .math_highest;
+        if (std.mem.eql(u8, qname.local, "lowest")) return .math_lowest;
+        if (std.mem.eql(u8, qname.local, "power")) return .math_power;
+        if (std.mem.eql(u8, qname.local, "abs")) return .math_abs;
+        if (std.mem.eql(u8, qname.local, "sqrt")) return .math_sqrt;
+    }
+    if (std.mem.eql(u8, uri, "http://exslt.org/common") and
+        std.mem.eql(u8, qname.local, "object-type"))
+    {
+        return .object_type;
     }
     return null;
 }

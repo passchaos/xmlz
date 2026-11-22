@@ -145,6 +145,26 @@ pub const Builder = struct {
         });
     }
 
+    /// Append character data to an existing text node, merging adjacent text
+    /// like the XPath data model requires.
+    pub fn appendToText(
+        self: *Builder,
+        id: dom.NodeId,
+        value: []const u8,
+    ) Error!void {
+        if (id >= self.nodes.items.len) return error.InvalidTree;
+        const node = &self.nodes.items[id];
+        if (node.kind != .text) return error.InvalidTree;
+        if (value.len == 0) return;
+        const combined = try self.arena.allocator().alloc(
+            u8,
+            node.value.len + value.len,
+        );
+        @memcpy(combined[0..node.value.len], node.value);
+        @memcpy(combined[node.value.len..], value);
+        node.value = combined;
+    }
+
     pub fn createComment(self: *Builder, value: []const u8) Error!dom.NodeId {
         if (std.mem.indexOf(u8, value, "--") != null or
             (value.len != 0 and value[value.len - 1] == '-'))

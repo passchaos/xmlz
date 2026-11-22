@@ -19,19 +19,8 @@ except ImportError:  # pragma: no cover
     print("SKIP: lxml is not installed", file=sys.stderr)
     sys.exit(0)
 
-# Tests that currently differ from libxslt. Most need EXSLT/extension
-# functions or libxslt-specific formatting details.
-KNOWN_FAILURES = {
-    "bug-100.xsl",
-    "bug-155.xsl",
-    "bug-187.xsl",
-    "bug-65.xsl",
-    "bug-68.xsl",
-    "bug-6-.xsl",
-    "bug-90.xsl",
-    "bug-98.xsl",
-    "character.xsl",
-}
+# Tests that currently differ from libxslt. Empty: the suite passes in full.
+KNOWN_FAILURES = set()
 
 
 def tree_shape(element):

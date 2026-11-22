@@ -184,6 +184,22 @@ pub const VariableResolver = struct {
     ) anyerror!?Value,
 };
 
+/// A node created by a fragment factory. A null name creates a text node.
+pub const FragmentNode = struct {
+    name: ?[]const u8 = null,
+    text: []const u8 = "",
+};
+
+/// Builds result tree fragments for EXSLT functions that return node-sets.
+pub const FragmentFactory = struct {
+    context: *anyopaque,
+    build: *const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        nodes: []const FragmentNode,
+    ) anyerror![]const NodeRef,
+};
+
 pub const Context = struct {
     document: *const dom.Document,
     node: NodeRef,
@@ -206,6 +222,8 @@ pub const Context = struct {
     extension_functions: ?ExtensionFunctionHooks = null,
     /// Resolver for variables outside the local binding list.
     variable_resolver: ?VariableResolver = null,
+    /// Builder for node-set results of EXSLT functions.
+    fragment_factory: ?FragmentFactory = null,
     /// Base URI used by `document()` when no second argument is given.
     document_base: []const u8 = "",
     /// Enables XSLT-specific functions such as `generate-id()`,
@@ -256,6 +274,7 @@ pub const Context = struct {
             .tree_converter = self.tree_converter,
             .extension_functions = self.extension_functions,
             .variable_resolver = self.variable_resolver,
+            .fragment_factory = self.fragment_factory,
             .document_base = self.document_base,
             .xslt_functions = self.xslt_functions,
             .position = position,

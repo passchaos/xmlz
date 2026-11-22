@@ -68,13 +68,16 @@ then exposes them through a pull parser and reusable lexical primitives.
   sections, DOCTYPE declarations, HTML output, and output encodings,
   and the core instruction set, reusing the XPath engine for match patterns
   and expressions, with 87/87 differential checks against libxslt (including
-  catalog-aware includes and `document()`), plus the libxslt general
-  regression suite (`zig build xslt-suite`, 196 passed with 9 tracked
+  catalog-aware includes and `document()`), plus the complete libxslt general
+  regression suite (`zig build xslt-suite`, 205 passed with no tracked
   differences). EXSLT `func:function` user-defined functions,
-  `libxslt:node-set`, `set:distinct`, `str:replace`, and `date:add` are
-  supported; globals are evaluated lazily and RTFs act as node-sets like
-  libxslt. HTML/XHTML output matches libxslt's method auto-detection,
-  charset meta elements, URI escaping, and formatting.
+  `libxslt:node-set`, the `set:*` node-set functions, `str:replace`,
+  `str:tokenize`, `str:split`, `str:concat`, `str:padding`, `str:align`,
+  `str:encode-uri`, `str:decode-uri`, `date:add`, `math:max`, `math:min`,
+  `math:highest`, `math:lowest`, `math:power`, `math:abs`, `math:sqrt`, and
+  `common:object-type` are supported; globals are evaluated lazily and RTFs
+  act as node-sets like libxslt. HTML/XHTML output matches libxslt's method
+  auto-detection, charset meta elements, URI escaping, and formatting.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,
