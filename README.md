@@ -40,6 +40,9 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **XPath 1.0.** Location paths, all core axes, predicates, operators,
   variables, and the core function library are implemented over the DOM, with
   namespace-aware name tests and 65/65 differential checks against libxml2.
+- **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
+  characters, CDATA, comment, PI, doctype, and declaration callbacks, with
+  synthetic end events for self-closing elements.
 - **Optional DTD validation.** Content models, attribute types/defaults,
   required/fixed values, ID/IDREF rules, entity/notation references, root type,
   standalone declaration effects, and PE nesting are checked over the DOM. The
@@ -160,6 +163,7 @@ and escapes restricted characters as numeric references.
 
 ```
 src/parser.zig          pull parser, DTD, entity frames
+src/sax.zig             callback facade over the pull parser
 src/chars.zig           XML Char / Name productions and scanners
 src/entities.zig        entity tables and reference decoding
 src/encoding.zig        byte-encoding detection and normalization
