@@ -186,6 +186,11 @@ tools/gen_xmlconf_manifest.py
 testdata/xmlconf        W3C XML conformance suite + generated manifest
 ```
 
+## Architecture
+
+See `docs/architecture.md` for the layer map, DTD model, trusted-mode
+trade-offs, and testing strategy.
+
 ## Test
 
 ```sh
