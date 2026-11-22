@@ -52,8 +52,8 @@ then exposes them through a pull parser and reusable lexical primitives.
   attribute ordering, redundant-declaration suppression, and exact escaping,
   with 69/69 differential checks against libxml2.
 - **XSLT 1.0.** `xslt.transform` compiles templates, modes, parameters,
-  variables, sorting, copy instructions, AVTs, and the core instruction set,
-  reusing the XPath engine for match patterns and expressions, with 35/35
+  variables, sorting, copy instructions, AVTs, keys, and the core instruction
+  set, reusing the XPath engine for match patterns and expressions, with 40/40
   differential checks against libxslt.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and

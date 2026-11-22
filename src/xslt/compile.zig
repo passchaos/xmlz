@@ -31,6 +31,13 @@ pub const AvtPart = union(enum) {
 
 pub const Avt = []const AvtPart;
 
+pub const KeyDef = struct {
+    name: []const u8,
+    selector: *ast.Expr,
+    namespaces: []const namespace.Binding,
+    use: CompiledExpr,
+};
+
 pub const SortKey = struct {
     select: ?CompiledExpr = null,
     data_type: enum { text, number } = .text,
@@ -78,6 +85,7 @@ pub const Stylesheet = struct {
     arena: std.heap.ArenaAllocator,
     templates: []const Template = &.{},
     globals: []const Variable = &.{},
+    keys: []const KeyDef = &.{},
     output: Output = .{},
 
     pub fn deinit(self: *Stylesheet) void {
@@ -233,6 +241,7 @@ pub fn compile(
         .arena = arena,
         .templates = try compiler.templates.toOwnedSlice(compiler.arena),
         .globals = try compiler.globals.toOwnedSlice(compiler.arena),
+        .keys = try compiler.keys.toOwnedSlice(compiler.arena),
         .output = compiler.output,
     };
 }
@@ -242,6 +251,7 @@ const Compiler = struct {
     document: *const dom.Document,
     templates: std.ArrayList(Template) = .empty,
     globals: std.ArrayList(Variable) = .empty,
+    keys: std.ArrayList(KeyDef) = .empty,
     output: Output = .{},
     order: usize = 0,
 
@@ -271,6 +281,8 @@ const Compiler = struct {
                 try self.globals.append(self.arena, try self.compileVariable(child, false));
             } else if (std.mem.eql(u8, local, "param")) {
                 try self.globals.append(self.arena, try self.compileVariable(child, true));
+            } else if (std.mem.eql(u8, local, "key")) {
+                try self.compileKey(child);
             } else if (std.mem.eql(u8, local, "strip-space") or
                 std.mem.eql(u8, local, "preserve-space"))
             {
@@ -358,6 +370,22 @@ const Compiler = struct {
         template.params = try params.toOwnedSlice(self.arena);
         template.body = try body.toOwnedSlice(self.arena);
         try self.templates.append(self.arena, template);
+    }
+
+    fn compileKey(self: *Compiler, id: dom.NodeId) Error!void {
+        const name = self.document.attribute(id, "name") orelse
+            return error.InvalidStylesheet;
+        const match_text = self.document.attribute(id, "match") orelse
+            return error.InvalidStylesheet;
+        const use_text = self.document.attribute(id, "use") orelse
+            return error.InvalidStylesheet;
+        const match = (try self.parseExpression(id, match_text)).node;
+        try self.keys.append(self.arena, .{
+            .name = name,
+            .selector = try self.patternSelector(match),
+            .namespaces = try self.namespacesOf(id),
+            .use = try self.parseExpression(id, use_text),
+        });
     }
 
     fn compileOutput(self: *Compiler, id: dom.NodeId) Error!void {
@@ -881,7 +909,11 @@ const Compiler = struct {
                 break :blk out;
             },
             .function_call => |call| blk: {
-                if (std.mem.eql(u8, call.name, "id")) break :blk expression;
+                if (std.mem.eql(u8, call.name, "id") or
+                    std.mem.eql(u8, call.name, "key"))
+                {
+                    break :blk expression;
+                }
                 return error.InvalidStylesheet;
             },
             else => error.InvalidStylesheet,

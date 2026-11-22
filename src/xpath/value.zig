@@ -79,11 +79,26 @@ pub const Variable = struct {
     value: Value,
 };
 
+pub const KeyError = error{OutOfMemory};
+
+/// XSLT `key()` lookup hook.
+pub const KeyResolver = struct {
+    context: ?*anyopaque = null,
+    lookup: *const fn (
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        name: []const u8,
+        value: []const u8,
+    ) KeyError![]const NodeRef,
+};
+
 pub const Context = struct {
     document: *const dom.Document,
     node: NodeRef,
     /// XSLT current node returned by `current()`. Defaults to `node`.
     current: ?NodeRef = null,
+    /// XSLT `key()` resolver.
+    key_resolver: ?KeyResolver = null,
     position: usize = 1,
     size: usize = 1,
     /// Prefix bindings for name tests. XPath 1.0 does not use the document's
@@ -120,6 +135,7 @@ pub const Context = struct {
             .document = self.document,
             .node = node,
             .current = self.current,
+            .key_resolver = self.key_resolver,
             .position = position,
             .size = size,
             .namespaces = self.namespaces,

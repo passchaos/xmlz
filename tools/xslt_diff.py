@@ -172,6 +172,77 @@ STYLESHEETS = [
         {},
     ),
     (
+        "key-basic",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:key name="byId" match="item" use="@id"/>
+        <xsl:template match="/"><out>
+          <xsl:value-of select="count(key('byId','a'))"/>
+          <xsl:for-each select="key('byId','a')"><item><xsl:value-of select="@name"/></item></xsl:for-each>
+          <xsl:apply-templates select="key('byId','b')"/>
+        </out></xsl:template>
+        <xsl:template match="item"><b><xsl:value-of select="@name"/></b></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root><item id='a' name='A'/><item id='b' name='B'/></root>",
+        {},
+    ),
+    (
+        "key-multiple-and-nodeset",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:key name="byValue" match="item" use="tag"/>
+        <xsl:key name="byValue" match="item" use="@id"/>
+        <xsl:template match="/"><out>
+          <xsl:value-of select="count(key('byValue','x'))"/>
+          <xsl:value-of select="count(key('byValue','y'))"/>
+          <xsl:value-of select="count(key('byValue','a'))"/>
+          <xsl:value-of select="count(key('byValue','missing'))"/>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root><item id='a'><tag>x</tag><tag>y</tag></item><item id='b'><tag>x</tag></item></root>",
+        {},
+    ),
+    (
+        "key-global-variable",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:key name="special" match="item[@kind='x']" use="@id"/>
+        <xsl:variable name="found" select="key('special','a')"/>
+        <xsl:template match="/"><out>
+          <xsl:value-of select="count($found)"/>
+          <xsl:value-of select="count(key('special','b'))"/>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root><item id='a' kind='x'/><item id='b' kind='y'/></root>",
+        {},
+    ),
+    (
+        "key-in-pattern",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:key name="byId" match="item" use="@id"/>
+        <xsl:template match="/"><out><xsl:apply-templates select="root/item"/></out></xsl:template>
+        <xsl:template match="key('byId','a')"><special><xsl:value-of select="@id"/></special></xsl:template>
+        <xsl:template match="item"><normal><xsl:value-of select="@id"/></normal></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root><item id='a'/><item id='b'/></root>",
+        {},
+    ),
+    (
+        "key-namespaced",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
+          xmlns:p="urn:p">
+        <xsl:output method="xml" omit-xml-declaration="yes"/>
+        <xsl:key name="byId" match="p:item" use="@id"/>
+        <xsl:template match="/"><out>
+          <xsl:value-of select="count(key('byId','a'))"/>
+          <xsl:for-each select="key('byId','a')"><item><xsl:value-of select="@name"/></item></xsl:for-each>
+        </out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root xmlns:p='urn:p'><p:item id='a' name='A'/><p:item id='b' name='B'/></root>",
+        {},
+    ),
+    (
         "text-method",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
         <xsl:output method="text"/>

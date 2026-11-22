@@ -194,3 +194,75 @@ test "XSLT current function and attribute copying" {
     defer testing.allocator.free(output);
     try testing.expectEqualStrings("<out><i>a</i><i>b</i></out>", output);
 }
+
+test "XSLT keys index nodes and support lookup" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:key name="byId" match="item" use="@id"/>
+        \\  <xsl:template match="/">
+        \\    <out>
+        \\      <xsl:value-of select="count(key('byId','a'))"/>
+        \\      <xsl:for-each select="key('byId','a')">
+        \\        <item><xsl:value-of select="@name"/></item>
+        \\      </xsl:for-each>
+        \\      <xsl:apply-templates select="key('byId','b')"/>
+        \\    </out>
+        \\  </xsl:template>
+        \\  <xsl:template match="item">
+        \\    <b><xsl:value-of select="@name"/></b>
+        \\  </xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source = "<root><item id='a' name='A'/><item id='b' name='B'/></root>";
+    const output = try transformToString(stylesheet, source, .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out>1<item>A</item><b>B</b></out>",
+        output,
+    );
+}
+
+test "XSLT keys support multiple declarations and node-set values" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:key name="byValue" match="item" use="tag"/>
+        \\  <xsl:key name="byValue" match="item" use="@id"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="count(key('byValue','x'))"/>
+        \\    <xsl:value-of select="count(key('byValue','y'))"/>
+        \\    <xsl:value-of select="count(key('byValue','a'))"/>
+        \\    <xsl:value-of select="count(key('byValue','missing'))"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source =
+        "<root><item id='a'><tag>x</tag><tag>y</tag></item>" ++
+        "<item id='b'><tag>x</tag></item></root>";
+    const output = try transformToString(stylesheet, source, .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>2110</out>", output);
+}
+
+test "XSLT keys work in global variables and patterns" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:key name="special" match="item[@kind='x']" use="@id"/>
+        \\  <xsl:variable name="found" select="key('special','a')"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:value-of select="count($found)"/>
+        \\    <xsl:value-of select="count(key('special','b'))"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source =
+        "<root><item id='a' kind='x'/><item id='b' kind='y'/></root>";
+    const output = try transformToString(stylesheet, source, .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>10</out>", output);
+}

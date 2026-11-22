@@ -87,7 +87,9 @@ pub fn apply(
         .stylesheet = stylesheet,
         .source = source,
         .builder = &builder,
+        .key_map = KeyMap.init(arena_allocator),
     };
+    try runtime.buildKeys();
     try runtime.buildTemplateMatches();
     try runtime.evaluateGlobals(options.parameters);
     try runtime.applyTemplates(&.{.{ .node = 0 }}, null, &.{});
@@ -131,6 +133,33 @@ const TemplateState = struct {
     matches: std.AutoHashMap(NodeKey, void),
 };
 
+const KeyQuery = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+const KeyQueryContext = struct {
+    pub fn hash(_: KeyQueryContext, key: KeyQuery) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(key.name);
+        hasher.update("\x00");
+        hasher.update(key.value);
+        return hasher.final();
+    }
+
+    pub fn eql(_: KeyQueryContext, a: KeyQuery, b: KeyQuery) bool {
+        return std.mem.eql(u8, a.name, b.name) and
+            std.mem.eql(u8, a.value, b.value);
+    }
+};
+
+const KeyMap = std.HashMap(
+    KeyQuery,
+    std.ArrayList(xpath.NodeRef),
+    KeyQueryContext,
+    80,
+);
+
 const SortEntry = struct {
     node: xpath.NodeRef,
     index: usize,
@@ -151,6 +180,8 @@ const Runtime = struct {
     variables: std.ArrayList(xpath.Variable) = .empty,
     template_states: []TemplateState = &.{},
     messages: std.ArrayList([]const u8) = .empty,
+    key_map: KeyMap,
+    keys_ready: bool = false,
 
     fn copyOutput(self: *Runtime) Error!compile.Output {
         var output = self.stylesheet.output;
@@ -159,6 +190,81 @@ const Runtime = struct {
         }
         output.encoding = try self.allocator.dupe(u8, output.encoding);
         return output;
+    }
+
+    fn buildKeys(self: *Runtime) Error!void {
+        self.keys_ready = false;
+        for (self.stylesheet.keys) |*key_def| {
+            var context: xpath.Context = .{
+                .document = self.source,
+                .node = .{ .node = 0 },
+                .namespaces = key_def.namespaces,
+            };
+            var selected = xpath_eval.evaluate(
+                self.allocator,
+                key_def.selector,
+                &context,
+            ) catch |err| return mapEvalError(err);
+            defer selected.deinit();
+            const nodes = switch (selected.value) {
+                .node_set => |value| value,
+                else => return error.InvalidStylesheet,
+            };
+            for (nodes) |node| {
+                const value = try self.evalOwned(key_def.use, node, 1, 1);
+                switch (value) {
+                    .node_set => |value_nodes| {
+                        for (value_nodes) |value_node| {
+                            try self.addKeyValue(
+                                key_def.name,
+                                try self.stringValue(value_node),
+                                node,
+                            );
+                        }
+                    },
+                    else => {
+                        try self.addKeyValue(
+                            key_def.name,
+                            try self.toString(value),
+                            node,
+                        );
+                    },
+                }
+            }
+        }
+        var iterator = self.key_map.iterator();
+        while (iterator.next()) |entry| {
+            const list = entry.value_ptr;
+            std.mem.sort(
+                xpath.NodeRef,
+                list.items,
+                {},
+                xpath_value.orderLessThan,
+            );
+            var write: usize = 0;
+            for (list.items) |node| {
+                if (write == 0 or !list.items[write - 1].eql(node)) {
+                    list.items[write] = node;
+                    write += 1;
+                }
+            }
+            list.shrinkRetainingCapacity(write);
+        }
+        self.keys_ready = true;
+    }
+
+    fn addKeyValue(
+        self: *Runtime,
+        name: []const u8,
+        value: []const u8,
+        node: xpath.NodeRef,
+    ) Error!void {
+        const result = try self.key_map.getOrPut(.{
+            .name = name,
+            .value = value,
+        });
+        if (!result.found_existing) result.value_ptr.* = .empty;
+        try result.value_ptr.append(self.allocator, node);
     }
 
     fn buildTemplateMatches(self: *Runtime) Error!void {
@@ -174,6 +280,10 @@ const Runtime = struct {
                 .document = self.source,
                 .node = .{ .node = 0 },
                 .namespaces = template.namespaces,
+                .key_resolver = if (self.keys_ready) .{
+                    .context = self,
+                    .lookup = lookupKey,
+                } else null,
             };
             var result = xpath_eval.evaluate(
                 self.allocator,
@@ -252,6 +362,10 @@ const Runtime = struct {
             .size = size,
             .namespaces = expression.namespaces,
             .variables = self.variables.items,
+            .key_resolver = if (self.keys_ready) .{
+                .context = self,
+                .lookup = lookupKey,
+            } else null,
         };
         var result = xpath_eval.evaluate(
             self.allocator,
@@ -1385,6 +1499,20 @@ const Runtime = struct {
         return false;
     }
 };
+
+fn lookupKey(
+    context: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    value: []const u8,
+) xpath_value.KeyError![]const xpath.NodeRef {
+    _ = allocator;
+    const runtime: *Runtime = @ptrCast(@alignCast(context.?));
+    if (runtime.key_map.get(.{ .name = name, .value = value })) |list| {
+        return list.items;
+    }
+    return &.{};
+}
 
 fn modeMatches(template_mode: ?[]const u8, mode: ?[]const u8) bool {
     if (template_mode == null) return mode == null;

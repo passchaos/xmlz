@@ -48,6 +48,9 @@ defer result.deinit();
   `exclude-result-prefixes`, and `extension-element-prefixes` filtering.
 - Local and global variables and parameters, including caller-supplied global
   parameters.
+- `xsl:key` declarations and the `key()` function, including multiple
+  declarations with the same name, node-set key values, namespaced match
+  patterns, global-variable use, and `key()` in template match patterns.
 - `xsl:number` with a `value` expression, and same-name sibling numbering
   otherwise.
 - `xsl:output` methods `xml` and `text`, `omit-xml-declaration`, `indent`, and
@@ -61,7 +64,7 @@ template priority its specified default behavior.
 
 ## Limitations
 
-- `xsl:include`, `xsl:import`, `xsl:apply-imports`, `xsl:key`, `xsl:attribute-set`,
+- `xsl:include`, `xsl:import`, `xsl:apply-imports`, `xsl:attribute-set`,
   `xsl:decimal-format`, `xsl:namespace-alias`, and `xsl:strip-space` /
   `xsl:preserve-space` are not implemented.
 - Result tree fragments in variables are stored as strings; node-set operations
@@ -73,7 +76,7 @@ template priority its specified default behavior.
   void-element and raw-text rules are not implemented.
 - `xsl:number` `count`, `from`, `level="multiple"`, and `level="any"` are not
   implemented.
-- `format-number`, `key`, `document`, `generate-id`, `system-property`,
+- `format-number`, `document`, `generate-id`, `system-property`,
   `element-available`, and `function-available` are not available in
   expressions.
 - Template conflict resolution uses a single import precedence; imported
@@ -90,5 +93,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-35/35 XSLT differential checks passed
+40/40 XSLT differential checks passed
 ```

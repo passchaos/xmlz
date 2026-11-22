@@ -865,6 +865,22 @@ const Evaluator = struct {
             nodes[0] = context.current orelse context.node;
             return .{ .node_set = nodes };
         }
+        if (std.mem.eql(u8, name, "key")) {
+            if (items.len != 2) return error.InvalidArgument;
+            const key_name = try self.toString(items[0], context);
+            const key_value = try self.toString(items[1], context);
+            const resolver = context.key_resolver orelse
+                return .{ .node_set = &.{} };
+            const nodes = resolver.lookup(
+                resolver.context,
+                self.allocator,
+                key_name,
+                key_value,
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            return .{ .node_set = nodes };
+        }
         if (std.mem.eql(u8, name, "count")) {
             if (items.len != 1) return error.InvalidArgument;
             return .{ .number = @floatFromInt(
