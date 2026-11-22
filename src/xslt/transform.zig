@@ -1946,6 +1946,9 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error!xpath.Value {
+        if (try self.fastPathNodes(expression, node)) |nodes| {
+            return .{ .node_set = nodes };
+        }
         var context: xpath.Context = .{
             .document = self.source,
             .node = node,
@@ -1997,9 +2000,6 @@ const Runtime = struct {
             },
             .document_base = self.base_uri,
         };
-        if (try self.fastPathNodes(expression, node)) |nodes| {
-            return .{ .node_set = nodes };
-        }
         return xpath_eval.evaluateDirect(
             self.allocator,
             expression.node,
@@ -2024,6 +2024,43 @@ const Runtime = struct {
         }
         const step = path.steps[0];
         if (step.predicates.len != 0) return null;
+        // `.` is self::node(): the context node itself.
+        if (step.axis == .self_axis) {
+            if (step.node_test != .node) return null;
+            const out = try self.allocator.alloc(xpath.NodeRef, 1);
+            out[0] = node;
+            const owned: ?[]const xpath.NodeRef = out;
+            return owned;
+        }
+        // child::node() selects every child.
+        if (step.axis == .child and step.node_test == .node) {
+            const id = switch (node) {
+                .node => |node_id| node_id,
+                else => return &.{},
+            };
+            const value = self.source.node(id);
+            if (value.kind != .document and value.kind != .element) {
+                return &.{};
+            }
+            var count: usize = 0;
+            var child = value.first_child;
+            while (child != dom.null_node) : (child =
+                self.source.node(child).next_sibling)
+            {
+                count += 1;
+            }
+            if (count == 0) return &.{};
+            const out = try self.allocator.alloc(xpath.NodeRef, count);
+            var write: usize = 0;
+            child = value.first_child;
+            while (child != dom.null_node) : (child =
+                self.source.node(child).next_sibling)
+            {
+                out[write] = .{ .node = child };
+                write += 1;
+            }
+            return out;
+        }
         const name_test = switch (step.node_test) {
             .name => |value| value,
             else => return null,
