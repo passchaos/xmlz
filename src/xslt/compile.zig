@@ -7,9 +7,11 @@
 
 const std = @import("std");
 const dom = @import("../dom.zig");
+const encoding = @import("../encoding.zig");
 const namespace = @import("../namespace.zig");
 const ast = @import("../xpath/ast.zig");
 const xpath_parser = @import("../xpath/parser.zig");
+const xpath_variable = @import("../xpath/value.zig");
 
 pub const xsl_namespace = "http://www.w3.org/1999/XSL/Transform";
 
@@ -54,6 +56,8 @@ pub const Variable = struct {
     value: VariableValue,
     /// True for `xsl:param` declarations, which callers may override.
     param: bool = false,
+    /// Import precedence for top-level bindings.
+    precedence: usize = 0,
 };
 
 pub const Template = struct {
@@ -68,6 +72,7 @@ pub const Template = struct {
     explicit_priority: bool = false,
     params: []const Variable = &.{},
     body: []const Instruction = &.{},
+    precedence: usize = 0,
     order: usize = 0,
 };
 
@@ -87,11 +92,36 @@ pub const Stylesheet = struct {
     globals: []const Variable = &.{},
     keys: []const KeyDef = &.{},
     output: Output = .{},
+    documents: []const *dom.Document = &.{},
 
     pub fn deinit(self: *Stylesheet) void {
+        for (self.documents) |document| document.deinit();
         self.arena.deinit();
         self.* = undefined;
     }
+};
+
+pub const Resource = struct {
+    /// Resolved URI used as the base for nested references.
+    uri: []const u8 = "",
+    data: []const u8,
+};
+
+pub const Resolver = struct {
+    context: ?*anyopaque = null,
+    load: *const fn (
+        context: ?*anyopaque,
+        href: []const u8,
+        base: []const u8,
+    ) ?Resource,
+};
+
+pub const Options = struct {
+    /// Values supplied for top-level `xsl:param` declarations.
+    parameters: []const xpath_variable.Variable = &.{},
+    resolver: ?Resolver = null,
+    /// Base URI of the principal stylesheet.
+    base: []const u8 = "",
 };
 
 pub const NamespaceDecl = struct {
@@ -198,6 +228,10 @@ pub const NumberInstruction = struct {
     from: ?CompiledExpr = null,
 };
 
+pub const ApplyImports = struct {
+    params: []const ParamBinding = &.{},
+};
+
 pub const MessageInstruction = struct {
     body: []const Instruction,
     terminate: bool = false,
@@ -222,81 +256,254 @@ pub const Instruction = union(enum) {
     processing_instruction: ProcessingInstruction,
     number: NumberInstruction,
     message: MessageInstruction,
-    apply_imports,
+    apply_imports: ApplyImports,
 };
 
-/// Compile a stylesheet document. The returned `Stylesheet` owns its arena.
+/// Compile a stylesheet document without external includes or imports.
 pub fn compile(
     allocator: std.mem.Allocator,
     document: *const dom.Document,
+) Error!Stylesheet {
+    return compileWithOptions(allocator, document, .{});
+}
+
+/// Compile a stylesheet document, resolving `xsl:include` and `xsl:import`
+/// through the supplied resolver.
+pub fn compileWithOptions(
+    allocator: std.mem.Allocator,
+    document: *const dom.Document,
+    options: Options,
 ) Error!Stylesheet {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     var compiler: Compiler = .{
         .arena = arena.allocator(),
+        .backing_allocator = allocator,
         .document = document,
+        .options = options,
     };
+    errdefer {
+        for (compiler.included_documents.items) |included| {
+            included.deinit();
+        }
+    }
     try compiler.run();
     return .{
         .arena = arena,
         .templates = try compiler.templates.toOwnedSlice(compiler.arena),
-        .globals = try compiler.globals.toOwnedSlice(compiler.arena),
+        .globals = try compiler.dedupeGlobals(),
         .keys = try compiler.keys.toOwnedSlice(compiler.arena),
         .output = compiler.output,
+        .documents = try compiler.included_documents.toOwnedSlice(
+            compiler.arena,
+        ),
     };
 }
 
 const Compiler = struct {
     arena: std.mem.Allocator,
+    backing_allocator: std.mem.Allocator,
     document: *const dom.Document,
+    options: Options = .{},
     templates: std.ArrayList(Template) = .empty,
     globals: std.ArrayList(Variable) = .empty,
     keys: std.ArrayList(KeyDef) = .empty,
     output: Output = .{},
     order: usize = 0,
+    next_precedence: usize = 0,
+    current_precedence: usize = 0,
+    current_base: []const u8 = "",
+    principal: bool = false,
+    included_documents: std.ArrayList(*dom.Document) = .empty,
+    include_stack: std.ArrayList([]const u8) = .empty,
 
     fn run(self: *Compiler) Error!void {
-        const root = self.document.root();
-        if (root == dom.null_node) return error.InvalidStylesheet;
-        const root_node = self.document.node(root);
-        if (isXsl(root_node, "stylesheet") or isXsl(root_node, "transform")) {
-            try self.compileTopLevel(root);
-        } else {
-            try self.compileSimplified(root);
-        }
+        try self.compileDocument(
+            self.document,
+            self.options.base,
+            null,
+            true,
+        );
     }
 
-    fn compileTopLevel(self: *Compiler, root: dom.NodeId) Error!void {
-        var child = self.document.node(root).first_child;
-        while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
-            const child_node = self.document.node(child);
+    fn compileDocument(
+        self: *Compiler,
+        document: *const dom.Document,
+        base: []const u8,
+        fixed_precedence: ?usize,
+        principal: bool,
+    ) Error!void {
+        const saved_document = self.document;
+        const saved_base = self.current_base;
+        const saved_precedence = self.current_precedence;
+        const saved_principal = self.principal;
+        defer {
+            self.document = saved_document;
+            self.current_base = saved_base;
+            self.current_precedence = saved_precedence;
+            self.principal = saved_principal;
+        }
+        self.document = document;
+        self.current_base = base;
+        self.principal = principal;
+
+        const root = document.root();
+        if (root == dom.null_node) return error.InvalidStylesheet;
+        const root_node = document.node(root);
+        const full_stylesheet =
+            isXsl(root_node, "stylesheet") or isXsl(root_node, "transform");
+        if (!full_stylesheet) {
+            if (!principal) return error.InvalidStylesheet;
+            const precedence = fixed_precedence orelse blk: {
+                const value = self.next_precedence;
+                self.next_precedence += 1;
+                break :blk value;
+            };
+            self.current_precedence = precedence;
+            try self.compileSimplified(root);
+            return;
+        }
+
+        // Imports must be processed before the importing stylesheet receives
+        // its precedence so that imported declarations rank lower. XSLT also
+        // requires imports to precede all other top-level declarations.
+        var seen_non_import = false;
+        var child = document.node(root).first_child;
+        while (child != dom.null_node) : (child = document.node(child).next_sibling) {
+            const child_node = document.node(child);
+            if (child_node.kind != .element) continue;
+            if (!isXsl(child_node, null)) continue;
+            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
+            if (std.mem.eql(u8, child_node.local, "import")) {
+                if (seen_non_import) return error.InvalidStylesheet;
+                try self.processReference(child, true, 0);
+            } else {
+                seen_non_import = true;
+            }
+        }
+
+        const precedence = fixed_precedence orelse blk: {
+            const value = self.next_precedence;
+            self.next_precedence += 1;
+            break :blk value;
+        };
+        self.current_precedence = precedence;
+
+        child = document.node(root).first_child;
+        while (child != dom.null_node) : (child = document.node(child).next_sibling) {
+            const child_node = document.node(child);
             if (child_node.kind != .element) continue;
             if (!isXsl(child_node, null)) continue;
             const local = child_node.local;
-            if (std.mem.eql(u8, local, "template")) {
+            if (std.mem.eql(u8, local, "import")) continue;
+            if (std.mem.eql(u8, local, "include")) {
+                try self.processReference(child, false, precedence);
+            } else if (std.mem.eql(u8, local, "template")) {
                 try self.compileTemplate(child);
             } else if (std.mem.eql(u8, local, "output")) {
                 try self.compileOutput(child);
             } else if (std.mem.eql(u8, local, "variable")) {
-                try self.globals.append(self.arena, try self.compileVariable(child, false));
+                var variable = try self.compileVariable(child, false);
+                variable.precedence = self.current_precedence;
+                try self.globals.append(self.arena, variable);
             } else if (std.mem.eql(u8, local, "param")) {
-                try self.globals.append(self.arena, try self.compileVariable(child, true));
+                var variable = try self.compileVariable(child, true);
+                variable.precedence = self.current_precedence;
+                try self.globals.append(self.arena, variable);
             } else if (std.mem.eql(u8, local, "key")) {
                 try self.compileKey(child);
             } else if (std.mem.eql(u8, local, "strip-space") or
                 std.mem.eql(u8, local, "preserve-space"))
             {
                 // Whitespace stripping is not applied to the source tree yet.
-            } else if (std.mem.eql(u8, local, "include") or
-                std.mem.eql(u8, local, "import") or
-                std.mem.eql(u8, local, "attribute-set") or
-                std.mem.eql(u8, local, "key") or
+            } else if (std.mem.eql(u8, local, "attribute-set") or
                 std.mem.eql(u8, local, "decimal-format") or
                 std.mem.eql(u8, local, "namespace-alias"))
             {
                 return error.InvalidStylesheet;
             }
         }
+    }
+
+    fn processReference(
+        self: *Compiler,
+        id: dom.NodeId,
+        is_import: bool,
+        include_precedence: usize,
+    ) Error!void {
+        const href = self.document.attribute(id, "href") orelse
+            return error.InvalidStylesheet;
+        const resolver = self.options.resolver orelse
+            return error.InvalidStylesheet;
+        const resource = resolver.load(
+            resolver.context,
+            href,
+            self.current_base,
+        ) orelse return error.InvalidStylesheet;
+
+        const owned = try self.arena.dupe(u8, resource.data);
+        const decoded = encoding.decodeAlloc(
+            self.arena,
+            owned,
+            64 * 1024 * 1024,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidStylesheet,
+        };
+        const document_ptr = try self.arena.create(dom.Document);
+        document_ptr.* = dom.Document.parse(
+            self.backing_allocator,
+            decoded,
+            .{},
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidStylesheet,
+        };
+        const root = document_ptr.root();
+        if (root == dom.null_node) return error.InvalidStylesheet;
+        const root_node = document_ptr.node(root);
+        if (!isXsl(root_node, "stylesheet") and
+            !isXsl(root_node, "transform"))
+        {
+            return error.InvalidStylesheet;
+        }
+
+        const key_uri = if (resource.uri.len != 0) resource.uri else href;
+        const owned_key = try self.arena.dupe(u8, key_uri);
+        for (self.include_stack.items) |active| {
+            if (std.mem.eql(u8, active, owned_key)) {
+                document_ptr.deinit();
+                return error.InvalidStylesheet;
+            }
+        }
+        try self.include_stack.append(self.arena, owned_key);
+        defer _ = self.include_stack.pop();
+        try self.included_documents.append(self.arena, document_ptr);
+        try self.compileDocument(
+            document_ptr,
+            owned_key,
+            if (is_import) null else include_precedence,
+            false,
+        );
+    }
+
+    fn dedupeGlobals(self: *Compiler) Error![]const Variable {
+        var winners: std.ArrayList(Variable) = .empty;
+        for (self.globals.items) |variable| {
+            var found = false;
+            for (winners.items) |*winner| {
+                if (!std.mem.eql(u8, winner.name, variable.name)) continue;
+                if (variable.precedence > winner.precedence) {
+                    winner.* = variable;
+                } else if (variable.precedence == winner.precedence) {
+                    return error.InvalidStylesheet;
+                }
+                found = true;
+                break;
+            }
+            if (!found) try winners.append(self.arena, variable);
+        }
+        return winners.toOwnedSlice(self.arena);
     }
 
     fn compileSimplified(self: *Compiler, root: dom.NodeId) Error!void {
@@ -312,6 +519,7 @@ const Compiler = struct {
             .namespaces = try self.namespacesOf(root),
             .body = instructions,
             .priority = 0.5,
+            .precedence = self.current_precedence,
             .order = self.nextOrder(),
         });
     }
@@ -325,6 +533,7 @@ const Compiler = struct {
         var template: Template = .{
             .name = name,
             .mode = self.document.attribute(id, "mode"),
+            .precedence = self.current_precedence,
             .order = self.nextOrder(),
         };
         template.namespaces = try self.namespacesOf(id);
@@ -369,6 +578,16 @@ const Compiler = struct {
         }
         template.params = try params.toOwnedSlice(self.arena);
         template.body = try body.toOwnedSlice(self.arena);
+        if (template.name) |template_name| {
+            for (self.templates.items) |existing| {
+                const existing_name = existing.name orelse continue;
+                if (std.mem.eql(u8, existing_name, template_name) and
+                    existing.precedence == template.precedence)
+                {
+                    return error.InvalidStylesheet;
+                }
+            }
+        }
         try self.templates.append(self.arena, template);
     }
 
@@ -389,6 +608,7 @@ const Compiler = struct {
     }
 
     fn compileOutput(self: *Compiler, id: dom.NodeId) Error!void {
+        if (!self.principal) return;
         if (self.document.attribute(id, "method")) |method| {
             if (std.mem.eql(u8, method, "xml")) {
                 self.output.method = .xml;
@@ -568,7 +788,9 @@ const Compiler = struct {
                 .terminate = isYes(self.document.attribute(id, "terminate") orelse "no"),
             } });
         } else if (std.mem.eql(u8, local, "apply-imports")) {
-            try body.append(self.arena, .apply_imports);
+            try body.append(self.arena, .{ .apply_imports = .{
+                .params = try self.compileWithParams(id),
+            } });
         } else if (std.mem.eql(u8, local, "fallback")) {
             // Ignored: extension instructions are unsupported.
         } else if (std.mem.eql(u8, local, "param") or

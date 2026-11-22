@@ -22,10 +22,7 @@ pub const Error = error{
     InvalidOutput,
 };
 
-pub const Options = struct {
-    /// Values supplied for top-level `xsl:param` declarations.
-    parameters: []const xpath.Variable = &.{},
-};
+pub const Options = compile.Options;
 
 pub const Result = struct {
     /// Arena holding runtime strings and messages.
@@ -182,6 +179,8 @@ const Runtime = struct {
     messages: std.ArrayList([]const u8) = .empty,
     key_map: KeyMap,
     keys_ready: bool = false,
+    current_template: ?*const compile.Template = null,
+    current_mode: ?[]const u8 = null,
 
     fn copyOutput(self: *Runtime) Error!compile.Output {
         var output = self.stylesheet.output;
@@ -397,11 +396,14 @@ const Runtime = struct {
             if (!modeMatches(state.template.mode, mode)) continue;
             if (!state.matches.contains(key)) continue;
             if (best) |current| {
-                if (state.template.priority < current.priority) continue;
-                if (state.template.priority == current.priority and
-                    state.template.order < current.order)
-                {
-                    continue;
+                if (state.template.precedence < current.precedence) continue;
+                if (state.template.precedence == current.precedence) {
+                    if (state.template.priority < current.priority) continue;
+                    if (state.template.priority == current.priority and
+                        state.template.order < current.order)
+                    {
+                        continue;
+                    }
                 }
             }
             best = state.template;
@@ -415,6 +417,9 @@ const Runtime = struct {
         mode: ?[]const u8,
         params: []const xpath.Variable,
     ) Error!void {
+        const saved_mode = self.current_mode;
+        self.current_mode = mode;
+        defer self.current_mode = saved_mode;
         for (nodes, 0..) |node, index| {
             if (self.findTemplate(node, mode)) |template| {
                 try self.executeTemplate(
@@ -438,6 +443,9 @@ const Runtime = struct {
         size: usize,
         params: []const xpath.Variable,
     ) Error!void {
+        const saved_template = self.current_template;
+        self.current_template = template;
+        defer self.current_template = saved_template;
         const mark = self.variables.items.len;
         defer self.variables.shrinkRetainingCapacity(mark);
         for (template.params) |param| {
@@ -643,8 +651,67 @@ const Runtime = struct {
                 try self.messages.append(self.allocator, text);
                 if (message.terminate) return error.Terminated;
             },
-            .apply_imports => {},
+            .apply_imports => |apply_imports| try self.executeApplyImports(
+                apply_imports,
+                node,
+                position,
+                size,
+            ),
         }
+    }
+
+    fn executeApplyImports(
+        self: *Runtime,
+        instruction: compile.ApplyImports,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+    ) Error!void {
+        const current = self.current_template orelse return;
+        const params = try self.evaluateParams(
+            instruction.params,
+            node,
+            position,
+            size,
+        );
+        if (self.findTemplateBelow(
+            node,
+            self.current_mode,
+            current.precedence,
+        )) |template| {
+            try self.executeTemplate(template, node, position, size, params);
+        } else {
+            try self.builtinTemplate(node, self.current_mode);
+        }
+    }
+
+    fn findTemplateBelow(
+        self: *Runtime,
+        node: xpath.NodeRef,
+        mode: ?[]const u8,
+        maximum_precedence: usize,
+    ) ?*const compile.Template {
+        const key = nodeKey(node);
+        var best: ?*const compile.Template = null;
+        for (self.template_states) |state| {
+            if (state.template.selector == null) continue;
+            if (state.template.precedence >= maximum_precedence) continue;
+            if (!modeMatches(state.template.mode, mode)) continue;
+            if (!state.matches.contains(key)) continue;
+            if (best) |current| {
+                if (state.template.precedence < current.precedence) continue;
+                if (state.template.precedence == current.precedence) {
+                    if (state.template.priority < current.priority) continue;
+                    if (state.template.priority == current.priority and
+                        state.template.order < current.order)
+                    {
+                        continue;
+                    }
+                }
+            }
+            best = state.template;
+        }
+        return best;
     }
 
     fn executeLiteralElement(
@@ -731,12 +798,17 @@ const Runtime = struct {
     ) Error!void {
         var template: ?*const compile.Template = null;
         for (self.stylesheet.templates) |*candidate| {
-            if (candidate.name) |name| {
-                if (std.mem.eql(u8, name, call.name)) {
-                    template = candidate;
-                    break;
+            const name = candidate.name orelse continue;
+            if (!std.mem.eql(u8, name, call.name)) continue;
+            if (template) |current| {
+                if (candidate.precedence < current.precedence) continue;
+                if (candidate.precedence == current.precedence and
+                    candidate.order < current.order)
+                {
+                    continue;
                 }
             }
+            template = candidate;
         }
         const found = template orelse return error.InvalidStylesheet;
         const params = try self.evaluateParams(

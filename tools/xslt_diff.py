@@ -475,6 +475,111 @@ STYLESHEETS = [
 ]
 
 
+BUNDLES = [
+    (
+        "include-named-template",
+        {
+            "main.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:output method="xml" omit-xml-declaration="yes"/>
+              <xsl:include href="inc.xsl"/>
+              <xsl:template match="/"><out><xsl:for-each select="root/a">
+                <xsl:call-template name="emit"/>
+              </xsl:for-each></out></xsl:template>
+            </xsl:stylesheet>""",
+            "inc.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:template name="emit"><inc><xsl:value-of select="."/></inc></xsl:template>
+            </xsl:stylesheet>""",
+        },
+        "<root><a>x</a><a>y</a></root>",
+        {},
+    ),
+    (
+        "include-match-template",
+        {
+            "main.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:output method="xml" omit-xml-declaration="yes"/>
+              <xsl:include href="inc.xsl"/>
+              <xsl:template match="/"><out><xsl:apply-templates select="root/item"/></out></xsl:template>
+            </xsl:stylesheet>""",
+            "inc.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:template match="item"><item><xsl:value-of select="@id"/></item></xsl:template>
+            </xsl:stylesheet>""",
+        },
+        "<root><item id='a'/><item id='b'/></root>",
+        {},
+    ),
+    (
+        "import-precedence",
+        {
+            "main.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:import href="base.xsl"/>
+              <xsl:output method="xml" omit-xml-declaration="yes"/>
+              <xsl:template match="/"><out><xsl:apply-templates select="root/item"/></out></xsl:template>
+              <xsl:template match="item"><main><xsl:value-of select="@id"/></main></xsl:template>
+            </xsl:stylesheet>""",
+            "base.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:template match="item"><base><xsl:value-of select="@id"/></base></xsl:template>
+            </xsl:stylesheet>""",
+        },
+        "<root><item id='a'/><item id='b'/></root>",
+        {},
+    ),
+    (
+        "apply-imports-params",
+        {
+            "main.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:import href="base.xsl"/>
+              <xsl:output method="xml" omit-xml-declaration="yes"/>
+              <xsl:template match="/"><out><xsl:value-of select="$v"/>
+                <xsl:apply-templates select="root/item"/></out></xsl:template>
+              <xsl:template match="item"><main><xsl:value-of select="@id"/>
+                <xsl:apply-imports/>
+              </main></xsl:template>
+            </xsl:stylesheet>""",
+            "base.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:variable name="v" select="'imported'"/>
+              <xsl:template match="item"><xsl:param name="p" select="'D'"/><base><xsl:value-of select="@id"/><xsl:value-of select="$p"/></base></xsl:template>
+            </xsl:stylesheet>""",
+        },
+        "<root><item id='a'/><item id='b'/></root>",
+        {},
+    ),
+    (
+        "nested-import",
+        {
+            "main.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:import href="mid.xsl"/>
+              <xsl:output method="xml" omit-xml-declaration="yes"/>
+              <xsl:template match="/"><out><xsl:apply-templates select="root/item"/></out></xsl:template>
+            </xsl:stylesheet>""",
+            "mid.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:import href="base.xsl"/>
+            </xsl:stylesheet>""",
+            "base.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:template match="item"><base><xsl:value-of select="@id"/></base></xsl:template>
+            </xsl:stylesheet>""",
+        },
+        "<root><item id='a'/></root>",
+        {},
+    ),
+    (
+        "include-once",
+        {
+            "main.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:output method="xml" omit-xml-declaration="yes"/>
+              <xsl:include href="shared.xsl"/>
+              <xsl:template match="/"><out><xsl:call-template name="shared"/></out></xsl:template>
+            </xsl:stylesheet>""",
+            "shared.xsl": """<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+              <xsl:template name="shared"><shared/></xsl:template>
+            </xsl:stylesheet>""",
+        },
+        "<root/>",
+        {},
+    ),
+]
+
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True)
 
@@ -577,6 +682,72 @@ def main():
                     )
                 continue
 
+            expected_xml = etree.tostring(
+                expected_result,
+                method="xml",
+                xml_declaration=False,
+                encoding="unicode",
+            )
+            actual_text = actual.stdout.decode("utf-8", "replace")
+            matched, reason = compare_xml(expected_xml, actual_text)
+            if not matched:
+                failures += 1
+                print(
+                    f"FAIL {name}: {reason}\n"
+                    f"  libxslt: {expected_xml!r}\n"
+                    f"  xmlz:    {actual_text!r}"
+                )
+    for name, files, source, params in BUNDLES:
+        with tempfile.TemporaryDirectory() as directory:
+            for filename, content in files.items():
+                path = os.path.join(directory, filename)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content)
+            main_path = os.path.join(directory, "main.xsl")
+            source_path = os.path.join(directory, "source.xml")
+            with open(source_path, "w", encoding="utf-8") as handle:
+                handle.write(source)
+            command = [transformer, main_path, source_path]
+            for key, value in params.items():
+                command.append(f"--param={key}={value}")
+            actual = run(command)
+            try:
+                transform = etree.XSLT(etree.parse(main_path))
+                expected_result = transform(
+                    etree.parse(source_path),
+                    **{
+                        key: etree.XSLT.strparam(value)
+                        for key, value in params.items()
+                    },
+                )
+            except Exception as error:  # noqa: BLE001 - report libxslt failures
+                print(f"SKIP {name}: libxslt failed: {error}")
+                continue
+            checks += 1
+            if actual.returncode != 0:
+                failures += 1
+                print(
+                    f"FAIL {name}: xmlz failed: "
+                    f"{actual.stderr.decode('utf-8', 'replace').strip()}"
+                )
+                continue
+            method = "xml"
+            output_element = etree.parse(main_path).find(
+                "{http://www.w3.org/1999/XSL/Transform}output"
+            )
+            if output_element is not None and output_element.get("method"):
+                method = output_element.get("method")
+            if method == "text":
+                expected_text = str(expected_result)
+                actual_text = actual.stdout.decode("utf-8", "replace")
+                if expected_text != actual_text:
+                    failures += 1
+                    print(
+                        f"FAIL {name} (text)\n"
+                        f"  libxslt: {expected_text!r}\n"
+                        f"  xmlz:    {actual_text!r}"
+                    )
+                continue
             expected_xml = etree.tostring(
                 expected_result,
                 method="xml",

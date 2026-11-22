@@ -6,19 +6,31 @@ const compile = @import("compile.zig");
 const transform_mod = @import("transform.zig");
 
 pub const Stylesheet = compile.Stylesheet;
-pub const Options = transform_mod.Options;
+pub const Options = compile.Options;
+pub const Resolver = compile.Resolver;
+pub const Resource = compile.Resource;
 pub const Result = transform_mod.Result;
 pub const Output = compile.Output;
 pub const OutputMethod = compile.OutputMethod;
 pub const Error = compile.Error || transform_mod.Error;
 pub const xsl_namespace = compile.xsl_namespace;
 
-/// Compile an XSLT stylesheet document.
+/// Compile an XSLT stylesheet document without external includes or imports.
 pub fn parse(
     allocator: std.mem.Allocator,
     document: *const dom.Document,
 ) Error!Stylesheet {
     return compile.compile(allocator, document);
+}
+
+/// Compile a stylesheet, resolving `xsl:include` and `xsl:import` through the
+/// supplied resolver.
+pub fn parseWithOptions(
+    allocator: std.mem.Allocator,
+    document: *const dom.Document,
+    options: Options,
+) Error!Stylesheet {
+    return compile.compileWithOptions(allocator, document, options);
 }
 
 /// Apply a compiled stylesheet to a source document.
@@ -42,7 +54,11 @@ pub fn transform(
     source_document: *const dom.Document,
     options: Options,
 ) Error!Result {
-    var stylesheet = try parse(allocator, stylesheet_document);
+    var stylesheet = try parseWithOptions(
+        allocator,
+        stylesheet_document,
+        options,
+    );
     defer stylesheet.deinit();
     return apply(&stylesheet, source_document, options);
 }
@@ -265,4 +281,243 @@ test "XSLT keys work in global variables and patterns" {
     const output = try transformToString(stylesheet, source, .{});
     defer testing.allocator.free(output);
     try testing.expectEqualStrings("<out>10</out>", output);
+}
+
+const StylesheetResource = struct {
+    href: []const u8,
+    uri: []const u8,
+    data: []const u8,
+};
+
+const StylesheetMapResolver = struct {
+    resources: []const StylesheetResource,
+};
+
+fn loadStylesheet(
+    context: ?*anyopaque,
+    href: []const u8,
+    base: []const u8,
+) ?Resource {
+    _ = base;
+    const resolver: *const StylesheetMapResolver = @ptrCast(@alignCast(context.?));
+    for (resolver.resources) |resource| {
+        if (std.mem.eql(u8, resource.href, href)) {
+            return .{ .uri = resource.uri, .data = resource.data };
+        }
+    }
+    return null;
+}
+
+fn transformWithResolver(
+    stylesheet_source: []const u8,
+    resources: []const StylesheetResource,
+    source: []const u8,
+    options: Options,
+) ![]u8 {
+    var resolver: StylesheetMapResolver = .{ .resources = resources };
+    var stylesheet_document = try parseDocument(stylesheet_source);
+    defer stylesheet_document.deinit();
+    var compiled = try parseWithOptions(
+        testing.allocator,
+        &stylesheet_document,
+        .{
+            .parameters = options.parameters,
+            .resolver = .{
+                .context = &resolver,
+                .load = loadStylesheet,
+            },
+            .base = "main.xsl",
+        },
+    );
+    defer compiled.deinit();
+    var source_document = try parseDocument(source);
+    defer source_document.deinit();
+    var result = try apply(&compiled, &source_document, options);
+    defer result.deinit();
+    return result.toOwnedSlice(testing.allocator);
+}
+
+test "XSLT includes named and match templates" {
+    const resources = [_]StylesheetResource{
+        .{
+            .href = "inc.xsl",
+            .uri = "inc.xsl",
+            .data = "<xsl:stylesheet version='1.0' " ++
+                "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+                "<xsl:template name='emit'><inc>" ++
+                "<xsl:value-of select='.'/></inc></xsl:template>" ++
+                "<xsl:template match='item'><match>" ++
+                "<xsl:value-of select='@id'/></match></xsl:template>" ++
+                "</xsl:stylesheet>",
+        },
+    };
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:include href="inc.xsl"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:for-each select="root/a">
+        \\      <xsl:call-template name="emit"/>
+        \\    </xsl:for-each>
+        \\    <xsl:apply-templates select="root/item"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source = "<root><a>x</a><item id='i'/></root>";
+    const output = try transformWithResolver(stylesheet, &resources, source, .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out><inc>x</inc><match>i</match></out>", output);
+}
+
+test "XSLT import precedence and apply-imports" {
+    const resources = [_]StylesheetResource{
+        .{
+            .href = "base.xsl",
+            .uri = "base.xsl",
+            .data = "<xsl:stylesheet version='1.0' " ++
+                "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+                "<xsl:variable name='v' select=\"'imported'\"/>" ++
+                "<xsl:template match='item'><xsl:param name='p'/><base>" ++
+                "<xsl:value-of select='@id'/>" ++
+                "<xsl:value-of select='$p'/>" ++
+                "</base></xsl:template>" ++
+                "</xsl:stylesheet>",
+        },
+    };
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:import href="base.xsl"/>
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:template match="/"><out><xsl:value-of select="$v"/>
+        \\    <xsl:apply-templates select="root/item"/></out></xsl:template>
+        \\  <xsl:template match="item"><main><xsl:value-of select="@id"/>
+        \\    <xsl:apply-imports>
+        \\      <xsl:with-param name="p" select="'P'"/>
+        \\    </xsl:apply-imports></main></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source = "<root><item id='a'/><item id='b'/></root>";
+    const output = try transformWithResolver(stylesheet, &resources, source, .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<out>imported<main>a<base>aP</base></main>" ++
+            "<main>b<base>bP</base></main></out>",
+        output,
+    );
+}
+
+test "XSLT nested imports and duplicate includes" {
+    const resources = [_]StylesheetResource{
+        .{
+            .href = "mid.xsl",
+            .uri = "mid.xsl",
+            .data = "<xsl:stylesheet version='1.0' " ++
+                "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+                "<xsl:import href='base.xsl'/>" ++
+                "</xsl:stylesheet>",
+        },
+        .{
+            .href = "base.xsl",
+            .uri = "base.xsl",
+            .data = "<xsl:stylesheet version='1.0' " ++
+                "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+                "<xsl:template match='item'><base/></xsl:template>" ++
+                "</xsl:stylesheet>",
+        },
+        .{
+            .href = "shared.xsl",
+            .uri = "shared.xsl",
+            .data = "<xsl:stylesheet version='1.0' " ++
+                "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+                "<xsl:template name='shared'><shared/></xsl:template>" ++
+                "</xsl:stylesheet>",
+        },
+    };
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:import href="mid.xsl"/>
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"/>
+        \\  <xsl:include href="shared.xsl"/>
+        \\  <xsl:template match="/"><out>
+        \\    <xsl:call-template name="shared"/>
+        \\    <xsl:apply-templates select="root/item"/>
+        \\  </out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const source = "<root><item/></root>";
+    const output = try transformWithResolver(stylesheet, &resources, source, .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out><shared/><base/></out>", output);
+
+    const duplicate =
+        "<xsl:stylesheet version='1.0' " ++
+        "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+        "<xsl:include href='shared.xsl'/>" ++
+        "<xsl:include href='shared.xsl'/>" ++
+        "</xsl:stylesheet>";
+    var duplicate_resolver: StylesheetMapResolver = .{ .resources = &resources };
+    var duplicate_document = try parseDocument(duplicate);
+    defer duplicate_document.deinit();
+    try testing.expectError(
+        error.InvalidStylesheet,
+        parseWithOptions(testing.allocator, &duplicate_document, .{
+            .resolver = .{
+                .context = &duplicate_resolver,
+                .load = loadStylesheet,
+            },
+            .base = "main.xsl",
+        }),
+    );
+}
+
+test "XSLT rejects circular and misplaced imports" {
+    const circular = [_]StylesheetResource{
+        .{
+            .href = "a.xsl",
+            .uri = "a.xsl",
+            .data = "<xsl:stylesheet version='1.0' " ++
+                "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+                "<xsl:include href='main.xsl'/>" ++
+                "</xsl:stylesheet>",
+        },
+    };
+    const stylesheet =
+        "<xsl:stylesheet version='1.0' " ++
+        "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+        "<xsl:include href='a.xsl'/></xsl:stylesheet>";
+    var resolver: StylesheetMapResolver = .{ .resources = &circular };
+    var document = try parseDocument(stylesheet);
+    defer document.deinit();
+    try testing.expectError(
+        error.InvalidStylesheet,
+        parseWithOptions(testing.allocator, &document, .{
+            .resolver = .{
+                .context = &resolver,
+                .load = loadStylesheet,
+            },
+            .base = "main.xsl",
+        }),
+    );
+
+    const misplaced =
+        "<xsl:stylesheet version='1.0' " ++
+        "xmlns:xsl='http://www.w3.org/1999/XSL/Transform'>" ++
+        "<xsl:template match='/'/>" ++
+        "<xsl:import href='base.xsl'/></xsl:stylesheet>";
+    var misplaced_document = try parseDocument(misplaced);
+    defer misplaced_document.deinit();
+    var base_resolver: StylesheetMapResolver = .{ .resources = &.{} };
+    try testing.expectError(
+        error.InvalidStylesheet,
+        parseWithOptions(testing.allocator, &misplaced_document, .{
+            .resolver = .{
+                .context = &base_resolver,
+                .load = loadStylesheet,
+            },
+            .base = "main.xsl",
+        }),
+    );
 }

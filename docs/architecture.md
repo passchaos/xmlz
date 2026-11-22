@@ -92,10 +92,10 @@ required whitespace normalization.
 into XPath selectors that are evaluated once per transform. Template conflict
 resolution follows XSLT priority and document order. The runtime executes
 templates, modes, parameters, variables, sorting, copy instructions, keys,
-literal result elements, AVTs, and the core instruction set into a
-`dom_builder` document, reusing the XPath engine for expressions, `current()`,
-and `key()`. Imported stylesheets, result-tree-fragment node sets, and HTML
-serialization are not implemented.
+includes/imports with import precedence and `apply-imports`, literal result
+elements, AVTs, and the core instruction set into a `dom_builder` document,
+reusing the XPath engine for expressions, `current()`, and `key()`.
+Result-tree-fragment node sets and HTML serialization are not implemented.
 
 ## XML Schema
 

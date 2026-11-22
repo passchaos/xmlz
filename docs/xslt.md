@@ -51,6 +51,9 @@ defer result.deinit();
 - `xsl:key` declarations and the `key()` function, including multiple
   declarations with the same name, node-set key values, namespaced match
   patterns, global-variable use, and `key()` in template match patterns.
+- `xsl:include` and `xsl:import` through a resolver, import precedence,
+  duplicate named-template detection, and `xsl:apply-imports` (including
+  `with-param`).
 - `xsl:number` with a `value` expression, and same-name sibling numbering
   otherwise.
 - `xsl:output` methods `xml` and `text`, `omit-xml-declaration`, `indent`, and
@@ -64,9 +67,8 @@ template priority its specified default behavior.
 
 ## Limitations
 
-- `xsl:include`, `xsl:import`, `xsl:apply-imports`, `xsl:attribute-set`,
-  `xsl:decimal-format`, `xsl:namespace-alias`, and `xsl:strip-space` /
-  `xsl:preserve-space` are not implemented.
+- `xsl:attribute-set`, `xsl:decimal-format`, `xsl:namespace-alias`, and
+  `xsl:strip-space` / `xsl:preserve-space` are not implemented.
 - Result tree fragments in variables are stored as strings; node-set operations
   on them are not supported.
 - `disable-output-escaping`, `cdata-section-elements`, and DOCTYPE output are
@@ -93,5 +95,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-40/40 XSLT differential checks passed
+46/46 XSLT differential checks passed
 ```
