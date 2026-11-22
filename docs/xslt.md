@@ -212,13 +212,13 @@ x86-64):
 
 | Workload | xmlz | libxslt (lxml) |
 | --- | ---: | ---: |
-| identity transform | 32.5 ms | 55.1 ms |
-| sorted report | 32.1 ms | 44.8 ms |
+| identity transform | 30.8 ms | 51.0 ms |
+| sorted report | 28.9 ms | 45.5 ms |
 
 The real-world DocBook HTML transform (`tests/docbook` from libxslt,
 `html/docbook.xsl` over `test/gdp-handbook.xml`, with the full 440 KiB
 DocBook 4.1.2 DTD loaded) produces output identical to the libxslt
-reference. A full single run takes about 90 ms, of which roughly half is
+reference. A full single run takes about 94 ms, of which roughly half is
 parsing the source document and its DTD and its stylesheet; a repeated
 in-process transform takes about 28 ms against 21 ms for libxslt through
 lxml.
