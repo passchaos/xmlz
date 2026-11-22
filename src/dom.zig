@@ -395,7 +395,23 @@ const Builder = struct {
         while (try self.parser.next()) |event| {
             switch (event) {
                 .xml_declaration => |declaration| self.declaration = declaration,
-                .doctype => |doctype| self.doctype = doctype,
+                .doctype => |doctype| {
+                    self.doctype = doctype;
+                    // External entity bodies are parsed through input frames,
+                    // so the top-level size estimate misses their nodes and
+                    // attributes. Reserve up front instead of growing the
+                    // arrays many times while entity content streams in.
+                    if (self.parser.entityTable().hasExternalParsed()) {
+                        try self.nodes.ensureUnusedCapacity(
+                            self.allocator,
+                            external_content_nodes,
+                        );
+                        try self.attributes.ensureUnusedCapacity(
+                            self.allocator,
+                            external_content_attributes,
+                        );
+                    }
+                },
                 .start_element => |element| try self.startElement(element),
                 .end_element => try self.endElement(),
                 .text => |text| try self.appendText(text, false),
@@ -589,6 +605,12 @@ fn hintHugePages(pointer: [*]const u8, length: usize) void {
     const aligned: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(start);
     std.posix.madvise(aligned, end - start, std.posix.MADV.HUGEPAGE) catch {};
 }
+
+/// Node and attribute reservation for documents that pull in external
+/// parsed entities. Real-world lookup tables (DocBook localization, glossaries)
+/// expand to tens of thousands of nodes from a tiny top-level document.
+const external_content_nodes = 32768;
+const external_content_attributes = 32768;
 
 fn countStructural(input: []const u8) struct { lt: usize, eq: usize } {
     const Vec = @Vector(32, u8);
@@ -859,7 +881,7 @@ fn testDtdResolver(
     return .{
         .uri = "t.dtd",
         .data = "<!ELEMENT doc ANY>" ++
-        "<!ELEMENT term EMPTY>" ++
+            "<!ELEMENT term EMPTY>" ++
             "<!ATTLIST doc xmlns:p CDATA #FIXED \"urn:p\" p:kind CDATA \"k\">" ++
             "<!ATTLIST term id ID #IMPLIED term CDATA #IMPLIED>",
     };

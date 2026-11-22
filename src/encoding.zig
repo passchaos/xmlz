@@ -27,6 +27,35 @@ pub fn decodeAlloc(
     source: []const u8,
     max_output_bytes: usize,
 ) ![]u8 {
+    const decoded = try decodeUnrewrittenAlloc(
+        allocator,
+        source,
+        max_output_bytes,
+    );
+    errdefer allocator.free(decoded);
+    if (try declarationEncoding(decoded)) |declared| {
+        if (!std.mem.eql(u8, declared, "UTF-8")) {
+            const rewritten = try rewriteDeclarationEncodingAlloc(
+                allocator,
+                decoded,
+                declared,
+                max_output_bytes,
+            );
+            allocator.free(decoded);
+            return rewritten;
+        }
+    }
+    return decoded;
+}
+
+/// Decode to UTF-8 without rewriting the XML declaration. Callers that strip
+/// the text declaration (the DTD and external-entity parser paths) use this
+/// to avoid copying the whole buffer a second time.
+pub fn decodeUnrewrittenAlloc(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    max_output_bytes: usize,
+) ![]u8 {
     const detection = try detect(source);
     const payload = source[detection.start..];
     const decoded = switch (detection.encoding) {
@@ -41,18 +70,6 @@ pub fn decodeAlloc(
     };
     errdefer allocator.free(decoded);
     try validateDeclaredEncoding(decoded, detection.encoding);
-    if (try declarationEncoding(decoded)) |declared| {
-        if (!std.mem.eql(u8, declared, "UTF-8")) {
-            const rewritten = try rewriteDeclarationEncodingAlloc(
-                allocator,
-                decoded,
-                declared,
-                max_output_bytes,
-            );
-            allocator.free(decoded);
-            return rewritten;
-        }
-    }
     return decoded;
 }
 

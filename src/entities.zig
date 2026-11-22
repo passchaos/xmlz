@@ -73,6 +73,15 @@ pub const Table = struct {
         return self.find(name) != null or isPredefined(name);
     }
 
+    /// Whether the table declares an external parsed entity, which means
+    /// document content may pull in a large replacement tree.
+    pub fn hasExternalParsed(self: *const Table) bool {
+        for (self.entries()) |entity| {
+            if (entity.external and !entity.unparsed) return true;
+        }
+        return false;
+    }
+
     /// Declared entities in declaration order.
     pub fn entries(self: *const Table) []const Entity {
         const data = self.data orelse return &.{};

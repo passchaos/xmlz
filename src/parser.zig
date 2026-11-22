@@ -3929,7 +3929,12 @@ fn decodeExternalAlloc(
     source: []const u8,
     allocator: std.mem.Allocator,
 ) Error![]const u8 {
-    return encoding.decodeAlloc(allocator, source, 64 * 1024 * 1024) catch |err| switch (err) {
+    // The text declaration is stripped before parsing, so skip rewriting it.
+    return encoding.decodeUnrewrittenAlloc(
+        allocator,
+        source,
+        64 * 1024 * 1024,
+    ) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.InvalidCharacter,
     };
