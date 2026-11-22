@@ -32,20 +32,25 @@ pub const Entity = struct {
     offset: usize = 0,
 };
 
-/// Open-addressing buckets over the fixed entry array. The table stays
-/// allocator-free, so it can live inline in the parser, while lookups stop
-/// being linear. DocBook's DTD declares thousands of entities and references
-/// them heavily, which makes the difference between a linear scan and a hash
-/// lookup visible in parse time.
+/// Entity storage is allocated on first declaration. Keeping only a pointer
+/// in `Table` makes `parser.Parser` small, so creating a parser for every
+/// included stylesheet or entity file does not zero a megabyte of tables.
+/// Lookups use open-addressing buckets over a fixed-capacity entry array.
 const hash_buckets = 8192;
 
 pub const Table = struct {
-    entries: [max_entities]Entity = undefined,
-    /// Entry index + 1 of the first entity in each bucket; 0 means empty.
-    buckets: [hash_buckets]u16 = @splat(0),
-    /// Entry index + 1 of the next entity in the same bucket; 0 means end.
-    next: [max_entities]u16 = undefined,
+    data: ?*Data = null,
     count: usize = 0,
+
+    const Data = struct {
+        entries: [max_entities]Entity = undefined,
+        /// Entry index + 1 of the first entity in each bucket; 0 means empty.
+        buckets: [hash_buckets]u16 = @splat(0),
+        /// Entry index + 1 of the next entity in the same bucket; 0 means end.
+        next: [max_entities]u16 = undefined,
+    };
+
+    pub const AddError = error{ OutOfMemory, EntityLimitExceeded };
 
     fn bucketIndex(name: []const u8) usize {
         return @as(usize, @truncate(std.hash.Wyhash.hash(0, name))) &
@@ -53,12 +58,13 @@ pub const Table = struct {
     }
 
     pub fn find(self: *const Table, name: []const u8) ?*const Entity {
-        var link = self.buckets[bucketIndex(name)];
+        const data = self.data orelse return null;
+        var link = data.buckets[bucketIndex(name)];
         while (link != 0) {
             const index: usize = link - 1;
-            const entry = &self.entries[index];
+            const entry = &data.entries[index];
             if (std.mem.eql(u8, entry.name, name)) return entry;
-            link = self.next[index];
+            link = data.next[index];
         }
         return null;
     }
@@ -67,16 +73,42 @@ pub const Table = struct {
         return self.find(name) != null or isPredefined(name);
     }
 
+    /// Declared entities in declaration order.
+    pub fn entries(self: *const Table) []const Entity {
+        const data = self.data orelse return &.{};
+        return data.entries[0..self.count];
+    }
+
+    pub fn at(self: *const Table, index: usize) *const Entity {
+        return &self.data.?.entries[index];
+    }
+
     /// First declaration wins, matching XML's entity binding rule.
-    pub fn add(self: *Table, entity: Entity) error{EntityLimitExceeded}!void {
+    pub fn add(
+        self: *Table,
+        allocator: std.mem.Allocator,
+        entity: Entity,
+    ) AddError!void {
         if (self.find(entity.name) != null) return;
-        if (self.count == self.entries.len) return error.EntityLimitExceeded;
+        const data = self.data orelse blk: {
+            const created = try allocator.create(Data);
+            created.* = .{};
+            self.data = created;
+            break :blk created;
+        };
+        if (self.count == data.entries.len) return error.EntityLimitExceeded;
         const index = self.count;
-        self.entries[index] = entity;
+        data.entries[index] = entity;
         const bucket = bucketIndex(entity.name);
-        self.next[index] = self.buckets[bucket];
-        self.buckets[bucket] = @intCast(index + 1);
+        data.next[index] = data.buckets[bucket];
+        data.buckets[bucket] = @intCast(index + 1);
         self.count += 1;
+    }
+
+    pub fn deinit(self: *Table, allocator: std.mem.Allocator) void {
+        if (self.data) |data| allocator.destroy(data);
+        self.data = null;
+        self.count = 0;
     }
 };
 
@@ -400,8 +432,9 @@ test "attribute decoding normalizes literal whitespace but preserves char refs" 
 test "internal entities expand recursively with limits" {
     const allocator = std.testing.allocator;
     var table = Table{};
-    try table.add(.{ .name = "a", .value = "x&b;y" });
-    try table.add(.{ .name = "b", .value = "B" });
+    defer table.deinit(allocator);
+    try table.add(allocator, .{ .name = "a", .value = "x&b;y" });
+    try table.add(allocator, .{ .name = "b", .value = "B" });
     const raw = "[&a;]";
     const decoded = try decodeTextAlloc(allocator, raw, &table, .{}, .{});
     defer freeDecoded(allocator, raw, decoded);
@@ -416,7 +449,11 @@ test "internal entities expand recursively with limits" {
 test "undeclared and external entities follow policy" {
     const allocator = std.testing.allocator;
     var table = Table{};
-    try table.add(.{ .name = "ext", .value = "", .external = true });
+    defer table.deinit(std.testing.allocator);
+    try table.add(
+        std.testing.allocator,
+        .{ .name = "ext", .value = "", .external = true },
+    );
     try std.testing.expectError(
         error.UndeclaredEntity,
         decodeTextAlloc(allocator, "&missing;", &table, .{}, .{}),
@@ -442,8 +479,9 @@ test "undeclared and external entities follow policy" {
 
 test "entity table keeps the first declaration" {
     var table = Table{};
-    try table.add(.{ .name = "a", .value = "first" });
-    try table.add(.{ .name = "a", .value = "second" });
+    defer table.deinit(std.testing.allocator);
+    try table.add(std.testing.allocator, .{ .name = "a", .value = "first" });
+    try table.add(std.testing.allocator, .{ .name = "a", .value = "second" });
     try std.testing.expectEqual(@as(usize, 1), table.count);
     try std.testing.expectEqualStrings("first", table.find("a").?.value);
 }

@@ -156,7 +156,7 @@ pub fn validateWithOptions(
         }
     }
 
-    for (dtd.entities.entries[0..dtd.entities.count]) |entity| {
+    for (dtd.entities.entries()) |entity| {
         if (entity.unparsed and entity.notation.len != 0 and
             !notationDeclared(dtd, entity.notation))
         {
@@ -913,7 +913,7 @@ fn normalizeDefault(
         value = entities.decodeAttributeAlloc(
             temp,
             value,
-            dtd.entities,
+            &dtd.entities,
             .{},
             .{
                 .preserve_undeclared = true,

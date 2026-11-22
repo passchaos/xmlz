@@ -100,7 +100,7 @@ pub const Dtd = struct {
     elements: []const ElementDecl,
     attributes: []const AttributeDecl,
     notations: []const NotationDecl,
-    entities: *const entities.Table,
+    entities: entities.Table,
     duplicate_elements: []const []const u8,
     duplicate_attributes: []const DuplicateAttribute,
     duplicate_notations: []const []const u8,
@@ -129,9 +129,10 @@ pub const Options = struct {
     /// duplicate-attribute, and namespace constraint validation. Never use
     /// this for untrusted input.
     trusted: bool = false,
-    /// Allocator used only when a DTD needs parameter-entity expansion or an
-    /// external subset/entity must be loaded. Without it those features report
-    /// `UnsupportedParameterEntity`.
+    /// Allocator used when a DTD declares entities or needs parameter-entity
+    /// expansion or an external subset/entity. Without it those features
+    /// report `UnsupportedParameterEntity`. Entity storage lives until the
+    /// parser is deinitialized.
     allocator: ?std.mem.Allocator = null,
     /// Optional resolver for external DTD subsets and parsed entities. The
     /// returned slice must remain valid for the parser's lifetime.
@@ -329,6 +330,8 @@ pub const Parser = struct {
     /// True while re-scanning an external subset whose entity declarations
     /// were already parsed and validated during parameter-entity expansion.
     entities_preparsed: bool = false,
+    /// False for sub-parsers that borrow the parent's entity tables.
+    owns_entity_tables: bool = true,
     ns: namespace.Resolver = .{},
     xml_version: chars.Version = .xml_1_0,
     started: bool = false,
@@ -407,10 +410,17 @@ pub const Parser = struct {
         return self;
     }
 
-    /// Release DTD expansion scratch storage. Safe to call more than once.
+    /// Release DTD expansion scratch storage and entity tables. Safe to call
+    /// more than once.
     pub fn deinit(self: *Parser) void {
         if (self.scratch) |*arena| arena.deinit();
         self.scratch = null;
+        if (self.owns_entity_tables) {
+            if (self.options.allocator) |allocator| {
+                self.entity_table.deinit(allocator);
+                self.parameter_entities.deinit(allocator);
+            }
+        }
     }
 
     pub fn xmlVersion(self: *const Parser) chars.Version {
@@ -439,7 +449,7 @@ pub const Parser = struct {
             .elements = self.element_decls.items,
             .attributes = self.attribute_decls.items,
             .notations = self.notation_decls.items,
-            .entities = &self.entity_table,
+            .entities = self.entity_table,
             .duplicate_elements = self.duplicate_elements.items,
             .duplicate_attributes = self.duplicate_attributes.items,
             .duplicate_notations = self.duplicate_notations.items,
@@ -2245,24 +2255,28 @@ pub const Parser = struct {
             _ = scanner.skipWhitespace();
             try scanner.expectByte('>');
             if (!scanner.atEnd()) return scanner.fail(error.InvalidDoctype);
+            const allocator = self.options.allocator orelse
+                return self.fail(error.UnsupportedParameterEntity, base);
             if (parameter) {
-                self.parameter_entities.add(.{
+                self.parameter_entities.add(allocator, .{
                     .name = name,
                     .value = value,
                     .offset = base,
                     .from_external = self.in_external_subset,
-                }) catch {
-                    return self.fail(error.EntityLimitExceeded, base);
-                };
+                }) catch |err| return self.fail(
+                    mapEntityAddError(err),
+                    base,
+                );
             } else {
-                self.entity_table.add(.{
+                self.entity_table.add(allocator, .{
                     .name = name,
                     .value = value,
                     .offset = base,
                     .from_external = self.in_external_subset,
-                }) catch {
-                    return self.fail(error.EntityLimitExceeded, base);
-                };
+                }) catch |err| return self.fail(
+                    mapEntityAddError(err),
+                    base,
+                );
             }
             return;
         }
@@ -2296,8 +2310,10 @@ pub const Parser = struct {
         try scanner.expectByte('>');
         if (!scanner.atEnd()) return scanner.fail(error.InvalidDoctype);
 
+        const allocator = self.options.allocator orelse
+            return self.fail(error.UnsupportedParameterEntity, base);
         if (parameter) {
-            self.parameter_entities.add(.{
+            self.parameter_entities.add(allocator, .{
                 .name = name,
                 .value = "",
                 .external = true,
@@ -2305,11 +2321,12 @@ pub const Parser = struct {
                 .public_id = public_id,
                 .offset = base,
                 .from_external = self.in_external_subset,
-            }) catch {
-                return self.fail(error.EntityLimitExceeded, base);
-            };
+            }) catch |err| return self.fail(
+                mapEntityAddError(err),
+                base,
+            );
         } else {
-            self.entity_table.add(.{
+            self.entity_table.add(allocator, .{
                 .name = name,
                 .value = "",
                 .external = true,
@@ -2319,9 +2336,7 @@ pub const Parser = struct {
                 .notation = notation,
                 .offset = base,
                 .from_external = self.in_external_subset,
-            }) catch {
-                return self.fail(error.EntityLimitExceeded, base);
-            };
+            }) catch |err| return self.fail(mapEntityAddError(err), base);
         }
     }
 
@@ -2485,14 +2500,14 @@ pub const Parser = struct {
 
     fn validateEntityDeclarations(self: *Parser) Error!void {
         // Validate every replacement value's characters and references.
-        for (self.entity_table.entries[0..self.entity_table.count]) |entity| {
+        for (self.entity_table.entries()) |entity| {
             if (entity.external) continue;
             if (self.findInvalidLiteral(entity.value)) |bad| {
                 return self.fail(error.InvalidCharacter, entity.offset + bad);
             }
         }
 
-        for (self.parameter_entities.entries[0..self.parameter_entities.count]) |entity| {
+        for (self.parameter_entities.entries()) |entity| {
             if (entity.external) continue;
             if (self.findInvalidLiteral(entity.value)) |bad| {
                 return self.fail(error.InvalidCharacter, entity.offset + bad);
@@ -2503,12 +2518,13 @@ pub const Parser = struct {
         // XML's No Recursion constraint: no entity may reference itself
         // directly or indirectly, whether or not it is used.
         var colors: [entities.max_entities]u8 = @splat(0);
-        for (0..self.entity_table.count) |index| {
+        const declared = self.entity_table.entries();
+        for (0..declared.len) |index| {
             if (colors[index] != 0) continue;
             if (self.entityCycle(index, &colors)) {
                 return self.fail(
                     error.EntityRecursion,
-                    self.entity_table.entries[index].offset,
+                    declared[index].offset,
                 );
             }
         }
@@ -2537,7 +2553,7 @@ pub const Parser = struct {
         colors: *[entities.max_entities]u8,
     ) bool {
         colors[index] = 1;
-        const value = self.entity_table.entries[index].value;
+        const value = self.entity_table.at(index).value;
         var cursor: usize = 0;
         while (std.mem.indexOfScalarPos(u8, value, cursor, '&')) |amp| {
             const semicolon = std.mem.indexOfScalarPos(u8, value, amp + 1, ';') orelse
@@ -2555,7 +2571,7 @@ pub const Parser = struct {
     }
 
     fn entityIndex(self: *const Parser, name: []const u8) ?usize {
-        for (self.entity_table.entries[0..self.entity_table.count], 0..) |entity, index| {
+        for (self.entity_table.entries(), 0..) |entity, index| {
             if (std.mem.eql(u8, entity.name, name)) return index;
         }
         return null;
@@ -2629,6 +2645,7 @@ pub const Parser = struct {
         sub.resolver_base = self.resolver_base;
         sub.entity_table = self.entity_table;
         sub.parameter_entities = self.parameter_entities;
+        sub.owns_entity_tables = false;
         sub.external_depth = self.external_depth;
         sub.external_checked = self.external_checked;
         sub.external_stack = self.external_stack;
@@ -3116,6 +3133,13 @@ pub const Parser = struct {
         return err;
     }
 };
+
+fn mapEntityAddError(err: entities.Table.AddError) Error {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.EntityLimitExceeded => error.EntityLimitExceeded,
+    };
+}
 
 /// Small recursive-descent scanner over one DTD markup declaration. The
 /// declaration end is located first with quote-aware scanning, so the scanner
@@ -4028,7 +4052,10 @@ fn expectEventEqual(expected: Event, actual: Event) !void {
 }
 
 fn expectParseError(input: []const u8, expected: Error) !void {
-    var parser = Parser.init(input, .{});
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(input, .{ .allocator = arena.allocator() });
+    defer parser.deinit();
     while (true) {
         const event = parser.next() catch |err| {
             try testing.expectEqual(expected, err);
@@ -4149,7 +4176,10 @@ test "parser reports well-formedness violations" {
 
 test "parser accepts internal entity declarations and validates recursion" {
     const input = "<!DOCTYPE svg [<!ENTITY R \"<rect/>\"><!ENTITY C 'blue'>]><svg>&R;<rect fill='&C;'/></svg>";
-    var parser = Parser.init(input, .{});
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(input, .{ .allocator = arena.allocator() });
+    defer parser.deinit();
     var saw_doctype = false;
     var saw_entity_rect = false;
     while (try parser.next()) |event| {
@@ -4246,7 +4276,10 @@ test "parser handles doctype external identifiers and opaque declarations" {
         \\]>
         \\<svg/>
     ;
-    var parser = Parser.init(input, .{});
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var parser = Parser.init(input, .{ .allocator = arena.allocator() });
+    defer parser.deinit();
     const doctype = (try parser.next()).?.doctype;
     try testing.expectEqualStrings("svg", doctype.name);
     try testing.expectEqualStrings(
