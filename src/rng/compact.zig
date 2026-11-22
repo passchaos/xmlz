@@ -7,6 +7,7 @@
 //! `include` and `external` are not supported in compact schemas yet.
 
 const std = @import("std");
+const encoding = @import("../encoding.zig");
 const schema = @import("schema.zig");
 const datatypes = @import("../xsd/datatypes.zig");
 const regex = @import("../xsd/regex.zig");
@@ -16,6 +17,14 @@ pub const Error = schema.Error;
 pub fn parse(
     allocator: std.mem.Allocator,
     source: []const u8,
+) Error!schema.Schema {
+    return parseWithOptions(allocator, source, .{});
+}
+
+pub fn parseWithOptions(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    options: schema.Options,
 ) Error!schema.Schema {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -32,6 +41,8 @@ pub fn parse(
         .scope = root_scope,
         .namespaces = std.StringHashMap([]const u8).init(arena_allocator),
         .datatypes = std.StringHashMap([]const u8).init(arena_allocator),
+        .options = options,
+        .base = options.base,
     };
     errdefer parser.deinitRegexes();
     try parser.parseTopLevel();
@@ -102,6 +113,9 @@ const Parser = struct {
     datatypes: std.StringHashMap([]const u8),
     default_namespace: []const u8 = "",
     scope: *Scope,
+    options: schema.Options = .{},
+    base: []const u8 = "",
+    include_stack: std.ArrayList([]const u8) = .empty,
     start: ?*const schema.Pattern = null,
     start_interleave: bool = false,
     defines: std.ArrayList(*schema.Define) = .empty,
@@ -301,7 +315,8 @@ const Parser = struct {
             if (token.kind == .keyword and
                 std.mem.eql(u8, token.text, "include"))
             {
-                return error.InvalidSchema;
+                try self.parseInclude();
+                continue;
             }
             if (token.kind == .identifier and isAssign(self.peekAt(1).kind)) {
                 try self.parseDefine();
@@ -342,11 +357,28 @@ const Parser = struct {
     fn parseDefine(self: *Parser) Error!void {
         const name = (try self.expect(.identifier)).text;
         const assign = try self.expectAssign();
+        try self.parseDefineBody(name, assign, false);
+    }
+
+    fn parseDefineBody(
+        self: *Parser,
+        name: []const u8,
+        assign: Kind,
+        override: bool,
+    ) Error!void {
         const existing = self.scope.map.get(name);
-        const define = existing orelse blk: {
-            const created = try self.createDefine(name);
-            break :blk created;
-        };
+        if (override and existing != null) {
+            const body = try self.parsePattern();
+            const replacement = try self.arena.create(schema.Define);
+            replacement.* = .{
+                .name = try self.arena.dupe(u8, name),
+                .pattern = body,
+            };
+            try self.defines.append(self.arena, replacement);
+            try self.scope.map.put(replacement.name, replacement);
+            return;
+        }
+        const define = existing orelse try self.createDefine(name);
         const body = try self.parsePattern();
         if (define.pattern) |previous| {
             define.pattern = if (assign == .amp_equals)
@@ -490,7 +522,8 @@ const Parser = struct {
                 return makePattern(self.arena, .{ .parent_ref = define });
             }
             if (std.mem.eql(u8, token.text, "external")) {
-                return error.InvalidSchema;
+                _ = self.advance();
+                return self.parseExternal();
             }
             if (std.mem.eql(u8, token.text, "grammar")) {
                 return self.parseNestedGrammar();
@@ -763,6 +796,180 @@ const Parser = struct {
         return self.namespaces.get(prefix) orelse error.InvalidSchema;
     }
 
+    fn parseInclude(self: *Parser) Error!void {
+        _ = self.advance();
+        const href = try self.parseLiteral();
+        const inherited = try self.parseInherit();
+        const source = try self.loadCompact(href);
+        const included_start = try self.parseIncludedFile(source, inherited);
+        if (self.at(.lbrace)) {
+            _ = self.advance();
+            const before = self.start;
+            try self.parseIncludeContent();
+            _ = try self.expect(.rbrace);
+            if (self.start == before) {
+                if (included_start) |pattern| {
+                    try self.addStart(pattern, false);
+                }
+            }
+        } else if (included_start) |pattern| {
+            try self.addStart(pattern, false);
+        }
+    }
+
+    fn parseIncludeContent(self: *Parser) Error!void {
+        while (true) {
+            const token = self.peek();
+            if (token.kind == .eof or token.kind == .rbrace) return;
+            if (token.kind == .keyword and
+                std.mem.eql(u8, token.text, "start"))
+            {
+                _ = self.advance();
+                const assign = try self.expectAssign();
+                const pattern = try self.parsePattern();
+                try self.addStart(pattern, assign == .amp_equals);
+                continue;
+            }
+            if (token.kind == .keyword and
+                std.mem.eql(u8, token.text, "div"))
+            {
+                _ = self.advance();
+                _ = try self.expect(.lbrace);
+                try self.parseIncludeContent();
+                _ = try self.expect(.rbrace);
+                continue;
+            }
+            if (token.kind == .identifier and isAssign(self.peekAt(1).kind)) {
+                try self.parseOverrideDefine();
+                continue;
+            }
+            return error.InvalidPattern;
+        }
+    }
+
+    /// A definition inside an include block replaces the included definition.
+    /// References inside the replacement body still resolve to the included
+    /// definition.
+    fn parseOverrideDefine(self: *Parser) Error!void {
+        const name = (try self.expect(.identifier)).text;
+        const assign = try self.expectAssign();
+        try self.parseDefineBody(name, assign, true);
+    }
+
+    fn parseExternal(self: *Parser) Error!*const schema.Pattern {
+        const href = try self.parseLiteral();
+        const inherited = try self.parseInherit();
+        const source = try self.loadCompact(href);
+        return self.parseExternalFile(source, inherited);
+    }
+
+    fn parseInherit(self: *Parser) Error![]const u8 {
+        if (!self.atKeyword("inherit")) return self.default_namespace;
+        _ = self.advance();
+        _ = try self.expect(.equals);
+        const prefix = try self.parseIdentifierOrKeyword();
+        return self.resolveNamespace(prefix);
+    }
+
+    fn loadCompact(self: *Parser, href: []const u8) Error![]const u8 {
+        const resolver = self.options.resolver orelse
+            return error.InvalidSchema;
+        const resource = resolver.load(
+            resolver.context,
+            href,
+            self.base,
+        ) orelse return error.InvalidSchema;
+        const uri = if (resource.uri.len != 0) resource.uri else href;
+        const owned_uri = try self.arena.dupe(u8, uri);
+        for (self.include_stack.items) |active| {
+            if (std.mem.eql(u8, active, owned_uri)) {
+                return error.InvalidSchema;
+            }
+        }
+        try self.include_stack.append(self.arena, owned_uri);
+        return decodeCompact(self.arena, resource.data) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.InvalidSchema,
+        };
+    }
+
+    const SavedEnvironment = struct {
+        tokens: []const Token,
+        index: usize,
+        namespaces: std.StringHashMap([]const u8),
+        datatypes: std.StringHashMap([]const u8),
+        default_namespace: []const u8,
+        start: ?*const schema.Pattern,
+        start_interleave: bool,
+    };
+
+    fn saveEnvironment(self: *Parser) SavedEnvironment {
+        return .{
+            .tokens = self.tokens,
+            .index = self.index,
+            .namespaces = self.namespaces,
+            .datatypes = self.datatypes,
+            .default_namespace = self.default_namespace,
+            .start = self.start,
+            .start_interleave = self.start_interleave,
+        };
+    }
+
+    fn restoreEnvironment(self: *Parser, saved: SavedEnvironment) void {
+        self.tokens = saved.tokens;
+        self.index = saved.index;
+        self.namespaces = saved.namespaces;
+        self.datatypes = saved.datatypes;
+        self.default_namespace = saved.default_namespace;
+        self.start = saved.start;
+        self.start_interleave = saved.start_interleave;
+    }
+
+    fn enterFile(self: *Parser, source: []const u8, inherited: []const u8) Error!void {
+        self.namespaces = std.StringHashMap([]const u8).init(self.arena);
+        self.datatypes = std.StringHashMap([]const u8).init(self.arena);
+        self.default_namespace = inherited;
+        self.tokens = try tokenize(self.arena, source);
+        self.index = 0;
+        self.start = null;
+        self.start_interleave = false;
+    }
+
+    fn parseIncludedFile(
+        self: *Parser,
+        source: []const u8,
+        inherited: []const u8,
+    ) Error!?*const schema.Pattern {
+        const saved = self.saveEnvironment();
+        defer {
+            self.restoreEnvironment(saved);
+            _ = self.include_stack.pop();
+        }
+        try self.enterFile(source, inherited);
+        try self.parseDeclarations();
+        try self.parseGrammarContent();
+        if (!self.at(.eof)) return error.InvalidPattern;
+        return self.start;
+    }
+
+    fn parseExternalFile(
+        self: *Parser,
+        source: []const u8,
+        inherited: []const u8,
+    ) Error!*const schema.Pattern {
+        const saved = self.saveEnvironment();
+        defer {
+            self.restoreEnvironment(saved);
+            _ = self.include_stack.pop();
+        }
+        try self.enterFile(source, inherited);
+        try self.parseDeclarations();
+        if (!self.startsPattern()) return error.InvalidPattern;
+        const pattern = try self.parsePattern();
+        if (!self.at(.eof)) return error.InvalidPattern;
+        return pattern;
+    }
+
     fn parseNestedGrammar(self: *Parser) Error!*const schema.Pattern {
         _ = self.advance();
         _ = try self.expect(.lbrace);
@@ -840,6 +1047,34 @@ fn isXsdLibrary(library: []const u8) bool {
         u8,
         library,
         "http://relaxng.org/ns/compatibility/datatypes/1.0",
+    );
+}
+
+fn decodeCompact(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) ![]const u8 {
+    if (source.len >= 2 and source[0] == 0xFF and source[1] == 0xFE) {
+        return encoding.decodeWithEncodingAlloc(
+            allocator,
+            source,
+            .utf16_le,
+            64 * 1024 * 1024,
+        );
+    }
+    if (source.len >= 2 and source[0] == 0xFE and source[1] == 0xFF) {
+        return encoding.decodeWithEncodingAlloc(
+            allocator,
+            source,
+            .utf16_be,
+            64 * 1024 * 1024,
+        );
+    }
+    return encoding.decodeWithEncodingAlloc(
+        allocator,
+        source,
+        .utf8,
+        64 * 1024 * 1024,
     );
 }
 

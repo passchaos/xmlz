@@ -115,7 +115,14 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(2);
         };
         defer init.gpa.free(decoded);
-        break :blk xmlz.rng.parseCompact(init.gpa, decoded) catch |err| {
+        break :blk xmlz.rng.parseCompactWithOptions(
+            init.gpa,
+            decoded,
+            .{
+                .resolver = .{ .context = &loader, .load = loadSchema },
+                .base = schema_path,
+            },
+        ) catch |err| {
             std.debug.print("schema error: {s}\n", .{@errorName(err)});
             std.process.exit(2);
         };

@@ -58,7 +58,8 @@ var schema = try xmlz.rng.parseWithOptions(allocator, &schema_document, .{
   `*`/`p:*`/`except`, grouping with `,`/`&`/`|`, postfix `?`/`*`/`+`,
   `list`/`mixed`/`text`/`empty`/`notAllowed`, data/value patterns with
   parameters, literal concatenation (`~`), `\x{...}` escapes, quoted
-  keywords, comments, and annotations.
+  keywords, comments, annotations, `include` (with overrides and `inherit`),
+  and `external`.
 - Datatype parameters: `pattern`, `enumeration`, `minInclusive`,
   `maxInclusive`, `minExclusive`, `maxExclusive`, `length`, `minLength`,
   `maxLength`, `totalDigits`, and `fractionDigits`.
@@ -69,8 +70,6 @@ var schema = try xmlz.rng.parseWithOptions(allocator, &schema_document, .{
 
 ## Limitations
 
-- Compact `include` and `external` are not supported yet; use the XML syntax
-  for schemas that need them.
 - Unsupported datatype libraries are rejected at schema compile time.
 - `notAllowed` inside repetition and other patterns that libxml2 rejects as
   invalid schemas may be accepted; schema-level constraint checking is
@@ -100,5 +99,5 @@ zig build rng-compact-diff
 ```
 
 ```text
-27/27 RELAX NG compact differential checks passed
+33/33 RELAX NG compact differential checks passed
 ```

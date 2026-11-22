@@ -70,12 +70,13 @@ then exposes them through a pull parser and reusable lexical primitives.
   built-in datatypes, facets, abstract types, `block`/`final`, and
   `xsi:type` / `xsi:nil`, with 248/248 differential checks against libxml2.
 - **RELAX NG.** `rng.parse` compiles XML-syntax grammars, `rng.parseCompact`
-  parses the compact syntax, and `rng.validate` checks instances against
+  parses the compact syntax (including `include`/`external`), and
+  `rng.validate` checks instances against
   element/attribute name classes, group, choice, interleave, optional,
   repetition, mixed content, text, empty, data/value (XSD datatype libraries,
   facets, `except`), lists, recursive defines, includes, nested grammars,
   `parentRef`, and external references, with 67/67 differential checks against
-  libxml2 plus 27/27 compact-syntax checks.
+  libxml2 plus 33/33 compact-syntax checks.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.

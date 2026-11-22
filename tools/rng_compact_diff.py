@@ -230,6 +230,84 @@ element \\x{72}oot {
 ]
 
 
+BUNDLES = [
+    (
+        "compact-include",
+        {
+            "main.rnc": """grammar {
+              include "base.rnc"
+              start = element root { item+ }
+            }""",
+            "base.rnc": """item = element item { text }""",
+        },
+        {
+            "main.rng": f"""<grammar xmlns="{RNG}">
+              <include href="base.rng"/>
+              <start><element name="root">
+                <oneOrMore><ref name="item"/></oneOrMore>
+              </element></start>
+            </grammar>""",
+            "base.rng": f"""<grammar xmlns="{RNG}">
+              <define name="item">
+                <element name="item"><text/></element>
+              </define>
+            </grammar>""",
+        },
+        [
+            "<root><item>a</item><item>b</item></root>",
+            "<root/>",
+        ],
+    ),
+    (
+        "compact-include-override",
+        {
+            "main.rnc": """grammar {
+              include "base.rnc" {
+                item = element b { text }
+              }
+              start = element root { item }
+            }""",
+            "base.rnc": """item = element a { text }""",
+        },
+        {
+            "main.rng": f"""<grammar xmlns="{RNG}">
+              <include href="base.rng">
+                <define name="item">
+                  <element name="b"><text/></element>
+                </define>
+              </include>
+              <start><element name="root"><ref name="item"/></element></start>
+            </grammar>""",
+            "base.rng": f"""<grammar xmlns="{RNG}">
+              <define name="item">
+                <element name="a"><text/></element>
+              </define>
+            </grammar>""",
+        },
+        [
+            "<root><b>x</b></root>",
+            "<root><a>x</a></root>",
+        ],
+    ),
+    (
+        "compact-external",
+        {
+            "main.rnc": """element root { external "item.rnc" }""",
+            "item.rnc": """element item { text }""",
+        },
+        {
+            "main.rng": f"""<element xmlns="{RNG}" name="root">
+              <externalRef href="item.rng"/>
+            </element>""",
+            "item.rng": f"""<element xmlns="{RNG}" name="item"><text/></element>""",
+        },
+        [
+            "<root><item>x</item></root>",
+            "<root><other>x</other></root>",
+        ],
+    ),
+]
+
 def run(cmd):
     return subprocess.run(cmd, capture_output=True)
 
@@ -256,6 +334,51 @@ def main():
                 with open(instance_path, "w", encoding="utf-8") as handle:
                     handle.write(instance)
                 actual = run([validator, "--compact", compact_path, instance_path])
+                if actual.returncode == 2:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: xmlz schema error: "
+                        f"{actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
+                    continue
+                expected_valid = relaxng.validate(
+                    etree.fromstring(instance.encode())
+                )
+                actual_valid = actual.returncode == 0
+                checks += 1
+                if expected_valid != actual_valid:
+                    failures += 1
+                    print(
+                        f"FAIL {name} instance {index}: "
+                        f"libxml2={'valid' if expected_valid else 'invalid'} "
+                        f"xmlz={'valid' if actual_valid else 'invalid'}\n"
+                        f"  instance: {instance}\n"
+                        f"  lxml: {relaxng.error_log}\n"
+                        f"  xmlz: {actual.stderr.decode('utf-8', 'replace').strip()}"
+                    )
+    for name, compact_files, xml_files, instances in BUNDLES:
+        with tempfile.TemporaryDirectory() as directory:
+            for filename, content in compact_files.items():
+                path = os.path.join(directory, filename)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content)
+            for filename, content in xml_files.items():
+                path = os.path.join(directory, filename)
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(content)
+            main_path = os.path.join(directory, "main.rnc")
+            try:
+                relaxng = etree.RelaxNG(
+                    etree.parse(os.path.join(directory, "main.rng"))
+                )
+            except Exception as error:  # noqa: BLE001 - report libxml2 failures
+                print(f"SKIP {name}: libxml2 schema error: {error}")
+                continue
+            for index, instance in enumerate(instances):
+                instance_path = os.path.join(directory, f"instance-{index}.xml")
+                with open(instance_path, "w", encoding="utf-8") as handle:
+                    handle.write(instance)
+                actual = run([validator, "--compact", main_path, instance_path])
                 if actual.returncode == 2:
                     failures += 1
                     print(

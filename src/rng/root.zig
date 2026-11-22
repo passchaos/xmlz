@@ -32,6 +32,15 @@ pub fn parseCompact(
     return compact.parse(allocator, source);
 }
 
+/// Compile a compact syntax schema with include/external resolution.
+pub fn parseCompactWithOptions(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    options: Options,
+) Error!Schema {
+    return compact.parseWithOptions(allocator, source, options);
+}
+
 /// Compile a schema with include/externalRef resolution.
 pub fn parseWithOptions(
     allocator: std.mem.Allocator,
@@ -422,4 +431,140 @@ test "RELAX NG compact syntax skips comments and annotations" {
         \\}
     ;
     try expectCompactValid(compact_source, "<root><item/></root>");
+}
+
+const CompactResource = struct {
+    href: []const u8,
+    uri: []const u8,
+    data: []const u8,
+};
+
+const CompactResolver = struct {
+    resources: []const CompactResource,
+};
+
+fn loadCompactResource(
+    context: ?*anyopaque,
+    href: []const u8,
+    base: []const u8,
+) ?Resource {
+    _ = base;
+    const resolver: *const CompactResolver = @ptrCast(@alignCast(context.?));
+    for (resolver.resources) |resource| {
+        if (std.mem.eql(u8, resource.href, href)) {
+            return .{ .uri = resource.uri, .data = resource.data };
+        }
+    }
+    return null;
+}
+
+test "RELAX NG compact syntax includes definitions" {
+    const resources = [_]CompactResource{
+        .{
+            .href = "base.rnc",
+            .uri = "base.rnc",
+            .data = "item = element item { text }",
+        },
+    };
+    var resolver: CompactResolver = .{ .resources = &resources };
+    const source =
+        \\grammar {
+        \\  include "base.rnc"
+        \\  start = element root { item+ }
+        \\}
+    ;
+    var compiled = try parseCompactWithOptions(testing.allocator, source, .{
+        .resolver = .{ .context = &resolver, .load = loadCompactResource },
+        .base = "main.rnc",
+    });
+    defer compiled.deinit();
+    var instance_document = try parseDocument(
+        "<root><item>a</item><item>b</item></root>",
+    );
+    defer instance_document.deinit();
+    var result = try validate(&compiled, testing.allocator, &instance_document);
+    defer result.deinit();
+    try testing.expect(result.isValid());
+}
+
+test "RELAX NG compact syntax include overrides definitions" {
+    const resources = [_]CompactResource{
+        .{
+            .href = "base.rnc",
+            .uri = "base.rnc",
+            .data = "item = element a { text }",
+        },
+    };
+    var resolver: CompactResolver = .{ .resources = &resources };
+    const source =
+        \\grammar {
+        \\  include "base.rnc" {
+        \\    item = element b { text }
+        \\  }
+        \\  start = element root { item }
+        \\}
+    ;
+    var compiled = try parseCompactWithOptions(testing.allocator, source, .{
+        .resolver = .{ .context = &resolver, .load = loadCompactResource },
+        .base = "main.rnc",
+    });
+    defer compiled.deinit();
+    var valid_document = try parseDocument("<root><b>x</b></root>");
+    defer valid_document.deinit();
+    var valid_result = try validate(
+        &compiled,
+        testing.allocator,
+        &valid_document,
+    );
+    defer valid_result.deinit();
+    try testing.expect(valid_result.isValid());
+
+    var invalid_document = try parseDocument("<root><a>x</a></root>");
+    defer invalid_document.deinit();
+    var invalid_result = try validate(
+        &compiled,
+        testing.allocator,
+        &invalid_document,
+    );
+    defer invalid_result.deinit();
+    try testing.expect(!invalid_result.isValid());
+}
+
+test "RELAX NG compact syntax external references and namespace inheritance" {
+    const resources = [_]CompactResource{
+        .{
+            .href = "item.rnc",
+            .uri = "item.rnc",
+            .data = "element item { empty }",
+        },
+    };
+    var resolver: CompactResolver = .{ .resources = &resources };
+    const source =
+        \\default namespace = "urn:t"
+        \\element root { external "item.rnc" }
+    ;
+    var compiled = try parseCompactWithOptions(testing.allocator, source, .{
+        .resolver = .{ .context = &resolver, .load = loadCompactResource },
+        .base = "main.rnc",
+    });
+    defer compiled.deinit();
+    var instance_document = try parseDocument(
+        "<root xmlns='urn:t'><item/></root>",
+    );
+    defer instance_document.deinit();
+    var result = try validate(&compiled, testing.allocator, &instance_document);
+    defer result.deinit();
+    try testing.expect(result.isValid());
+
+    var wrong_document = try parseDocument(
+        "<root xmlns='urn:t'><item xmlns=''/></root>",
+    );
+    defer wrong_document.deinit();
+    var wrong_result = try validate(
+        &compiled,
+        testing.allocator,
+        &wrong_document,
+    );
+    defer wrong_result.deinit();
+    try testing.expect(!wrong_result.isValid());
 }
