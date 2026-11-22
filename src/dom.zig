@@ -230,6 +230,62 @@ pub const Document = struct {
         return out.toOwnedSlice(allocator);
     }
 
+    /// Collect the in-scope namespaces of an element, nearest declaration
+    /// first. The implicit `xml` binding is always present. Prefixes
+    /// undeclared with an empty URI and an undeclared default namespace are
+    /// omitted, matching the XPath data model.
+    pub fn inScopeNamespaces(
+        self: *const Document,
+        allocator: std.mem.Allocator,
+        id: NodeId,
+    ) ![]namespace.Binding {
+        var out: std.ArrayList(namespace.Binding) = .empty;
+        errdefer out.deinit(allocator);
+        if (self.nodes[id].kind != .element) {
+            return out.toOwnedSlice(allocator);
+        }
+
+        var seen: std.ArrayList([]const u8) = .empty;
+        defer seen.deinit(allocator);
+        try seen.append(allocator, "xml");
+        try out.append(allocator, .{
+            .prefix = "xml",
+            .uri = namespace.xml_uri,
+        });
+
+        var current = id;
+        while (true) {
+            for (self.attributesOf(current)) |attr| {
+                if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                    continue;
+                }
+                const prefix = if (attr.name.len == 5)
+                    ""
+                else
+                    attr.name["xmlns:".len..];
+                var shadowed = false;
+                for (seen.items) |seen_prefix| {
+                    if (std.mem.eql(u8, seen_prefix, prefix)) {
+                        shadowed = true;
+                        break;
+                    }
+                }
+                if (shadowed) continue;
+                try seen.append(allocator, prefix);
+                // An empty URI undeclares the prefix, so it binds no namespace.
+                if (attr.value.len == 0) continue;
+                try out.append(allocator, .{
+                    .prefix = prefix,
+                    .uri = attr.value,
+                });
+            }
+            const parent = self.nodes[current].parent;
+            if (parent == null_node or self.nodes[parent].kind != .element) break;
+            current = parent;
+        }
+        return out.toOwnedSlice(allocator);
+    }
+
     /// Append all descendant character data to an existing buffer.
     pub fn appendTextContent(
         self: *const Document,

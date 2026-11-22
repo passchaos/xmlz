@@ -19,3 +19,5 @@ jobs:
         run: zig build check
       - name: XPath differential
         run: zig build xpath-diff
+      - name: Canonicalization differential
+        run: zig build c14n-diff

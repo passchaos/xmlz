@@ -14,7 +14,7 @@ chars / encoding / markup / character_data
                           |
                   +-------+--------+
                   |                |
-               writer           xpath / xinclude
+               writer           xpath / xinclude / c14n
 ```
 
 ## Pull parser
@@ -65,6 +65,17 @@ function library. `xinclude.process` expands
 XInclude 1.0 includes using a resolver, with fallback, text mode, nesting, and
 circular detection.
 
+## Canonicalization
+
+`c14n.canonicalize` serializes a whole document in Canonical XML 1.0/1.1 or
+Exclusive XML Canonicalization 1.0 form. It renders in-scope namespaces with
+lexicographic ordering, suppresses redundant declarations, sorts attributes by
+namespace URI then local name, expands empty elements, escapes character data
+and attribute values per the specifications, and handles comments and PIs
+outside the document element. Whole-document C14N 1.0 and 1.1 forms are
+identical; document-subset fixups (`xml:base`, inherited `xml:lang`/`xml:space`)
+are not implemented.
+
 ## Trusted mode
 
 `Parser.Options.trusted = true` skips character, name, duplicate-attribute, and
@@ -79,5 +90,6 @@ by the conformance harness.
 - `zig build conformance` runs the W3C XML 1.0/1.1 and Namespaces suites,
   including DTD validity checks for tests with a DTD.
 - `zig build xpath-diff` compares XPath results against libxml2's `xmllint`.
+- `zig build c14n-diff` compares canonical forms against libxml2's `xmllint`.
 - `zig build bench` compares pull/DOM throughput against expat, pugixml, and
   libxml2 with reproducible generated input.

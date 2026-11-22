@@ -43,6 +43,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   differential checks against libxml2.
 - **XInclude 1.0.** `xinclude.process` expands includes with XML/text modes,
   fallback, nested resources, circular detection, and namespace inheritance.
+- **Canonical XML.** `c14n.canonicalize` emits Canonical XML 1.0/1.1 and
+  Exclusive XML Canonicalization 1.0 forms with specification namespace and
+  attribute ordering, redundant-declaration suppression, and exact escaping,
+  with 69/69 differential checks against libxml2.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.
@@ -71,6 +75,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | Writer/serializer | Complete |
 | XPath 1.0 | Complete (all axes, core library, differential checks) |
 | XInclude 1.0 | Complete (XML/text, fallback, nesting) |
+| Canonical XML | Complete (C14N 1.0/1.1, exclusive; whole documents) |
 | XSD / XSLT | Out of scope for the core engine |
 
 ## Quick start
@@ -177,6 +182,7 @@ src/dom.zig             arena-backed document tree
 src/dom_builder.zig     programmatic document construction
 src/validation.zig      optional DTD validity checking
 src/writer.zig          XML serializer
+src/c14n.zig            Canonical XML 1.0/1.1 and exclusive C14N
 src/xinclude.zig        XInclude 1.0 processing
 src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
 src/namespace.zig       Namespaces in XML 1.0 resolver
@@ -200,6 +206,7 @@ zig build conformance   # W3C XML conformance suite
 zig build check         # both
 zig build bench         # parser/DOM benchmarks vs expat, pugixml, libxml2
 zig build xpath-diff    # XPath differential checks vs libxml2 xmllint
+zig build c14n-diff     # canonicalization differential checks vs libxml2
 zig build test          # includes deterministic mutation/fuzz smoke tests
 ```
 

@@ -310,9 +310,8 @@ const Evaluator = struct {
         }
     }
 
-    /// Collect the in-scope namespaces of an element. Nearest declarations
-    /// win, undeclarations shadow outer bindings without producing a node,
-    /// and the `xml` prefix is always in scope.
+    /// Collect the in-scope namespaces of an element as namespace nodes,
+    /// ordered lexicographically by prefix as XPath 1.0 requires.
     fn appendNamespaces(
         self: *Evaluator,
         context: *const value.Context,
@@ -325,58 +324,23 @@ const Evaluator = struct {
         };
         if (context.document.node(id).kind != .element) return;
 
-        var entries: std.ArrayList(value.NamespaceRef) = .empty;
-        var seen: std.ArrayList([]const u8) = .empty;
-        try seen.append(self.allocator, "xml");
-        try entries.append(self.allocator, .{
-            .element = id,
-            .prefix = "xml",
-            .uri = namespace.xml_uri,
-            .order = 0,
-        });
-
-        var current = id;
-        while (true) {
-            for (context.document.attributesOf(current)) |attribute| {
-                if (!namespace.Resolver.isNamespaceDeclaration(attribute.name)) continue;
-                const prefix = if (attribute.name.len == 5)
-                    ""
-                else
-                    attribute.name["xmlns:".len..];
-                var shadowed = false;
-                for (seen.items) |seen_prefix| {
-                    if (std.mem.eql(u8, seen_prefix, prefix)) {
-                        shadowed = true;
-                        break;
-                    }
-                }
-                if (shadowed) continue;
-                try seen.append(self.allocator, prefix);
-                // An empty URI undeclares the prefix, so it binds no namespace.
-                if (attribute.value.len == 0) continue;
-                try entries.append(self.allocator, .{
-                    .element = id,
-                    .prefix = prefix,
-                    .uri = attribute.value,
-                    .order = 0,
-                });
-            }
-            const parent = context.document.node(current).parent;
-            if (parent == dom.null_node) break;
-            if (context.document.node(parent).kind != .element) break;
-            current = parent;
-        }
-
-        std.mem.sort(
-            value.NamespaceRef,
-            entries.items,
-            {},
-            namespaceRefLessThan,
+        const bindings = try context.document.inScopeNamespaces(
+            self.allocator,
+            id,
         );
-        for (entries.items, 0..) |entry, index| {
-            var ordered = entry;
-            ordered.order = @intCast(index);
-            try out.append(self.allocator, .{ .namespace_node = ordered });
+        std.mem.sort(
+            namespace.Binding,
+            bindings,
+            {},
+            namespace.bindingLessThan,
+        );
+        for (bindings, 0..) |binding, index| {
+            try out.append(self.allocator, .{ .namespace_node = .{
+                .element = id,
+                .prefix = binding.prefix,
+                .uri = binding.uri,
+                .order = @intCast(index),
+            } });
         }
     }
 
@@ -1227,14 +1191,4 @@ const Evaluator = struct {
 
 fn codepointCount(text: []const u8) usize {
     return std.unicode.utf8CountCodepoints(text) catch text.len;
-}
-
-/// Namespace nodes are ordered lexicographically by prefix, which places the
-/// default namespace (empty prefix) first.
-fn namespaceRefLessThan(
-    _: void,
-    a: value.NamespaceRef,
-    b: value.NamespaceRef,
-) bool {
-    return std.mem.order(u8, a.prefix, b.prefix) == .lt;
 }

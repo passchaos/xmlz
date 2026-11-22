@@ -13,6 +13,7 @@ pub const namespace = @import("namespace.zig");
 pub const dom = @import("dom.zig");
 pub const dom_builder = @import("dom_builder.zig");
 pub const writer = @import("writer.zig");
+pub const c14n = @import("c14n.zig");
 pub const xpath = @import("xpath/root.zig");
 pub const validation = @import("validation.zig");
 
@@ -35,6 +36,7 @@ test {
     _ = dom;
     _ = dom_builder;
     _ = writer;
+    _ = c14n;
     _ = xpath;
     _ = validation;
     _ = @import("fuzz_tests.zig");

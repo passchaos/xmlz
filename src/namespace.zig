@@ -93,6 +93,13 @@ pub const Binding = struct {
     uri: []const u8,
 };
 
+/// Order bindings lexicographically by prefix. XPath namespace nodes and
+/// canonical XML namespace declarations both use this order, which places the
+/// default namespace (empty prefix) first.
+pub fn bindingLessThan(_: void, a: Binding, b: Binding) bool {
+    return std.mem.order(u8, a.prefix, b.prefix) == .lt;
+}
+
 pub const Resolver = struct {
     bindings: [max_bindings]Binding = undefined,
     count: usize = 0,
