@@ -36,6 +36,9 @@ then exposes them through a pull parser and reusable lexical primitives.
   decoded/normalized values, DTD attribute defaults, child traversal, and text
   content queries. The writer round-trips documents with correct escaping and
   optional safe pretty printing.
+- **XPath 1.0.** Location paths, all core axes, predicates, operators,
+  variables, and the core function library are implemented over the DOM, with
+  namespace-aware name tests and 65/65 differential checks against libxml2.
 - **Legacy primitives preserved.** The allocation-free tag/attribute scanners
   extracted from `zsvg` remain available and are used by the pull parser's
   fast paths.
@@ -52,6 +55,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | Namespaces 1.0 / 1.1 | Complete, W3C suite green |
 | DOM tree | Complete |
 | Writer/serializer | Complete |
+| XPath 1.0 | Complete (core library + differential checks) |
 | XPath / XSD / XSLT | Out of scope for the core engine |
 
 ## Quick start
@@ -127,6 +131,7 @@ src/markup.zig          quote-aware tag/declaration end scanners
 src/character_data.zig  character-data spans with CDATA provenance
 src/dom.zig             arena-backed document tree
 src/writer.zig          XML serializer
+src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
 src/namespace.zig       Namespaces in XML 1.0 resolver
 src/root.zig            public API surface
 tools/conformance.zig   W3C suite harness
@@ -142,6 +147,7 @@ zig build test          # unit tests
 zig build conformance   # W3C XML conformance suite
 zig build check         # both
 zig build bench         # parser/DOM benchmarks vs expat, pugixml, libxml2
+zig build xpath-diff    # XPath differential checks vs libxml2 xmllint
 ```
 
 The conformance step needs `testdata/xmlconf/manifest.json`. Regenerate it with:

@@ -10,6 +10,7 @@ pub const parser = @import("parser.zig");
 pub const namespace = @import("namespace.zig");
 pub const dom = @import("dom.zig");
 pub const writer = @import("writer.zig");
+pub const xpath = @import("xpath/root.zig");
 
 const findTagEnd = markup.findTagEnd;
 const findDeclarationEnd = markup.findDeclarationEnd;
@@ -27,6 +28,7 @@ test {
     _ = namespace;
     _ = dom;
     _ = writer;
+    _ = xpath;
 }
 
 pub const XmlTag = struct {
