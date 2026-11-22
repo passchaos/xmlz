@@ -130,3 +130,113 @@ test "parser DOM writer and XPath survive mutated inputs" {
         }
     }
 }
+
+const rng = @import("rng/root.zig");
+
+const rng_xml_seeds = [_][]const u8{
+    "<element xmlns='http://relaxng.org/ns/structure/1.0' name='root'>" ++
+        "<element name='item'><text/></element></element>",
+    "<grammar xmlns='http://relaxng.org/ns/structure/1.0'>" ++
+        "<start><ref name='tree'/></start>" ++
+        "<define name='tree'><element name='tree'>" ++
+        "<attribute name='n'><text/></attribute>" ++
+        "<zeroOrMore><ref name='tree'/></zeroOrMore>" ++
+        "</element></define></grammar>",
+    "<element xmlns='http://relaxng.org/ns/structure/1.0' " ++
+        "datatypeLibrary='http://www.w3.org/2001/XMLSchema-datatypes' " ++
+        "name='root'><data type='integer'><param name='minInclusive'>1</param>" ++
+        "</data></element>",
+};
+
+const rng_compact_seeds = [_][]const u8{
+    "element root { element item { text }, attribute id { text }? }",
+    "grammar { start = tree tree = element tree { text } }",
+    "element root { (element a { text } | element b { empty })+ }",
+    "default namespace = \"urn:t\" element root { element * { empty }* }",
+    "element root { xsd:integer { minInclusive = \"1\" } - \"0\" }",
+};
+
+test "RELAX NG parsers survive mutated schemas" {
+    var prng = std.Random.DefaultPrng.init(0x51ed_270b_9c4d_1f83);
+    const random = prng.random();
+    var buffer: [2048]u8 = undefined;
+    const specials = "<>&;[]'\"=:/!?%# \t\r\n\\{}()|&~*+-";
+
+    for (0..400) |_| {
+        const seed = rng_xml_seeds[
+            random.uintLessThan(
+                usize,
+                rng_xml_seeds.len,
+            )
+        ];
+        var len: usize = @min(seed.len, buffer.len);
+        @memcpy(buffer[0..len], seed[0..len]);
+        for (0..random.uintLessThan(usize, 6) + 1) |_| {
+            if (len == 0) break;
+            switch (random.uintLessThan(u8, 3)) {
+                0 => buffer[random.uintLessThan(usize, len)] = random.int(u8),
+                1 => len = random.uintLessThan(usize, len),
+                else => {
+                    if (len < buffer.len) {
+                        const at = random.uintLessThan(usize, len + 1);
+                        std.mem.copyBackwards(
+                            u8,
+                            buffer[at + 1 .. len + 1],
+                            buffer[at..len],
+                        );
+                        buffer[at] = specials[
+                            random.uintLessThan(usize, specials.len)
+                        ];
+                        len += 1;
+                    }
+                },
+            }
+        }
+        var document = dom.Document.parse(
+            std.testing.allocator,
+            buffer[0..len],
+            .{},
+        ) catch continue;
+        defer document.deinit();
+        if (rng.parse(std.testing.allocator, &document)) |schema_value| {
+            var schema_value_mut = schema_value;
+            schema_value_mut.deinit();
+        } else |_| {}
+    }
+
+    for (0..400) |_| {
+        const seed = rng_compact_seeds[
+            random.uintLessThan(
+                usize,
+                rng_compact_seeds.len,
+            )
+        ];
+        var len: usize = @min(seed.len, buffer.len);
+        @memcpy(buffer[0..len], seed[0..len]);
+        for (0..random.uintLessThan(usize, 6) + 1) |_| {
+            if (len == 0) break;
+            switch (random.uintLessThan(u8, 3)) {
+                0 => buffer[random.uintLessThan(usize, len)] = random.int(u8),
+                1 => len = random.uintLessThan(usize, len),
+                else => {
+                    if (len < buffer.len) {
+                        const at = random.uintLessThan(usize, len + 1);
+                        std.mem.copyBackwards(
+                            u8,
+                            buffer[at + 1 .. len + 1],
+                            buffer[at..len],
+                        );
+                        buffer[at] = specials[
+                            random.uintLessThan(usize, specials.len)
+                        ];
+                        len += 1;
+                    }
+                },
+            }
+        }
+        if (rng.parseCompact(std.testing.allocator, buffer[0..len])) |schema_value| {
+            var schema_value_mut = schema_value;
+            schema_value_mut.deinit();
+        } else |_| {}
+    }
+}
