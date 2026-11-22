@@ -65,8 +65,14 @@ then exposes them through a pull parser and reusable lexical primitives.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,
-  identity constraints, includes/imports, built-in datatypes, facets, and
+  identity constraints, includes/imports/redefines, notation declarations,
+  built-in datatypes, facets, abstract types, `block`/`final`, and
   `xsi:type` / `xsi:nil`, with 236/236 differential checks against libxml2.
+- **RELAX NG.** `rng.parse` compiles XML-syntax grammars and `rng.validate`
+  checks instances against element/attribute name classes, group, choice,
+  interleave, optional, repetition, mixed content, text, empty, data/value
+  (XSD datatype libraries and facets), lists, recursive defines, includes,
+  and external references, with 46/46 differential checks against libxml2.
 - **SAX-style callbacks.** `sax.parse` adapts the pull parser to start/end,
   characters, CDATA, comment, PI, doctype, and declaration callbacks, with
   synthetic end events for self-closing elements.
@@ -99,6 +105,7 @@ then exposes them through a pull parser and reusable lexical primitives.
 | XML Base / xml:id | Complete (RFC 3986 resolution, base chains, ID normalization) |
 | XSLT 1.0 | Core engine (templates, modes, params, sorting, copy, AVTs) |
 | XML Schema 1.0 | Core validation (structures, datatypes, facets, groups, identity) |
+| RELAX NG | XML syntax (patterns, datatypes, includes, external refs) |
 
 ## Quick start
 
@@ -210,6 +217,7 @@ src/xmlbase.zig         XML Base resolution and xml:id normalization
 src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
 src/xslt/               XSLT 1.0 stylesheet compiler and transformer
 src/xsd/                XML Schema datatypes, regex, compiler, validator
+src/rng/                RELAX NG schema parser and validator
 src/namespace.zig       Namespaces in XML 1.0 resolver
 src/root.zig            public API surface
 tools/conformance.zig   W3C suite harness
@@ -234,6 +242,7 @@ zig build xpath-diff    # XPath differential checks vs libxml2 xmllint
 zig build c14n-diff     # canonicalization differential checks vs libxml2
 zig build xslt-diff     # XSLT differential checks vs libxslt (needs lxml)
 zig build xsd-diff      # XML Schema differential checks vs libxml2 (needs lxml)
+zig build rng-diff      # RELAX NG differential checks vs libxml2 (needs lxml)
 zig build test          # includes deterministic mutation/fuzz smoke tests
 ```
 

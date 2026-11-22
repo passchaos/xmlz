@@ -18,6 +18,7 @@ pub const c14n = @import("c14n.zig");
 pub const xpath = @import("xpath/root.zig");
 pub const xslt = @import("xslt/root.zig");
 pub const xsd = @import("xsd/root.zig");
+pub const rng = @import("rng/root.zig");
 pub const validation = @import("validation.zig");
 
 const findTagEnd = markup.findTagEnd;
@@ -44,6 +45,7 @@ test {
     _ = xpath;
     _ = xslt;
     _ = xsd;
+    _ = rng;
     _ = validation;
     _ = @import("fuzz_tests.zig");
 }

@@ -105,6 +105,17 @@ pub fn build(b: *std.Build) void {
     xsd_tool.root_module.addImport("xmlz", mod);
     b.installArtifact(xsd_tool);
 
+    const rng_tool = b.addExecutable(.{
+        .name = "rng",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/rng.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    rng_tool.root_module.addImport("xmlz", mod);
+    b.installArtifact(rng_tool);
+
     const xpath_diff = b.addSystemCommand(&.{
         "python3",
         "tools/xpath_diff.py",
@@ -148,6 +159,17 @@ pub fn build(b: *std.Build) void {
         "Differential XML Schema checks against libxml2 through lxml",
     );
     xsd_diff_step.dependOn(&xsd_diff.step);
+
+    const rng_diff = b.addSystemCommand(&.{
+        "python3",
+        "tools/rng_diff.py",
+    });
+    rng_diff.addFileArg(rng_tool.getEmittedBin());
+    const rng_diff_step = b.step(
+        "rng-diff",
+        "Differential RELAX NG checks against libxml2 through lxml",
+    );
+    rng_diff_step.dependOn(&rng_diff.step);
 
     const check_step = b.step("check", "Run unit tests and the conformance suite");
     check_step.dependOn(test_step);

@@ -109,11 +109,23 @@ Simple types resolve to built-in datatype kinds with inherited facets; complex
 types resolve to flattened particles and attribute uses, including
 simple/complex content extension and restriction. Instance validation walks the
 tree with a backtracking particle matcher, expands model and attribute
-groups, applies substitution groups, abstract-element rules, and identity
-constraints, resolves `xs:include` / `xs:import` through a caller resolver,
-validates attributes and simple values, applies wildcards and `xsi:type` /
-`xsi:nil`, and collects errors with node paths. `xs:redefine` and abstract-type
-enforcement are not implemented.
+groups, applies substitution groups, abstract-element and abstract-type rules,
+`block`/`final` exclusions, identity constraints, resolves `xs:include` /
+`xs:import` / `xs:redefine` through a caller resolver, validates attributes and
+simple values, applies wildcards and `xsi:type` / `xsi:nil`, and collects
+errors with node paths.
+
+## RELAX NG
+
+`rng` parses the RELAX NG XML syntax into a pattern tree with resolved
+`define` references, including `div`, `include`, and `externalRef`. Instance
+validation computes pattern derivatives over attributes (order-independent),
+child elements, and text runs. Attributes are consumed first, then the
+residual pattern is matched against the children; interleave, choice,
+optional, and repetition are handled by derivative rules, and nullable
+computations are guarded for recursive grammars. Data and value patterns use
+the XML Schema datatype library with facet parameters; the empty datatype
+library exposes `string` and `token`.
 
 ## Trusted mode
 
@@ -132,6 +144,8 @@ by the conformance harness.
 - `zig build c14n-diff` compares canonical forms against libxml2's `xmllint`.
 - `zig build xslt-diff` compares XSLT result trees against libxslt via `lxml`.
 - `zig build xsd-diff` compares schema validation results against libxml2 via
+  `lxml`.
+- `zig build rng-diff` compares RELAX NG validation results against libxml2 via
   `lxml`.
 - `zig build bench` compares pull/DOM throughput against expat, pugixml, and
   libxml2 with reproducible generated input.
