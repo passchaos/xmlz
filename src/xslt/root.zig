@@ -1450,3 +1450,69 @@ test "XSLT unparsed-entity-uri returns system identifiers" {
         output,
     );
 }
+
+test "XSLT encodes ISO-8859-1 output with character references" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" encoding="ISO-8859-1"/>
+        \\  <xsl:template match="/"><out>caf&#233; &#x20AC;</out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n" ++
+            "<out>caf\xe9 &#8364;</out>",
+        output,
+    );
+}
+
+test "XSLT encodes UTF-16 output with a byte order mark" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"
+        \\    encoding="UTF-16"/>
+        \\  <xsl:template match="/"><out>A&#233;</out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    const expected = [_]u8{
+        0xFF, 0xFE, '<',  0, 'o', 0, 'u', 0, 't', 0, '>', 0,
+        'A',  0,    0xE9, 0, '<', 0, '/', 0, 'o', 0, 'u', 0,
+        't',  0,    '>',  0,
+    };
+    try testing.expectEqualSlices(u8, &expected, output);
+}
+
+test "XSLT encodes Windows-1252 output" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" omit-xml-declaration="yes"
+        \\    encoding="windows-1252"/>
+        \\  <xsl:template match="/"><out>&#x20AC;&#x0152;&#x03A9;</out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings("<out>\x80\x8C&#937;</out>", output);
+}
+
+test "XSLT falls back to UTF-8 for unsupported output encodings" {
+    const stylesheet =
+        \\<xsl:stylesheet version="1.0"
+        \\  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        \\  <xsl:output method="xml" encoding="x-unknown"/>
+        \\  <xsl:template match="/"><out>caf&#233;</out></xsl:template>
+        \\</xsl:stylesheet>
+    ;
+    const output = try transformToString(stylesheet, "<root/>", .{});
+    defer testing.allocator.free(output);
+    try testing.expectEqualStrings(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<out>caf\xC3\xA9</out>",
+        output,
+    );
+}

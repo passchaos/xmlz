@@ -595,3 +595,188 @@ test "XML encoding releases every partial allocation failure" {
         .{},
     );
 }
+
+/// Output encodings supported by the XML serializer.
+pub const OutputEncoding = enum {
+    utf8,
+    utf16,
+    utf16_le,
+    utf16_be,
+    iso_8859_1,
+    us_ascii,
+    windows_1252,
+};
+
+pub fn outputEncoding(name: []const u8) ?OutputEncoding {
+    var buffer: [32]u8 = undefined;
+    if (name.len > buffer.len) return null;
+    const upper = std.ascii.upperString(buffer[0..name.len], name);
+    if (std.mem.eql(u8, upper, "UTF-8") or std.mem.eql(u8, upper, "UTF8")) {
+        return .utf8;
+    }
+    if (std.mem.eql(u8, upper, "UTF-16")) return .utf16;
+    if (std.mem.eql(u8, upper, "UTF-16LE")) return .utf16_le;
+    if (std.mem.eql(u8, upper, "UTF-16BE")) return .utf16_be;
+    if (std.mem.eql(u8, upper, "ISO-8859-1") or
+        std.mem.eql(u8, upper, "ISO8859-1") or
+        std.mem.eql(u8, upper, "LATIN1") or
+        std.mem.eql(u8, upper, "LATIN-1"))
+    {
+        return .iso_8859_1;
+    }
+    if (std.mem.eql(u8, upper, "US-ASCII") or
+        std.mem.eql(u8, upper, "ASCII") or
+        std.mem.eql(u8, upper, "ANSI_X3.4-1968"))
+    {
+        return .us_ascii;
+    }
+    if (std.mem.eql(u8, upper, "WINDOWS-1252") or
+        std.mem.eql(u8, upper, "CP1252"))
+    {
+        return .windows_1252;
+    }
+    return null;
+}
+
+/// Transcode UTF-8 to an output encoding. Characters that cannot be
+/// represented are emitted as decimal character references.
+pub fn encodeAlloc(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    encoding: OutputEncoding,
+) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    switch (encoding) {
+        .utf8 => return allocator.dupe(u8, source),
+        .utf16 => try out.appendSlice(allocator, &.{ 0xFF, 0xFE }),
+        else => {},
+    }
+    var index: usize = 0;
+    while (index < source.len) {
+        const length = std.unicode.utf8ByteSequenceLength(source[index]) catch
+            return error.InvalidXmlEncoding;
+        if (index + length > source.len) return error.InvalidXmlEncoding;
+        const codepoint = std.unicode.utf8Decode(source[index..][0..length]) catch
+            return error.InvalidXmlEncoding;
+        index += length;
+        switch (encoding) {
+            .utf8 => unreachable,
+            .utf16, .utf16_le, .utf16_be => try appendUtf16(
+                &out,
+                allocator,
+                codepoint,
+                encoding == .utf16_be,
+            ),
+            .iso_8859_1 => try appendSingleByte(
+                &out,
+                allocator,
+                codepoint,
+                if (codepoint <= 0xFF) @intCast(codepoint) else null,
+            ),
+            .us_ascii => try appendSingleByte(
+                &out,
+                allocator,
+                codepoint,
+                if (codepoint <= 0x7F) @intCast(codepoint) else null,
+            ),
+            .windows_1252 => try appendSingleByte(
+                &out,
+                allocator,
+                codepoint,
+                windows1252Byte(codepoint),
+            ),
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendSingleByte(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    codepoint: u21,
+    byte: ?u8,
+) !void {
+    if (byte) |value| {
+        try out.append(allocator, value);
+        return;
+    }
+    var buffer: [16]u8 = undefined;
+    const reference = try std.fmt.bufPrint(
+        &buffer,
+        "&#{d};",
+        .{codepoint},
+    );
+    try out.appendSlice(allocator, reference);
+}
+
+fn appendUtf16(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    codepoint: u21,
+    big_endian: bool,
+) !void {
+    var buffer: [4]u8 = undefined;
+    var length: usize = 2;
+    if (codepoint <= 0xFFFF) {
+        buffer[0] = @truncate(codepoint >> 8);
+        buffer[1] = @truncate(codepoint);
+    } else {
+        const value = codepoint - 0x10000;
+        const high: u16 = @intCast(0xD800 + (value >> 10));
+        const low: u16 = @intCast(0xDC00 + (value & 0x3FF));
+        buffer[0] = @truncate(high >> 8);
+        buffer[1] = @truncate(high);
+        buffer[2] = @truncate(low >> 8);
+        buffer[3] = @truncate(low);
+        length = 4;
+    }
+    if (!big_endian) {
+        var index: usize = 0;
+        while (index < length) : (index += 2) {
+            const first = buffer[index];
+            buffer[index] = buffer[index + 1];
+            buffer[index + 1] = first;
+        }
+    }
+    try out.appendSlice(allocator, buffer[0..length]);
+}
+
+fn windows1252Byte(codepoint: u21) ?u8 {
+    if (codepoint <= 0x7F or (codepoint >= 0xA0 and codepoint <= 0xFF)) {
+        return @intCast(codepoint);
+    }
+    const mapping = [_]struct { cp: u21, byte: u8 }{
+        .{ .cp = 0x20AC, .byte = 0x80 },
+        .{ .cp = 0x201A, .byte = 0x82 },
+        .{ .cp = 0x0192, .byte = 0x83 },
+        .{ .cp = 0x201E, .byte = 0x84 },
+        .{ .cp = 0x2026, .byte = 0x85 },
+        .{ .cp = 0x2020, .byte = 0x86 },
+        .{ .cp = 0x2021, .byte = 0x87 },
+        .{ .cp = 0x02C6, .byte = 0x88 },
+        .{ .cp = 0x2030, .byte = 0x89 },
+        .{ .cp = 0x0160, .byte = 0x8A },
+        .{ .cp = 0x2039, .byte = 0x8B },
+        .{ .cp = 0x0152, .byte = 0x8C },
+        .{ .cp = 0x017D, .byte = 0x8E },
+        .{ .cp = 0x2018, .byte = 0x91 },
+        .{ .cp = 0x2019, .byte = 0x92 },
+        .{ .cp = 0x201C, .byte = 0x93 },
+        .{ .cp = 0x201D, .byte = 0x94 },
+        .{ .cp = 0x2022, .byte = 0x95 },
+        .{ .cp = 0x2013, .byte = 0x96 },
+        .{ .cp = 0x2014, .byte = 0x97 },
+        .{ .cp = 0x02DC, .byte = 0x98 },
+        .{ .cp = 0x2122, .byte = 0x99 },
+        .{ .cp = 0x0161, .byte = 0x9A },
+        .{ .cp = 0x203A, .byte = 0x9B },
+        .{ .cp = 0x0153, .byte = 0x9C },
+        .{ .cp = 0x017E, .byte = 0x9E },
+        .{ .cp = 0x0178, .byte = 0x9F },
+    };
+    for (mapping) |entry| {
+        if (entry.cp == codepoint) return entry.byte;
+    }
+    return null;
+}

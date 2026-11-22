@@ -84,7 +84,10 @@ defer result.deinit();
   `indent`, and `version`, `cdata-section-elements` (with `]]>` splitting),
   and `doctype-public`/`doctype-system` for XML and HTML output. HTML output
   uses HTML void elements, minimizes common boolean attributes, and keeps
-  `script`/`style` content raw. Result serialization is always UTF-8.
+  `script`/`style` content raw. `encoding` transcodes to UTF-8, UTF-16
+  (with BOM), UTF-16LE/BE, ISO-8859-1, US-ASCII, and Windows-1252, emitting
+  decimal character references for unrepresentable characters; unknown
+  encodings fall back to UTF-8.
 - The XSLT `current()` function in expressions and predicates.
 
 Match patterns are translated into XPath selectors and evaluated once against
@@ -97,8 +100,6 @@ template priority its specified default behavior.
 - XPath node-set operations on result tree fragments (for example `$v/foo`
   or `count($v)`) are not supported; XSLT 1.0 requires an extension for those.
   Fragment markup is supported through `copy-of`.
-- `xsl:output encoding` is recorded but not transcoded (the result is always
-  UTF-8).
 - HTML output is compact and does not insert a Content-Type `meta` element.
 - `document()` merges loaded documents into the source view: `key()` indexes
   the principal source document only, and `id()` searches all merged
@@ -119,5 +120,5 @@ templates, modes, parameters, sorting, copy instructions, namespaces, AVTs,
 patterns, priorities, comments/PIs, and text output. Expected output:
 
 ```text
-81/81 XSLT differential checks passed
+84/84 XSLT differential checks passed
 ```

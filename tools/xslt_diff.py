@@ -649,6 +649,33 @@ STYLESHEETS = [
         {},
     ),
     (
+        "encoding-iso-8859-1",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes" encoding="ISO-8859-1"/>
+        <xsl:template match="/"><out>caf&#233; &#x20AC;</out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "encoding-utf-16",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes" encoding="UTF-16"/>
+        <xsl:template match="/"><out>A&#233;</out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
+        "encoding-windows-1252",
+        b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:output method="xml" omit-xml-declaration="yes" encoding="windows-1252"/>
+        <xsl:template match="/"><out>&#x20AC;&#x0152;&#x03A9;</out></xsl:template>
+        </xsl:stylesheet>""",
+        b"<root/>",
+        {},
+    ),
+    (
         "cdata-section-elements",
         b"""<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform" xmlns:p="urn:p">
         <xsl:output method="xml" omit-xml-declaration="yes" cdata-section-elements="out p:a"/>
@@ -1042,6 +1069,14 @@ RAW_CASES = {
     "doctype-html",
 }
 
+# Cases whose output bytes are encoded: name -> Python codec for the expected
+# serialization.
+ENCODED_CASES = {
+    "encoding-iso-8859-1": "iso-8859-1",
+    "encoding-utf-16": "UTF-16",
+    "encoding-windows-1252": "windows-1252",
+}
+
 
 def run(cmd):
     return subprocess.run(cmd, capture_output=True)
@@ -1157,6 +1192,22 @@ def main():
                         f"FAIL {name} (html)\n"
                         f"  libxslt: {expected_html!r}\n"
                         f"  xmlz:    {actual_text!r}"
+                    )
+                continue
+
+            if name in ENCODED_CASES:
+                expected_bytes = etree.tostring(
+                    expected_result,
+                    method="xml",
+                    xml_declaration=False,
+                    encoding=ENCODED_CASES[name],
+                )
+                if expected_bytes != actual.stdout:
+                    failures += 1
+                    print(
+                        f"FAIL {name} (encoded)\n"
+                        f"  libxslt: {expected_bytes!r}\n"
+                        f"  xmlz:    {actual.stdout!r}"
                     )
                 continue
 

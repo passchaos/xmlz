@@ -59,9 +59,9 @@ then exposes them through a pull parser and reusable lexical primitives.
   tree fragments, namespace aliases, XSLT functions (`generate-id`,
   `system-property`, `element-available`, `function-available`,
   `document()` with resolver caching, `unparsed-entity-uri()`), CDATA
-  sections, DOCTYPE declarations, HTML output,
+  sections, DOCTYPE declarations, HTML output, and output encodings,
   and the core instruction set, reusing the XPath engine for match patterns
-  and expressions, with 81/81 differential checks against libxslt.
+  and expressions, with 84/84 differential checks against libxslt.
 - **XML Schema 1.0.** `xsd.parse` compiles schema documents and
   `xsd.validate` checks instances against particles, attributes, simple and
   complex content, wildcards, groups, attribute groups, substitution groups,

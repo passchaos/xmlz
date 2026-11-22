@@ -37,6 +37,8 @@ pub const Options = struct {
     escape_gt: bool = true,
     /// Elements whose text children are serialized as CDATA sections.
     cdata_elements: []const ExpandedName = &.{},
+    /// Encoding name written into the XML declaration.
+    encoding_label: []const u8 = "UTF-8",
 };
 
 pub const Error = std.Io.Writer.Error || error{
@@ -59,7 +61,9 @@ pub fn writeDocument(
         } else {
             try writer.writeAll("1.0");
         }
-        try writer.writeAll("\" encoding=\"UTF-8\"");
+        try writer.writeAll("\" encoding=\"");
+        try writer.writeAll(options.encoding_label);
+        try writer.writeByte('"');
         if (doc.declaration) |declaration| {
             if (declaration.standalone) |standalone| {
                 try writer.writeAll(if (standalone)

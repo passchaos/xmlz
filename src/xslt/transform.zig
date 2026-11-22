@@ -41,6 +41,31 @@ pub const Result = struct {
     }
 
     pub fn write(self: *const Result, out: *std.Io.Writer) !void {
+        const target = encoding.outputEncoding(self.output.encoding);
+        if (target == null or target.? == .utf8) {
+            return self.writeUtf8(out, "UTF-8");
+        }
+        const allocator = self.arena.child_allocator;
+        var buffer: std.Io.Writer.Allocating = .init(allocator);
+        defer buffer.deinit();
+        try self.writeUtf8(&buffer.writer, self.output.encoding);
+        const encoded = encoding.encodeAlloc(
+            allocator,
+            buffer.written(),
+            target.?,
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.InvalidOutput,
+        };
+        defer allocator.free(encoded);
+        try out.writeAll(encoded);
+    }
+
+    fn writeUtf8(
+        self: *const Result,
+        out: *std.Io.Writer,
+        encoding_label: []const u8,
+    ) !void {
         if (self.output.method == .text) {
             try writeTextNode(out, &self.document, self.document.documentNode());
             return;
@@ -65,6 +90,7 @@ pub const Result = struct {
             .indent = if (self.output.indent) "  " else null,
             .doctype = doctype,
             .cdata_elements = self.output.cdata_elements,
+            .encoding_label = encoding_label,
         });
     }
 
