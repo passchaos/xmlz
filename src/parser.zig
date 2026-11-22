@@ -1690,7 +1690,10 @@ pub const Parser = struct {
         const saved_input = self.input;
         self.input = stripped.bytes;
         self.pos = 0;
-        try self.parseSubsetDeclarations(false, stripped.ids);
+        try self.parseSubsetDeclarations(
+            false,
+            if (stripped.has_markers) stripped.ids else null,
+        );
         self.input = saved_input;
         self.pos = end + 1;
     }
@@ -1889,18 +1892,35 @@ pub const Parser = struct {
         self: *Parser,
         input: []const u8,
         allocator: std.mem.Allocator,
-    ) Error!struct { bytes: []u8, ids: []u32 } {
+    ) Error!struct { bytes: []u8, ids: []u32, has_markers: bool } {
         var bytes: std.ArrayList(u8) = .empty;
         var ids: std.ArrayList(u32) = .empty;
         var stack: [max_entity_frames]u32 = undefined;
         var stack_len: usize = 0;
         var current: u32 = 0;
         var next_id: u32 = 1;
-        for (input) |byte| {
-            switch (byte) {
+        var ids_enabled = false;
+        var pos: usize = 0;
+        while (pos < input.len) {
+            const special = findBoundaryByte(input, pos);
+            if (special > pos) {
+                try bytes.appendSlice(allocator, input[pos..special]);
+                if (ids_enabled) {
+                    try ids.appendNTimes(allocator, current, special - pos);
+                }
+                pos = special;
+                if (pos >= input.len) break;
+            }
+            switch (input[pos]) {
                 0x01 => {
                     if (stack_len == stack.len) {
                         return self.fail(error.EntityRecursion, 0);
+                    }
+                    if (!ids_enabled) {
+                        // Bytes before the first marker all belong to the
+                        // top-level entity (id zero).
+                        ids_enabled = true;
+                        try ids.appendNTimes(allocator, 0, bytes.items.len);
                     }
                     stack[stack_len] = current;
                     stack_len += 1;
@@ -1914,16 +1934,15 @@ pub const Parser = struct {
                     stack_len -= 1;
                     current = stack[stack_len];
                 },
-                else => {
-                    try bytes.append(allocator, byte);
-                    try ids.append(allocator, current);
-                },
+                else => unreachable,
             }
+            pos += 1;
         }
         if (stack_len != 0) return self.fail(error.InvalidDoctype, 0);
         return .{
             .bytes = try bytes.toOwnedSlice(allocator),
             .ids = try ids.toOwnedSlice(allocator),
+            .has_markers = ids_enabled,
         };
     }
 
@@ -1977,15 +1996,28 @@ pub const Parser = struct {
         try self.checkConditionalSectionNesting(stripped.bytes, stripped.ids);
         var filtered: std.ArrayList(u8) = .empty;
         var filtered_ids: std.ArrayList(u32) = .empty;
-        try evaluateConditionals(
-            allocator,
-            stripped.bytes,
-            stripped.ids,
-            &filtered,
-            &filtered_ids,
-        );
+        if (stripped.has_markers) {
+            try evaluateConditionals(
+                allocator,
+                stripped.bytes,
+                stripped.ids,
+                &filtered,
+                &filtered_ids,
+            );
+        } else {
+            try evaluateConditionals(
+                allocator,
+                stripped.bytes,
+                null,
+                &filtered,
+                null,
+            );
+        }
         const buffer = try filtered.toOwnedSlice(allocator);
-        const ids = try filtered_ids.toOwnedSlice(allocator);
+        const ids: ?[]const u32 = if (stripped.has_markers)
+            try filtered_ids.toOwnedSlice(allocator)
+        else
+            null;
 
         const saved_input = self.input;
         const saved_pos = self.pos;
@@ -2154,13 +2186,12 @@ pub const Parser = struct {
                 mark_boundaries,
             );
             var filtered: std.ArrayList(u8) = .empty;
-            var filtered_ids: std.ArrayList(u32) = .empty;
             try evaluateConditionals(
                 allocator,
                 expanded.items,
                 null,
                 &filtered,
-                &filtered_ids,
+                null,
             );
             try out.appendSlice(allocator, filtered.items);
         } else {
@@ -3672,6 +3703,70 @@ fn internalSubsetNeedsExpansion(raw: []const u8) bool {
 }
 
 /// Resolve external conditional sections after parameter-entity expansion.
+fn findBoundaryByte(input: []const u8, start: usize) usize {
+    const Vec = @Vector(16, u8);
+    const start_marker: Vec = @splat(0x01);
+    const end_marker: Vec = @splat(0x02);
+    var index = start;
+    while (index + 16 <= input.len) : (index += 16) {
+        const chunk: Vec = input[index..][0..16].*;
+        const mask: u16 = @bitCast(
+            (chunk == start_marker) | (chunk == end_marker),
+        );
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < input.len) : (index += 1) {
+        if (input[index] == 0x01 or input[index] == 0x02) return index;
+    }
+    return input.len;
+}
+
+fn findConditionalSpecial(input: []const u8, start: usize) usize {
+    const Vec = @Vector(16, u8);
+    const lt: Vec = @splat('<');
+    const dq: Vec = @splat('"');
+    const sq: Vec = @splat('\'');
+    var index = start;
+    while (index + 16 <= input.len) : (index += 16) {
+        const chunk: Vec = input[index..][0..16].*;
+        const mask: u16 = @bitCast((chunk == lt) | (chunk == dq) | (chunk == sq));
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < input.len) : (index += 1) {
+        switch (input[index]) {
+            '<', '"', '\'' => return index,
+            else => {},
+        }
+    }
+    return input.len;
+}
+
+fn appendConditionalSlice(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    out_ids: ?*std.ArrayList(u32),
+    input_ids: ?[]const u32,
+    input: []const u8,
+    start: usize,
+    end: usize,
+) Error!void {
+    if (end <= start) return;
+    try out.appendSlice(allocator, input[start..end]);
+    const ids = out_ids orelse return;
+    if (input_ids) |source| {
+        const available = @min(end, source.len);
+        if (available > start) {
+            try ids.appendSlice(allocator, source[start..available]);
+        }
+        if (end > available) {
+            try ids.appendNTimes(allocator, 0, end - available);
+        }
+    } else {
+        try ids.appendNTimes(allocator, 0, end - start);
+    }
+}
+
+/// Resolve external conditional sections after parameter-entity expansion.
 fn appendConditionalByte(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
@@ -3697,60 +3792,108 @@ fn evaluateConditionals(
     input: []const u8,
     input_ids: ?[]const u32,
     out: *std.ArrayList(u8),
-    out_ids: *std.ArrayList(u32),
+    out_ids: ?*std.ArrayList(u32),
 ) Error!void {
     var pos: usize = 0;
     var quote: u8 = 0;
     while (pos < input.len) {
-        const byte = input[pos];
         if (quote != 0) {
-            try appendConditionalByte(allocator, out, out_ids, input_ids, pos, byte);
-            if (byte == quote) quote = 0;
-            pos += 1;
+            const close = std.mem.indexOfScalarPos(u8, input, pos, quote) orelse
+                input.len;
+            try appendConditionalSlice(
+                allocator,
+                out,
+                out_ids,
+                input_ids,
+                input,
+                pos,
+                close,
+            );
+            if (close >= input.len) return;
+            try appendConditionalSlice(
+                allocator,
+                out,
+                out_ids,
+                input_ids,
+                input,
+                close,
+                close + 1,
+            );
+            quote = 0;
+            pos = close + 1;
             continue;
         }
+        const special = findConditionalSpecial(input, pos);
+        if (special > pos) {
+            try appendConditionalSlice(
+                allocator,
+                out,
+                out_ids,
+                input_ids,
+                input,
+                pos,
+                special,
+            );
+            pos = special;
+            if (pos >= input.len) return;
+        }
+        const byte = input[pos];
         if (byte == '"' or byte == '\'') {
             quote = byte;
-            try appendConditionalByte(allocator, out, out_ids, input_ids, pos, byte);
+            try appendConditionalSlice(
+                allocator,
+                out,
+                out_ids,
+                input_ids,
+                input,
+                pos,
+                pos + 1,
+            );
             pos += 1;
             continue;
         }
         if (std.mem.startsWith(u8, input[pos..], "<!--")) {
             const end = std.mem.indexOfPos(u8, input, pos + 4, "-->") orelse
                 return error.UnexpectedEndOfInput;
-            var index = pos;
-            while (index < end + 3) : (index += 1) {
-                try appendConditionalByte(
-                    allocator,
-                    out,
-                    out_ids,
-                    input_ids,
-                    index,
-                    input[index],
-                );
-            }
+            try appendConditionalSlice(
+                allocator,
+                out,
+                out_ids,
+                input_ids,
+                input,
+                pos,
+                end + 3,
+            );
             pos = end + 3;
             continue;
         }
         if (std.mem.startsWith(u8, input[pos..], "<?")) {
             const end = std.mem.indexOfPos(u8, input, pos + 2, "?>") orelse
                 return error.UnexpectedEndOfInput;
-            var index = pos;
-            while (index < end + 2) : (index += 1) {
-                try appendConditionalByte(
-                    allocator,
-                    out,
-                    out_ids,
-                    input_ids,
-                    index,
-                    input[index],
-                );
-            }
+            try appendConditionalSlice(
+                allocator,
+                out,
+                out_ids,
+                input_ids,
+                input,
+                pos,
+                end + 2,
+            );
             pos = end + 2;
             continue;
         }
         if (!std.mem.startsWith(u8, input[pos..], "<![")) {
-            try appendConditionalByte(allocator, out, out_ids, input_ids, pos, byte);
+            // Ordinary DTD text: copy this byte and continue with the next
+            // run.
+            try appendConditionalSlice(
+                allocator,
+                out,
+                out_ids,
+                input_ids,
+                input,
+                pos,
+                pos + 1,
+            );
             pos += 1;
             continue;
         }
