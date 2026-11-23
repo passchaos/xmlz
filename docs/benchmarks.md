@@ -42,8 +42,10 @@ the best row kept, because the host was shared during measurement.
   name, duplicate-attribute, and namespace-constraint validation. It is opt-in
   and never used for the conformance suite.
 - The DOM is fully validating and namespace-aware. pugixml does not enforce
-  every XML well-formedness and namespace constraint, and it uses in-situ
-  mutation of the input buffer. xmlz's validating DOM beats libxml2's DOM by
+  every XML well-formedness and namespace constraint, it uses in-situ
+  mutation of the input buffer, and its DOM row loads with `parse_default`,
+  which drops the 186,144 whitespace-only text nodes that xmlz retains for
+  round-tripping. xmlz's validating DOM beats libxml2's DOM by
   **3.9x** (libxml2's DOM row varies between runs) and matches pugixml with a
   fresh allocator (507 versus 509 MB/s). In trusted fast mode with a reusable
   arena it is **1.36x faster than pugixml** (705 versus 520 MB/s); the fully
