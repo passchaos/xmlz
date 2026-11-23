@@ -575,12 +575,21 @@ pub const Builder = struct {
     fn copyString(self: *Builder, bytes: []const u8) Error![]const u8 {
         if (bytes.len == 0) return "";
         if (bytes.len > self.slab.len - self.slab_index) {
-            if (bytes.len >= slab_size / 4) {
-                return self.arena.allocator().dupe(u8, bytes);
-            }
-            self.slab = try self.arena.allocator().alloc(u8, slab_size);
-            self.slab_index = 0;
+            return self.copyStringSlow(bytes);
         }
+        const start = self.slab_index;
+        small_bytes.copyShort(self.slab[start..][0..bytes.len], bytes);
+        self.slab_index = start + bytes.len;
+        return self.slab[start..][0..bytes.len];
+    }
+
+    /// Cold path: start a fresh slab or allocate an oversized value.
+    fn copyStringSlow(self: *Builder, bytes: []const u8) Error![]const u8 {
+        if (bytes.len >= slab_size / 4) {
+            return self.arena.allocator().dupe(u8, bytes);
+        }
+        self.slab = try self.arena.allocator().alloc(u8, slab_size);
+        self.slab_index = 0;
         const start = self.slab_index;
         small_bytes.copyShort(self.slab[start..][0..bytes.len], bytes);
         self.slab_index = start + bytes.len;
