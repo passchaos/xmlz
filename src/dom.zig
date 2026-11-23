@@ -622,7 +622,8 @@ const Builder = struct {
         // the document arena, so they are released with the document.
         _ = try self.addNode(.{ .kind = .document });
 
-        while (try self.parser.next()) |event| {
+        var event: parser_mod.Event = undefined;
+        while (try self.parser.nextInto(&event)) {
             switch (event) {
                 .xml_declaration => |declaration| self.declaration = declaration,
                 .doctype => |doctype| {

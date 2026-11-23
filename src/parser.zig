@@ -517,6 +517,15 @@ pub const Parser = struct {
 
     /// Return the next event, or null at a clean end of document.
     pub fn next(self: *Parser) Error!?Event {
+        var event: Event = undefined;
+        if (!try self.nextInto(&event)) return null;
+        return event;
+    }
+
+    /// Fill `event` with the next token and return whether one was produced.
+    /// Consumers that process many events reuse one stack slot, which avoids
+    /// the out-of-line copy of the Event union on every token.
+    pub fn nextInto(self: *Parser, event: *Event) Error!bool {
         if (self.input.len > std.math.maxInt(u32)) {
             return self.fail(error.InputTooLarge, 0);
         }
@@ -531,18 +540,18 @@ pub const Parser = struct {
         while (true) {
             switch (self.state) {
                 .prolog => {
-                    if (try self.nextProlog()) |event| return event;
-                    return null;
+                    if (try self.nextProlog(event)) return true;
+                    return false;
                 },
                 .content => {
-                    if (try self.nextContent()) |event| return event;
+                    if (try self.nextContent(event)) return true;
                     continue;
                 },
                 .epilog => {
-                    if (try self.nextEpilog()) |event| return event;
-                    return null;
+                    if (try self.nextEpilog(event)) return true;
+                    return false;
                 },
-                .done => return null,
+                .done => return false,
             }
         }
     }
@@ -597,14 +606,15 @@ pub const Parser = struct {
             0;
     }
 
-    fn nextProlog(self: *Parser) Error!?Event {
+    fn nextProlog(self: *Parser, event: *Event) Error!bool {
         if (self.decl_allowed) {
             self.decl_allowed = false;
             if (self.startsWith("<?xml") and
                 self.pos + 5 < self.input.len and
                 chars.isWhitespace(self.input[self.pos + 5]))
             {
-                return .{ .xml_declaration = try self.scanXmlDeclaration() };
+                event.* = .{ .xml_declaration = try self.scanXmlDeclaration() };
+                return true;
             }
         }
 
@@ -612,35 +622,43 @@ pub const Parser = struct {
         if (self.pos >= self.input.len) {
             if (!self.root_seen) return self.fail(error.MissingRootElement, self.pos);
             self.state = .done;
-            return null;
+            return false;
         }
 
-        if (self.startsWith("<!--")) return .{ .comment = try self.scanComment() };
-        if (self.startsWith("<?")) return .{ .processing_instruction = try self.scanPi() };
+        if (self.startsWith("<!--")) {
+            event.* = .{ .comment = try self.scanComment() };
+            return true;
+        }
+        if (self.startsWith("<?")) {
+            event.* = .{ .processing_instruction = try self.scanPi() };
+            return true;
+        }
         if (self.startsWith("<!DOCTYPE")) {
             if (!self.options.allow_doctype) {
                 return self.fail(error.UnexpectedDoctype, self.pos);
             }
             if (self.seen_doctype) return self.fail(error.UnexpectedDoctype, self.pos);
-            return .{ .doctype = try self.scanDoctype() };
+            event.* = .{ .doctype = try self.scanDoctype() };
+            return true;
         }
         if (self.startsWith("<!")) return self.fail(error.UnexpectedMarkup, self.pos);
         if (self.input[self.pos] == '<') {
             self.state = .content;
-            return .{ .start_element = try self.scanStartTag() };
+            event.* = .{ .start_element = try self.scanStartTag() };
+            return true;
         }
         return self.fail(error.InvalidSyntax, self.pos);
     }
 
-    fn nextContent(self: *Parser) Error!?Event {
+    fn nextContent(self: *Parser, event: *Event) Error!bool {
         if (self.pos >= self.input.len) {
             if (self.frame_count != 0) {
                 try self.popEntityFrame();
-                return null;
+                return false;
             }
             if (self.fragment and self.depth == 0) {
                 self.state = .done;
-                return null;
+                return false;
             }
             return self.fail(error.UnexpectedEndOfInput, self.pos);
         }
@@ -650,32 +668,52 @@ pub const Parser = struct {
             else
                 0;
             switch (following) {
-                '/' => return .{ .end_element = try self.scanEndTag() },
+                '/' => {
+                    event.* = .{ .end_element = try self.scanEndTag() };
+                    return true;
+                },
                 '!' => {
                     if (self.startsWith("<!--")) {
-                        return .{ .comment = try self.scanComment() };
+                        event.* = .{ .comment = try self.scanComment() };
+                        return true;
                     }
                     if (self.startsWith("<![CDATA[")) {
-                        return .{ .cdata = try self.scanCdata() };
+                        event.* = .{ .cdata = try self.scanCdata() };
+                        return true;
                     }
                     return self.fail(error.UnexpectedMarkup, self.pos);
                 },
-                '?' => return .{ .processing_instruction = try self.scanPi() },
-                else => return .{ .start_element = try self.scanStartTag() },
+                '?' => {
+                    event.* = .{ .processing_instruction = try self.scanPi() };
+                    return true;
+                },
+                else => {
+                    event.* = .{ .start_element = try self.scanStartTag() };
+                    return true;
+                },
             }
         }
-        if (try self.scanText()) |text| return .{ .text = text };
-        return null;
+        if (try self.scanText()) |text| {
+            event.* = .{ .text = text };
+            return true;
+        }
+        return false;
     }
 
-    fn nextEpilog(self: *Parser) Error!?Event {
+    fn nextEpilog(self: *Parser, event: *Event) Error!bool {
         self.skipWhitespace();
         if (self.pos >= self.input.len) {
             self.state = .done;
-            return null;
+            return false;
         }
-        if (self.startsWith("<!--")) return .{ .comment = try self.scanComment() };
-        if (self.startsWith("<?")) return .{ .processing_instruction = try self.scanPi() };
+        if (self.startsWith("<!--")) {
+            event.* = .{ .comment = try self.scanComment() };
+            return true;
+        }
+        if (self.startsWith("<?")) {
+            event.* = .{ .processing_instruction = try self.scanPi() };
+            return true;
+        }
         if (self.input[self.pos] == '<') {
             return self.fail(error.MultipleRootElements, self.pos);
         }

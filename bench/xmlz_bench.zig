@@ -94,7 +94,8 @@ fn runPull(
             .namespaces = namespaces,
             .trusted = trusted,
         });
-        while (try parser.next()) |_| {}
+        var event: xmlz.parser.Event = undefined;
+        while (try parser.nextInto(&event)) {}
         parser.deinit();
         const elapsed = start.raw.durationTo(
             std.Io.Clock.Timestamp.now(io, .awake).raw,
