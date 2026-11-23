@@ -74,17 +74,7 @@ const Evaluator = struct {
             .filter => |filter| self.evalFilter(filter, context),
             .literal => |literal| .{ .string = literal },
             .number => |number| .{ .number = number },
-            .variable => |name| context.variable(name) orelse blk: {
-                const resolver = context.variable_resolver orelse
-                    return error.UndefinedVariable;
-                break :blk (resolver.resolve(
-                    resolver.context,
-                    name,
-                ) catch |err| switch (err) {
-                    error.OutOfMemory => return error.OutOfMemory,
-                    else => return error.UndefinedVariable,
-                }) orelse return error.UndefinedVariable;
-            },
+            .variable => |name| try resolveVariable(context, name),
             .function_call => |call| self.evalFunction(call, context),
         };
     }
@@ -565,6 +555,17 @@ const Evaluator = struct {
                 predicate_context.node = candidate;
                 var keep = true;
                 for (step.predicates) |predicate| {
+                    if (try self.simplePredicate(
+                        predicate,
+                        &predicate_context,
+                        candidate,
+                    )) |simple| {
+                        if (!simple) {
+                            keep = false;
+                            break;
+                        }
+                        continue;
+                    }
                     const result = try self.eval(predicate, &predicate_context);
                     if (result == .number) return null;
                     if (!result.toBoolean()) {
@@ -586,6 +587,58 @@ const Evaluator = struct {
         return sorted;
     }
 
+    /// Evaluate the common attribute predicate forms (`@name`,
+    /// `@name = value`, `value = @name`) without materializing a node set.
+    /// Returns null when the expression needs the general evaluator.
+    fn simplePredicate(
+        self: *Evaluator,
+        predicate: *const ast.Expr,
+        context: *const value.Context,
+        node: value.NodeRef,
+    ) Error!?bool {
+        switch (predicate.*) {
+            .path => {
+                const attribute = try simpleAttributePath(
+                    context,
+                    predicate,
+                ) orelse return null;
+                return attributeExists(context, node, attribute);
+            },
+            .binary => |binary| {
+                if (binary.op != .eq and binary.op != .ne) return null;
+                const equal = binary.op == .eq;
+                if (try simpleAttributePath(context, binary.lhs)) |attribute| {
+                    const expected = try self.simpleStringOperand(
+                        context,
+                        binary.rhs,
+                    ) orelse return null;
+                    return attributeValueMatches(
+                        context,
+                        node,
+                        attribute,
+                        expected,
+                        equal,
+                    );
+                }
+                if (try simpleAttributePath(context, binary.rhs)) |attribute| {
+                    const expected = try self.simpleStringOperand(
+                        context,
+                        binary.lhs,
+                    ) orelse return null;
+                    return attributeValueMatches(
+                        context,
+                        node,
+                        attribute,
+                        expected,
+                        equal,
+                    );
+                }
+                return null;
+            },
+            else => return null,
+        }
+    }
+
     fn applyPredicates(
         self: *Evaluator,
         context: *const value.Context,
@@ -602,6 +655,14 @@ const Evaluator = struct {
                     index + 1,
                     size,
                 );
+                if (try self.simplePredicate(
+                    predicate,
+                    &predicate_context,
+                    node,
+                )) |keep| {
+                    if (keep) try filtered.append(self.allocator, node);
+                    continue;
+                }
                 const result = try self.eval(predicate, &predicate_context);
                 const keep = switch (result) {
                     .number => |number| @as(f64, @floatFromInt(index + 1)) == number,
@@ -965,6 +1026,114 @@ const Evaluator = struct {
         descendant: value.NodeRef,
     ) bool {
         return self.isDescendantOf(context, descendant, candidate);
+    }
+
+    /// A single-step `@name` path resolved to its expanded name.
+    const SimpleAttribute = struct {
+        local: []const u8,
+        uri: []const u8,
+    };
+
+    fn simpleAttributePath(
+        context: *const value.Context,
+        expression: *const ast.Expr,
+    ) Error!?SimpleAttribute {
+        const path = switch (expression.*) {
+            .path => |path| path,
+            else => return null,
+        };
+        if (path.start != null or path.absolute or path.steps.len != 1) {
+            return null;
+        }
+        const step = path.steps[0];
+        if (step.axis != .attribute or step.predicates.len != 0) return null;
+        const name_test = switch (step.node_test) {
+            .name => |name_test| name_test,
+            else => return null,
+        };
+        const local = name_test.local orelse return null;
+        const uri = if (name_test.prefix) |prefix|
+            context.resolvePrefix(prefix) orelse return error.UndefinedPrefix
+        else
+            "";
+        return .{ .local = local, .uri = uri };
+    }
+
+    fn attributeExists(
+        context: *const value.Context,
+        node: value.NodeRef,
+        attribute: SimpleAttribute,
+    ) bool {
+        const id = switch (node) {
+            .node => |node_id| node_id,
+            else => return false,
+        };
+        const document = context.document;
+        if (document.node(id).kind != .element) return false;
+        for (document.attributesOf(id)) |candidate| {
+            if (namespace.Resolver.isNamespaceDeclaration(
+                candidate.name,
+            )) continue;
+            if (attribute.uri.len == 0) {
+                if (candidate.ns.len != 0) continue;
+            } else if (!std.mem.eql(u8, candidate.ns, attribute.uri)) continue;
+            const candidate_local = candidate.localName();
+            if (candidate_local.len == attribute.local.len and
+                std.mem.eql(u8, candidate_local, attribute.local)) return true;
+        }
+        return false;
+    }
+
+    /// Node-set/string comparison: true when a matching attribute exists
+    /// whose string value equals (`equal`) or differs from (`!equal`)
+    /// `expected`.
+    fn attributeValueMatches(
+        context: *const value.Context,
+        node: value.NodeRef,
+        attribute: SimpleAttribute,
+        expected: []const u8,
+        equal: bool,
+    ) bool {
+        const id = switch (node) {
+            .node => |node_id| node_id,
+            else => return false,
+        };
+        const document = context.document;
+        if (document.node(id).kind != .element) return false;
+        for (document.attributesOf(id)) |candidate| {
+            if (namespace.Resolver.isNamespaceDeclaration(
+                candidate.name,
+            )) continue;
+            if (attribute.uri.len == 0) {
+                if (candidate.ns.len != 0) continue;
+            } else if (!std.mem.eql(u8, candidate.ns, attribute.uri)) continue;
+            const candidate_local = candidate.localName();
+            if (candidate_local.len != attribute.local.len or
+                !std.mem.eql(u8, candidate_local, attribute.local)) continue;
+            if (std.mem.eql(u8, candidate.value, expected) == equal) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Operand of a simple comparison: a string literal or a variable that
+    /// holds a string.
+    fn simpleStringOperand(
+        self: *Evaluator,
+        context: *const value.Context,
+        expression: *const ast.Expr,
+    ) Error!?[]const u8 {
+        return switch (expression.*) {
+            .literal => |literal| literal,
+            .variable => |name| switch (try resolveVariable(context, name)) {
+                .string => |string| string,
+                // Result tree fragments compare by their text content.
+                .tree => |tree| try self.treeStringValue(tree),
+                else => null,
+            },
+            else => null,
+        };
     }
 
     fn resolveNameTestPrefix(
@@ -2607,6 +2776,22 @@ const Evaluator = struct {
 /// Root of the document that owns `node`. Absolute location paths start
 /// here, even when the context node belongs to a document loaded through
 /// `document()` rather than the principal source document.
+fn resolveVariable(
+    context: *const value.Context,
+    name: []const u8,
+) Error!value.Value {
+    if (context.variable(name)) |variable| return variable;
+    const resolver = context.variable_resolver orelse
+        return error.UndefinedVariable;
+    return (resolver.resolve(
+        resolver.context,
+        name,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.UndefinedVariable,
+    }) orelse return error.UndefinedVariable;
+}
+
 fn isForwardAxis(axis: ast.Axis) bool {
     return switch (axis) {
         .self_axis,
