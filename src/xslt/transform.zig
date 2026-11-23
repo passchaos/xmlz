@@ -2790,16 +2790,18 @@ const Runtime = struct {
                             maximum_precedence,
                             best,
                         );
-                        if (index.elements.get(.{
-                            .uri = value.ns,
-                            .local = value.local,
-                        })) |bucket| {
-                            try self.addCandidates(
-                                bucket.candidates(mode),
-                                node,
-                                maximum_precedence,
-                                best,
-                            );
+                        if (index.elements.count() != 0) {
+                            if (index.elements.get(.{
+                                .uri = value.ns,
+                                .local = value.local,
+                            })) |bucket| {
+                                try self.addCandidates(
+                                    bucket.candidates(mode),
+                                    node,
+                                    maximum_precedence,
+                                    best,
+                                );
+                            }
                         }
                         if (index.elements_by_uri.count() != 0) {
                             if (index.elements_by_uri.get(value.ns)) |bucket| {
@@ -2880,16 +2882,18 @@ const Runtime = struct {
                     maximum_precedence,
                     best,
                 );
-                if (index.attributes.get(.{
-                    .uri = name.ns,
-                    .local = name.localName(),
-                })) |bucket| {
-                    try self.addCandidates(
-                        bucket.candidates(mode),
-                        node,
-                        maximum_precedence,
-                        best,
-                    );
+                if (index.attributes.count() != 0) {
+                    if (index.attributes.get(.{
+                        .uri = name.ns,
+                        .local = name.localName(),
+                    })) |bucket| {
+                        try self.addCandidates(
+                            bucket.candidates(mode),
+                            node,
+                            maximum_precedence,
+                            best,
+                        );
+                    }
                 }
                 if (index.attributes_by_uri.count() != 0) {
                     if (index.attributes_by_uri.get(name.ns)) |bucket| {
