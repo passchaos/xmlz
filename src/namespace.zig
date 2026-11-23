@@ -130,42 +130,51 @@ pub const Resolver = struct {
     /// any slice of structs with `name` and `value` fields.
     pub fn push(self: *Resolver, attrs: anytype) Error!void {
         try self.enter();
-
         for (attrs) |attr| {
-            if (std.mem.eql(u8, attr.name, "xmlns")) {
-                const uri = attr.value;
-                if (std.mem.eql(u8, uri, xml_uri) or
-                    std.mem.eql(u8, uri, xmlns_uri))
-                {
-                    return error.InvalidNamespaceDeclaration;
-                }
-                try self.addBinding("", uri);
-            } else if (std.mem.startsWith(u8, attr.name, "xmlns:")) {
-                const prefix = attr.name["xmlns:".len..];
-                chars.validateNCName(prefix) catch {
-                    return error.InvalidNamespaceDeclaration;
-                };
-                if (std.mem.eql(u8, prefix, "xmlns")) return error.ReservedPrefix;
-                const uri = attr.value;
-                if (std.mem.eql(u8, prefix, "xml")) {
-                    if (!std.mem.eql(u8, uri, xml_uri)) return error.ReservedPrefix;
-                    try self.addBinding(prefix, uri);
-                    continue;
-                }
-                if (uri.len == 0) {
-                    if (!self.allow_undeclaration) {
-                        return error.InvalidNamespaceDeclaration;
-                    }
-                    try self.addBinding(prefix, "");
-                    continue;
-                }
-                if (std.mem.eql(u8, uri, xml_uri) or
-                    std.mem.eql(u8, uri, xmlns_uri))
-                {
-                    return error.ReservedPrefix;
-                }
-                try self.addBinding(prefix, uri);
+            try self.pushDeclaration(attr.name, attr.value);
+        }
+    }
+
+    /// Validate and record one namespace declaration. The caller must have
+    /// entered the element scope first.
+    pub fn pushDeclaration(
+        self: *Resolver,
+        name: []const u8,
+        value: []const u8,
+    ) Error!void {
+        if (std.mem.eql(u8, name, "xmlns")) {
+            const uri = value;
+            if (std.mem.eql(u8, uri, xml_uri) or
+                std.mem.eql(u8, uri, xmlns_uri))
+            {
+                return error.InvalidNamespaceDeclaration;
             }
+            try self.addBinding("", uri);
+        } else if (std.mem.startsWith(u8, name, "xmlns:")) {
+            const prefix = name["xmlns:".len..];
+            chars.validateNCName(prefix) catch {
+                return error.InvalidNamespaceDeclaration;
+            };
+            if (std.mem.eql(u8, prefix, "xmlns")) return error.ReservedPrefix;
+            const uri = value;
+            if (std.mem.eql(u8, prefix, "xml")) {
+                if (!std.mem.eql(u8, uri, xml_uri)) return error.ReservedPrefix;
+                try self.addBinding(prefix, uri);
+                return;
+            }
+            if (uri.len == 0) {
+                if (!self.allow_undeclaration) {
+                    return error.InvalidNamespaceDeclaration;
+                }
+                try self.addBinding(prefix, "");
+                return;
+            }
+            if (std.mem.eql(u8, uri, xml_uri) or
+                std.mem.eql(u8, uri, xmlns_uri))
+            {
+                return error.ReservedPrefix;
+            }
+            try self.addBinding(prefix, uri);
         }
     }
 
@@ -208,11 +217,19 @@ pub const Resolver = struct {
     pub fn pushUnchecked(self: *Resolver, attrs: anytype) Error!void {
         try self.enter();
         for (attrs) |attr| {
-            if (std.mem.eql(u8, attr.name, "xmlns")) {
-                try self.addBinding("", attr.value);
-            } else if (std.mem.startsWith(u8, attr.name, "xmlns:")) {
-                try self.addBinding(attr.name["xmlns:".len..], attr.value);
-            }
+            try self.pushDeclarationUnchecked(attr.name, attr.value);
+        }
+    }
+
+    pub fn pushDeclarationUnchecked(
+        self: *Resolver,
+        name: []const u8,
+        value: []const u8,
+    ) Error!void {
+        if (std.mem.eql(u8, name, "xmlns")) {
+            try self.addBinding("", value);
+        } else if (std.mem.startsWith(u8, name, "xmlns:")) {
+            try self.addBinding(name["xmlns:".len..], value);
         }
     }
 
@@ -318,6 +335,24 @@ pub const Resolver = struct {
             .local = raw,
             .uri = self.resolve("") orelse "",
         };
+    }
+
+    /// Variant of `resolveElementNameValidated` for callers that already know
+    /// the colon offset from the name scan.
+    pub fn resolveElementNameValidatedColon(
+        self: *const Resolver,
+        raw: []const u8,
+        colon: u16,
+    ) Error!ResolvedName {
+        if (colon == 0xFFFF) {
+            return .{
+                .raw = raw,
+                .prefix = "",
+                .local = raw,
+                .uri = self.default_ns,
+            };
+        }
+        return self.resolveElementQName(try splitQNameValidated(raw));
     }
 
     fn resolveElementQName(

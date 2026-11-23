@@ -12,42 +12,47 @@ after one warm-up. Each timed region covers parsing plus releasing the parsed
 tree, so the comparison includes document lifetime cost. File reading is
 outside the timed region. Peak RSS is `getrusage(RUSAGE_SELF).ru_maxrss`.
 
-## Results (2026-11-22)
+## Results (2026-11-23)
 
-Platform: Ubuntu 24.04, x86-64, Zig 0.16.0, system expat, pugixml, and
-libxml2.
+Platform: Ubuntu 24.04, x86-64 (i9-13900K), Zig 0.16.0, system expat,
+pugixml, and libxml2. Each binary was run four times pinned to one P-core and
+the best row kept, because the host was shared during measurement.
 
 | Parser | Mode | MB/s | Peak RSS |
 | --- | --- | ---: | ---: |
-| xmlz | pull, trusted fast mode | 875.82 | 17 MiB |
-| xmlz | pull, no namespaces | 590.53 | 17 MiB |
-| xmlz | pull, namespaces | 558.08 | 17 MiB |
-| xmlz | DOM, trusted fast mode | 428.47 | 111 MiB |
-| xmlz | DOM, namespaces | 332.40 | 111 MiB |
-| xmlz | DOM, reusable arena | 404.88 | 111 MiB |
-| expat | SAX | 154.86 | 33 MiB |
-| libxml2 | reader | 134.81 | 340 MiB |
-| libxml2 | DOM | 71.49 | 340 MiB |
-| pugixml | DOM | 520.21 | 87 MiB |
+| xmlz | pull, trusted fast mode | 940.46 | 16 MiB |
+| xmlz | pull, no namespaces | 718.14 | 16 MiB |
+| xmlz | pull, namespaces | 676.69 | 16 MiB |
+| pugixml | DOM | 514.63 | 86 MiB |
+| xmlz | DOM, reusable arena | 469.51 | 111 MiB |
+| xmlz | DOM, trusted fast mode | 432.36 | 110 MiB |
+| xmlz | DOM, namespaces | 364.11 | 110 MiB |
+| expat | SAX | 155.21 | 33 MiB |
+| libxml2 | reader | 134.39 | 340 MiB |
+| libxml2 | DOM | 96.46 | 340 MiB |
 
 ## Interpretation
 
 - The pull parser is the apples-to-apples streaming comparison. With
-  namespaces xmlz is **3.6x faster than expat** and **4.1x faster than
+  namespaces xmlz is **4.4x faster than expat** and **5.0x faster than
   libxml2's reader** while performing full XML 1.0/1.1 and namespace
-  well-formedness checking; trusted mode is **5.7x** and **6.5x** faster.
+  well-formedness checking; trusted mode is **6.1x** and **7.0x** faster.
 - `trusted` mode assumes the input is already well-formed and skips character,
   name, duplicate-attribute, and namespace-constraint validation. It is opt-in
   and never used for the conformance suite.
 - The DOM is fully validating and namespace-aware. pugixml is faster but does
   not enforce every XML well-formedness and namespace constraint, and it uses
-  in-situ mutation of the input buffer. xmlz's DOM beats libxml2's DOM by
-  over **4x** in this run (libxml2's DOM row varies between runs), is within
-  **1.6x** of pugixml in validating mode, and within **1.3x** in trusted mode.
+  in-situ mutation of the input buffer. xmlz's validating DOM beats libxml2's
+  DOM by **3.8x** (libxml2's DOM row varies between runs), is within **1.2x**
+  of pugixml in trusted mode, and within **1.1x** with a reusable arena.
 - `DOM, reusable arena` uses `dom.Document.parseIn` with an arena that is
   reset between parses. It avoids re-faulting fresh pages for every document,
   which matches the steady-state behavior of malloc-based parsers. It reaches
-  **405 MB/s** while staying fully validating.
+  **470 MB/s** while staying fully validating.
+- Attribute values, element and attribute names, and literal character data
+  are scanned sixteen or thirty-two bytes at a time; the tokenizer keeps its
+  cursor in registers across a start tag; and the DOM copies attributes in a
+  branch-free pass before handling the rare decode/normalization cases.
 - Large node and attribute arrays request transparent huge pages on Linux
   (`MADV_HUGEPAGE`, best-effort) to cut first-touch page-fault overhead.
 - xmlz's peak RSS includes the input buffer, the tree, decoded text, and

@@ -669,65 +669,73 @@ pub const Parser = struct {
 
     fn scanStartTag(self: *Parser) Error!StartElement {
         const start = self.pos;
-        std.debug.assert(self.input[self.pos] == '<');
-        self.pos += 1;
+        const input = self.input;
+        std.debug.assert(input[start] == '<');
+        var pos = start + 1;
 
-        const name_start = self.pos;
-        const name_info = self.nameInfo(self.input[name_start..]);
+        const name_start = pos;
+        const name_info = self.nameInfo(input[name_start..]);
         if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
-        const name = self.input[name_start .. name_start + name_info.len];
-        self.pos = name_start + name_info.len;
+        const name = input[name_start .. name_start + name_info.len];
+        pos = name_start + name_info.len;
 
         var attr_count: usize = 0;
         var self_closing = false;
         var has_namespace_decls = false;
         while (true) {
-            const before_whitespace = self.pos;
-            self.skipWhitespace();
-            if (self.pos >= self.input.len) {
-                return self.fail(error.UnexpectedEndOfInput, self.pos);
+            const before_whitespace = pos;
+            pos = skipWhitespaceAt(input, pos);
+            if (pos >= input.len) {
+                self.pos = pos;
+                return self.fail(error.UnexpectedEndOfInput, pos);
             }
-            switch (self.input[self.pos]) {
+            switch (input[pos]) {
                 '>' => {
-                    self.pos += 1;
+                    pos += 1;
                     break;
                 },
                 '/' => {
-                    if (self.pos + 1 >= self.input.len or
-                        self.input[self.pos + 1] != '>')
-                    {
-                        return self.fail(error.InvalidStartTag, self.pos);
+                    if (pos + 1 >= input.len or input[pos + 1] != '>') {
+                        self.pos = pos;
+                        return self.fail(error.InvalidStartTag, pos);
                     }
-                    self.pos += 2;
+                    pos += 2;
                     self_closing = true;
                     break;
                 },
                 else => {
-                    if (self.pos == before_whitespace) {
-                        return self.fail(error.InvalidStartTag, self.pos);
+                    if (pos == before_whitespace) {
+                        self.pos = pos;
+                        return self.fail(error.InvalidStartTag, pos);
                     }
                 },
             }
 
             if (attr_count == self.options.max_attributes) {
-                return self.fail(error.AttributeLimitExceeded, self.pos);
+                self.pos = pos;
+                return self.fail(error.AttributeLimitExceeded, pos);
             }
             if (self.options.trusted) {
-                try self.scanAttributeIntoTrusted(&self.attrs[attr_count]);
+                pos = try self.scanAttributeIntoTrusted(
+                    &self.attrs[attr_count],
+                    pos,
+                );
             } else {
-                try self.scanAttributeInto(&self.attrs[attr_count]);
+                pos = try self.scanAttributeInto(&self.attrs[attr_count], pos);
             }
             const attr = &self.attrs[attr_count];
             if (self.options.namespaces and
                 namespace.Resolver.isNamespaceDeclaration(attr.name))
             {
                 has_namespace_decls = true;
+                attr.namespace_uri = namespace.xmlns_uri;
             }
             if (!self.options.trusted) {
                 for (self.attrs[0..attr_count]) |existing| {
                     if (existing.name_key == attr.name_key and
                         std.mem.eql(u8, existing.name, attr.name))
                     {
+                        self.pos = pos;
                         return self.fail(
                             error.DuplicateAttribute,
                             attr.name_range.start,
@@ -737,117 +745,29 @@ pub const Parser = struct {
             }
             attr_count += 1;
         }
+        self.pos = pos;
 
+        const scanned_attr_count = attr_count;
         try self.applyAttributeDefaults(name, &attr_count);
-        for (self.attrs[0..attr_count]) |*attr| {
-            attr.tokenized = self.isTokenizedAttribute(name, attr.name);
-            if (self.options.namespaces and
-                namespace.Resolver.isNamespaceDeclaration(attr.name))
-            {
-                // DTD defaults may introduce namespace declarations.
-                has_namespace_decls = true;
+        if (self.tokenized_attr_count != 0) {
+            for (self.attrs[0..attr_count]) |*attr| {
+                attr.tokenized = self.isTokenizedAttribute(name, attr.name);
             }
+        }
+        // DTD defaults may introduce namespace declarations. Their
+        // namespace URI is resolved while the default is applied.
+        for (self.attrs[scanned_attr_count..attr_count]) |attr| {
+            if (attr.namespace_uri.len != 0) has_namespace_decls = true;
         }
 
         var element_namespace: []const u8 = "";
         if (self.options.namespaces) {
-            if (has_namespace_decls) {
-                var namespace_attrs: [max_attributes]struct {
-                    name: []const u8,
-                    value: []const u8,
-                } = undefined;
-                var namespace_attr_count: usize = 0;
-                for (self.attrs[0..attr_count]) |*attr| {
-                    if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) {
-                        continue;
-                    }
-                    var value = attr.value;
-                    if (std.mem.indexOfScalar(u8, value, '&') != null or
-                        hasWhitespace(value))
-                    {
-                        if (self.scratchAllocator()) |allocator| {
-                            const decoded = entities.decodeAttributeAlloc(
-                                allocator,
-                                value,
-                                &self.entity_table,
-                                .{},
-                                .{
-                                    .version = self.xml_version,
-                                    .preserve_undeclared = true,
-                                    .preserve_external = true,
-                                },
-                            ) catch value;
-                            value = decoded;
-                            if (self.isTokenizedAttribute(name, attr.name)) {
-                                value = normalizeTokenizedValue(
-                                    allocator,
-                                    decoded,
-                                ) catch value;
-                            }
-                        }
-                    }
-                    attr.namespace_uri = namespace.xmlns_uri;
-                    namespace_attrs[namespace_attr_count] = .{
-                        .name = attr.name,
-                        .value = value,
-                    };
-                    namespace_attr_count += 1;
-                }
-                if (self.options.trusted) {
-                    try self.ns.pushUnchecked(
-                        namespace_attrs[0..namespace_attr_count],
-                    );
-                } else {
-                    try self.ns.push(namespace_attrs[0..namespace_attr_count]);
-                }
-            } else {
-                try self.ns.enter();
-            }
-
-            const resolved_element = if (self.options.trusted)
-                self.ns.resolveElementNameUncheckedColon(
-                    name,
-                    name_info.colon,
-                )
-            else
-                try self.ns.resolveElementNameValidated(name);
-            element_namespace = resolved_element.uri;
-
-            var prefixed: [max_attributes]namespace.ResolvedName = undefined;
-            var prefixed_keys: [max_attributes]u32 = undefined;
-            var prefixed_count: usize = 0;
-            for (self.attrs[0..attr_count]) |*attr| {
-                if (attr.namespace_uri.len != 0) continue; // xmlns declaration
-                if (attr.colon == 0xFFFF) continue;
-                const resolved_attr = if (self.options.trusted)
-                    self.ns.resolveAttributeNameUncheckedColon(
-                        attr.name,
-                        attr.colon,
-                    )
-                else
-                    try self.ns.resolveAttributeNameValidated(attr.name);
-                attr.namespace_uri = resolved_attr.uri;
-                prefixed[prefixed_count] = resolved_attr;
-                prefixed_keys[prefixed_count] = resolvedNameKey(
-                    resolved_attr.uri,
-                    resolved_attr.local,
-                );
-                prefixed_count += 1;
-            }
-            if (prefixed_count >= 2 and !self.options.trusted) {
-                for (prefixed[0..prefixed_count], 0..) |current, index| {
-                    for (prefixed[0..index]) |previous| {
-                        if (std.mem.eql(u8, previous.uri, current.uri) and
-                            std.mem.eql(u8, previous.local, current.local))
-                        {
-                            return self.fail(
-                                error.DuplicateExpandedAttribute,
-                                0,
-                            );
-                        }
-                    }
-                }
-            }
+            element_namespace = try self.resolveStartTagNamespaces(
+                name,
+                name_info.colon,
+                attr_count,
+                has_namespace_decls,
+            );
         }
 
         const is_root = !self.root_seen;
@@ -889,109 +809,264 @@ pub const Parser = struct {
         };
     }
 
-    fn scanAttributeInto(self: *Parser, out: *Attribute) Error!void {
-        const name_start = self.pos;
-        const name_info = self.nameInfo(self.input[name_start..]);
+    /// Resolve the element name and attribute names for a start tag. Kept out
+    /// of `scanStartTag` so its large namespace arrays do not inflate the
+    /// stack frame of the hot tokenizer path.
+    fn resolveStartTagNamespaces(
+        self: *Parser,
+        name: []const u8,
+        colon: u16,
+        attr_count: usize,
+        has_namespace_decls: bool,
+    ) Error![]const u8 {
+        var element_namespace: []const u8 = "";
+        if (has_namespace_decls) {
+            try self.ns.enter();
+            for (self.attrs[0..attr_count]) |*attr| {
+                if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                    continue;
+                }
+                var value = attr.value;
+                if (std.mem.indexOfScalar(u8, value, '&') != null or
+                    hasWhitespace(value))
+                {
+                    if (self.scratchAllocator()) |allocator| {
+                        const decoded = entities.decodeAttributeAlloc(
+                            allocator,
+                            value,
+                            &self.entity_table,
+                            .{},
+                            .{
+                                .version = self.xml_version,
+                                .preserve_undeclared = true,
+                                .preserve_external = true,
+                            },
+                        ) catch value;
+                        value = decoded;
+                        if (self.isTokenizedAttribute(name, attr.name)) {
+                            value = normalizeTokenizedValue(
+                                allocator,
+                                decoded,
+                            ) catch value;
+                        }
+                    }
+                }
+                attr.namespace_uri = namespace.xmlns_uri;
+                if (self.options.trusted) {
+                    try self.ns.pushDeclarationUnchecked(attr.name, value);
+                } else {
+                    try self.ns.pushDeclaration(attr.name, value);
+                }
+            }
+        } else {
+            try self.ns.enter();
+        }
+
+        const resolved_element = if (self.options.trusted)
+            self.ns.resolveElementNameUncheckedColon(
+                name,
+                colon,
+            )
+        else
+            try self.ns.resolveElementNameValidatedColon(
+                name,
+                colon,
+            );
+        element_namespace = resolved_element.uri;
+
+        // Prefixed attributes are rare; track the first few for expanded-name
+        // duplicate detection and fall back to scanning the attribute array
+        // when an element carries more.
+        const small_prefixed = 8;
+        var prefixed: [small_prefixed]namespace.ResolvedName = undefined;
+        var prefixed_count: usize = 0;
+        var prefixed_overflow = false;
+        for (self.attrs[0..attr_count]) |*attr| {
+            if (attr.namespace_uri.len != 0) continue; // xmlns declaration
+            if (attr.colon == 0xFFFF) continue;
+            const resolved_attr = if (self.options.trusted)
+                self.ns.resolveAttributeNameUncheckedColon(
+                    attr.name,
+                    attr.colon,
+                )
+            else
+                try self.ns.resolveAttributeNameValidated(attr.name);
+            attr.namespace_uri = resolved_attr.uri;
+            if (prefixed_count < small_prefixed) {
+                prefixed[prefixed_count] = resolved_attr;
+                prefixed_count += 1;
+            } else {
+                prefixed_overflow = true;
+            }
+        }
+        if (!self.options.trusted) {
+            if (prefixed_overflow) {
+                for (self.attrs[0..attr_count], 0..) |current, index| {
+                    if (current.colon == 0xFFFF or
+                        current.namespace_uri.len == 0 or
+                        std.mem.eql(
+                            u8,
+                            current.namespace_uri,
+                            namespace.xmlns_uri,
+                        ))
+                    {
+                        continue;
+                    }
+                    for (self.attrs[0..index]) |previous| {
+                        if (previous.colon == 0xFFFF or
+                            previous.namespace_uri.len == 0 or
+                            std.mem.eql(
+                                u8,
+                                previous.namespace_uri,
+                                namespace.xmlns_uri,
+                            ))
+                        {
+                            continue;
+                        }
+                        if (std.mem.eql(
+                            u8,
+                            previous.namespace_uri,
+                            current.namespace_uri,
+                        ) and std.mem.eql(
+                            u8,
+                            previous.localName(),
+                            current.localName(),
+                        )) {
+                            return self.fail(
+                                error.DuplicateExpandedAttribute,
+                                0,
+                            );
+                        }
+                    }
+                }
+            } else if (prefixed_count >= 2) {
+                for (prefixed[0..prefixed_count], 0..) |current, index| {
+                    for (prefixed[0..index]) |previous| {
+                        if (std.mem.eql(u8, previous.uri, current.uri) and
+                            std.mem.eql(u8, previous.local, current.local))
+                        {
+                            return self.fail(
+                                error.DuplicateExpandedAttribute,
+                                0,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        return element_namespace;
+    }
+
+    inline fn scanAttributeInto(
+        self: *Parser,
+        out: *Attribute,
+        start: usize,
+    ) Error!usize {
+        // Keep the cursor in a local: attribute scanning runs once per
+        // attribute, and reloading `self.pos` every byte dominates the loop.
+        const input = self.input;
+        const trusted = self.options.trusted;
+        const xml_version = self.xml_version;
+        const name_start = start;
+        const name_info = self.nameInfo(input[name_start..]);
         if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
-        const name = self.input[name_start .. name_start + name_info.len];
-        self.pos = name_start + name_info.len;
+        const name = input[name_start .. name_start + name_info.len];
 
-        self.skipWhitespace();
-        if (self.pos >= self.input.len or self.input[self.pos] != '=') {
-            return self.fail(error.InvalidStartTag, self.pos);
+        var pos = skipWhitespaceAt(input, name_start + name_info.len);
+        if (pos >= input.len or input[pos] != '=') {
+            return self.fail(error.InvalidStartTag, pos);
         }
-        self.pos += 1;
-        self.skipWhitespace();
-        if (self.pos >= self.input.len) {
-            return self.fail(error.UnexpectedEndOfInput, self.pos);
+        pos = skipWhitespaceAt(input, pos + 1);
+        if (pos >= input.len) {
+            return self.fail(error.UnexpectedEndOfInput, pos);
         }
 
-        const quote = self.input[self.pos];
+        const quote = input[pos];
         if (quote != '"' and quote != '\'') {
-            return self.fail(error.InvalidAttributeValue, self.pos);
+            return self.fail(error.InvalidAttributeValue, pos);
         }
-        self.pos += 1;
-        const value_start = self.pos;
+        pos += 1;
+        const value_start = pos;
         var has_non_ascii = false;
         var needs_decode = false;
         var whitespace_char_ref = false;
 
-        while (self.pos < self.input.len and self.input[self.pos] != quote) {
-            const byte = self.input[self.pos];
+        scan: while (true) {
+            const special = findAttributeValueSpecial(
+                input,
+                pos,
+                quote,
+                trusted,
+            );
+            has_non_ascii = has_non_ascii or special.has_high;
+            pos = special.index;
+            if (pos >= input.len) {
+                return self.fail(error.UnexpectedEndOfInput, pos);
+            }
+            const byte = input[pos];
+            if (byte == quote) break :scan;
             if (byte == '&') {
                 needs_decode = true;
-                if (self.options.trusted) {
+                if (trusted) {
                     const semicolon = std.mem.indexOfScalarPos(
                         u8,
-                        self.input,
-                        self.pos + 1,
+                        input,
+                        pos + 1,
                         ';',
                     ) orelse return self.fail(
                         error.UnexpectedEndOfInput,
-                        self.pos,
+                        pos,
                     );
-                    self.pos = semicolon + 1;
+                    pos = semicolon + 1;
                     continue;
                 }
-                if (self.pos + 1 < self.input.len and
-                    self.input[self.pos + 1] == '#')
-                {
+                if (pos + 1 < input.len and input[pos + 1] == '#') {
                     const semicolon = std.mem.indexOfScalarPos(
                         u8,
-                        self.input,
-                        self.pos + 2,
+                        input,
+                        pos + 2,
                         ';',
                     ) orelse {
                         return self.fail(
                             error.InvalidEntityReference,
-                            self.pos,
+                            pos,
                         );
                     };
-                    const body = self.input[self.pos + 1 .. semicolon];
+                    const body = input[pos + 1 .. semicolon];
                     const codepoint = if (body.len > 1 and body[1] == 'x')
-                        chars.parseHexCharRefVersion(body[1..], self.xml_version)
+                        chars.parseHexCharRefVersion(body[1..], xml_version)
                     else
-                        chars.parseDecimalCharRefVersion(body[1..], self.xml_version);
+                        chars.parseDecimalCharRefVersion(body[1..], xml_version);
                     if (codepoint) |value| {
                         if (value == '\t' or value == '\n' or value == '\r') {
                             whitespace_char_ref = true;
                         }
                     }
                 }
-                self.pos = try self.validateReference(self.pos, true);
+                pos = try self.validateReference(pos, true);
                 continue;
             }
-            if (self.options.trusted) {
-                if (byte == '\t' or byte == '\n' or byte == '\r') {
-                    needs_decode = true;
-                }
-            } else {
-                if (byte == '<') {
-                    return self.fail(error.InvalidAttributeValue, self.pos);
-                }
-                if (byte < 0x20) {
-                    if (byte == '\t' or byte == '\n' or byte == '\r') {
-                        needs_decode = true;
-                    } else {
-                        return self.fail(error.InvalidCharacter, self.pos);
-                    }
-                } else if (byte >= 0x80) {
-                    has_non_ascii = true;
-                }
+            // A control byte, or '<' when validation is enabled.
+            if (!trusted and byte == '<') {
+                return self.fail(error.InvalidAttributeValue, pos);
             }
-            self.pos += 1;
+            if (byte == '\t' or byte == '\n' or byte == '\r') {
+                needs_decode = true;
+            } else if (!trusted) {
+                return self.fail(error.InvalidCharacter, pos);
+            }
+            pos += 1;
         }
-        if (self.pos >= self.input.len) {
-            return self.fail(error.UnexpectedEndOfInput, self.pos);
+        if (pos >= input.len) {
+            return self.fail(error.UnexpectedEndOfInput, pos);
         }
 
-        const value = self.input[value_start..self.pos];
-        if (!self.options.trusted and has_non_ascii) {
+        const value = input[value_start..pos];
+        if (!trusted and has_non_ascii) {
             if (self.findInvalidLiteral(value)) |bad| {
                 return self.fail(error.InvalidCharacter, value_start + bad);
             }
         }
-        self.pos += 1;
         out.* = .{
             .name = name,
             .value = value,
@@ -1010,59 +1085,73 @@ pub const Parser = struct {
             .whitespace_char_ref = whitespace_char_ref,
             .tokenized = false,
         };
+        return pos + 1;
     }
 
-    fn scanAttributeIntoTrusted(self: *Parser, out: *Attribute) Error!void {
-        const name_start = self.pos;
-        const name_info = chars.scanNameInfoFast(self.input[name_start..]);
+    inline fn scanAttributeIntoTrusted(
+        self: *Parser,
+        out: *Attribute,
+        start: usize,
+    ) Error!usize {
+        const input = self.input;
+        const name_start = start;
+        const name_info = chars.scanNameInfoFast(input[name_start..]);
         if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
-        const name = self.input[name_start .. name_start + name_info.len];
-        self.pos = name_start + name_info.len;
+        const name = input[name_start .. name_start + name_info.len];
 
-        self.skipSpaces();
-        if (self.pos >= self.input.len or self.input[self.pos] != '=') {
-            return self.fail(error.InvalidStartTag, self.pos);
+        var pos = skipSpacesAt(input, name_start + name_info.len);
+        if (pos >= input.len or input[pos] != '=') {
+            return self.fail(error.InvalidStartTag, pos);
         }
-        self.pos += 1;
-        self.skipSpaces();
-        if (self.pos >= self.input.len) {
-            return self.fail(error.UnexpectedEndOfInput, self.pos);
+        pos = skipSpacesAt(input, pos + 1);
+        if (pos >= input.len) {
+            return self.fail(error.UnexpectedEndOfInput, pos);
         }
 
-        const quote = self.input[self.pos];
+        const quote = input[pos];
         if (quote != '"' and quote != '\'') {
-            return self.fail(error.InvalidAttributeValue, self.pos);
+            return self.fail(error.InvalidAttributeValue, pos);
         }
-        self.pos += 1;
-        const value_start = self.pos;
+        pos += 1;
+        const value_start = pos;
         var needs_decode = false;
-        while (self.pos < self.input.len and self.input[self.pos] != quote) {
-            const byte = self.input[self.pos];
+        scan: while (true) {
+            const special = findAttributeValueSpecial(
+                input,
+                pos,
+                quote,
+                true,
+            );
+            pos = special.index;
+            if (pos >= input.len) {
+                return self.fail(error.UnexpectedEndOfInput, pos);
+            }
+            const byte = input[pos];
+            if (byte == quote) break :scan;
             if (byte == '&') {
                 needs_decode = true;
                 const semicolon = std.mem.indexOfScalarPos(
                     u8,
-                    self.input,
-                    self.pos + 1,
+                    input,
+                    pos + 1,
                     ';',
                 ) orelse return self.fail(
                     error.UnexpectedEndOfInput,
-                    self.pos,
+                    pos,
                 );
-                self.pos = semicolon + 1;
+                pos = semicolon + 1;
                 continue;
             }
             if (byte == '\t' or byte == '\n' or byte == '\r') {
                 needs_decode = true;
             }
-            self.pos += 1;
+            pos += 1;
         }
-        if (self.pos >= self.input.len) {
-            return self.fail(error.UnexpectedEndOfInput, self.pos);
+        if (pos >= input.len) {
+            return self.fail(error.UnexpectedEndOfInput, pos);
         }
 
-        const value = self.input[value_start..self.pos];
-        self.pos += 1;
+        const value = input[value_start..pos];
         out.* = .{
             .name = name,
             .value = value,
@@ -1081,6 +1170,7 @@ pub const Parser = struct {
             .whitespace_char_ref = false,
             .tokenized = false,
         };
+        return pos + 1;
     }
 
     fn scanEndTag(self: *Parser) Error!EndElement {
@@ -1101,7 +1191,10 @@ pub const Parser = struct {
         if (self.depth == 0) return self.fail(error.MismatchedEndTag, name_start);
         var end_namespace: []const u8 = "";
         if (self.options.namespaces) {
-            const resolved = try self.ns.resolveElementNameValidated(name);
+            const resolved = try self.ns.resolveElementNameValidatedColon(
+                name,
+                name_info.colon,
+            );
             end_namespace = resolved.uri;
         }
         const expected = self.open_names[self.depth - 1];
@@ -3202,6 +3295,27 @@ pub const Parser = struct {
     }
 };
 
+/// Cursor-local whitespace skip used by hot scanning loops that keep `pos` in
+/// a register instead of round-tripping through the parser struct.
+inline fn skipWhitespaceAt(input: []const u8, start: usize) usize {
+    var pos = start;
+    while (pos < input.len and chars.isWhitespace(input[pos])) pos += 1;
+    return pos;
+}
+
+/// Cursor-local variant of `skipSpaces`: the common case is a single space.
+inline fn skipSpacesAt(input: []const u8, start: usize) usize {
+    var pos = start;
+    while (pos < input.len and input[pos] == ' ') pos += 1;
+    if (pos < input.len) {
+        const byte = input[pos];
+        if (byte == '\t' or byte == '\n' or byte == '\r') {
+            return skipWhitespaceAt(input, pos);
+        }
+    }
+    return pos;
+}
+
 fn mapEntityAddError(err: entities.Table.AddError) Error {
     return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
@@ -4124,13 +4238,6 @@ fn attributeNameKey(name: []const u8) u32 {
         (@as(u32, name[0]) << 8) ^ @as(u32, last);
 }
 
-fn resolvedNameKey(uri: []const u8, local: []const u8) u32 {
-    const first = if (uri.len != 0) uri[0] else 0;
-    return (@as(u32, @intCast(uri.len)) << 20) ^
-        (@as(u32, @intCast(local.len)) << 8) ^
-        @as(u32, first) ^ @as(u32, local[0]);
-}
-
 fn hasWhitespace(value: []const u8) bool {
     for (value) |byte| {
         if (chars.isWhitespace(byte)) return true;
@@ -4190,15 +4297,15 @@ fn isPubidChar(byte: u8) bool {
 /// Find the next byte that requires special handling in character data:
 /// `<` (markup), `&` (reference), or `]` (possible `]]>` terminator).
 fn findTextSpecial(input: []const u8, start: usize) usize {
-    const Vec = @Vector(16, u8);
+    const Vec = @Vector(32, u8);
     const lt: Vec = @splat('<');
     const amp: Vec = @splat('&');
     const rb: Vec = @splat(']');
     var index = start;
-    while (index + 16 <= input.len) : (index += 16) {
-        const chunk: Vec = input[index..][0..16].*;
-        const mask: u16 = @bitCast((chunk == lt) | (chunk == amp) | (chunk == rb));
-        if (mask != 0) return index + @ctz(mask);
+    while (index + 32 <= input.len) : (index += 32) {
+        const chunk: Vec = input[index..][0..32].*;
+        const mask: u32 = @bitCast((chunk == lt) | (chunk == amp) | (chunk == rb));
+        if (mask != 0) return index + @as(usize, @ctz(mask));
     }
     while (index < input.len) : (index += 1) {
         switch (input[index]) {
@@ -4207,6 +4314,57 @@ fn findTextSpecial(input: []const u8, start: usize) usize {
         }
     }
     return input.len;
+}
+
+const AttributeValueSpecial = struct {
+    index: usize,
+    has_high: bool = false,
+};
+
+/// Find the next byte in an attribute value that needs attention: the closing
+/// quote, `&`, `<`, or a control byte. Bytes at or above 0x80 are reported
+/// through `has_high` instead of stopping the scan; the caller validates the
+/// whole value afterwards when validation is enabled.
+fn findAttributeValueSpecial(
+    input: []const u8,
+    start: usize,
+    quote: u8,
+    trusted: bool,
+) AttributeValueSpecial {
+    const Vec = @Vector(32, u8);
+    const quote_vec: Vec = @splat(quote);
+    const amp: Vec = @splat('&');
+    const lt: Vec = @splat('<');
+    const ctrl: Vec = @splat(0x20);
+    const high: Vec = @splat(0x80);
+    var index = start;
+    var has_high = false;
+    while (index + 32 <= input.len) : (index += 32) {
+        const chunk: Vec = input[index..][0..32].*;
+        var mask: u32 = @bitCast(chunk == quote_vec);
+        mask |= @bitCast(chunk == amp);
+        mask |= @bitCast(chunk < ctrl);
+        if (!trusted) {
+            mask |= @bitCast(chunk == lt);
+            has_high = has_high or @reduce(.Or, chunk >= high);
+        }
+        if (mask != 0) {
+            return .{
+                .index = index + @as(usize, @ctz(mask)),
+                .has_high = has_high,
+            };
+        }
+    }
+    while (index < input.len) : (index += 1) {
+        const byte = input[index];
+        if (byte == quote or byte == '&' or byte < 0x20 or
+            (!trusted and byte == '<'))
+        {
+            return .{ .index = index, .has_high = has_high };
+        }
+        if (!trusted and byte >= 0x80) has_high = true;
+    }
+    return .{ .index = input.len, .has_high = has_high };
 }
 
 fn decodeExternalAlloc(

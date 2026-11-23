@@ -242,7 +242,7 @@ pub const NameInfo = struct {
 };
 
 /// Scan the longest valid XML `Name` prefix and remember the first colon.
-pub fn scanNameInfo(bytes: []const u8) NameInfo {
+pub inline fn scanNameInfo(bytes: []const u8) NameInfo {
     var info: NameInfo = .{ .len = 0 };
     if (bytes.len == 0) return info;
     var index: usize = 0;
@@ -257,6 +257,44 @@ pub fn scanNameInfo(bytes: []const u8) NameInfo {
         if (!isNameStartChar(cp)) return info;
         index = first_len;
     }
+
+    // ASCII names dominate markup, so classify sixteen bytes at a time and
+    // fall back to the scalar UTF-8 loop at the first high byte. The first
+    // colon is tracked from the same masks instead of a second pass.
+    const Vec = @Vector(16, u8);
+    const lower_a: Vec = @splat('a');
+    const lower_z: Vec = @splat('z');
+    const digit_0: Vec = @splat('0');
+    const digit_9: Vec = @splat('9');
+    const underscore: Vec = @splat('_');
+    const dash: Vec = @splat('-');
+    const dot: Vec = @splat('.');
+    const colon_char: Vec = @splat(':');
+    while (index + 16 <= bytes.len) {
+        const chunk: Vec = bytes[index..][0..16].*;
+        const folded = chunk | @as(Vec, @splat(0x20));
+        const alpha = (folded >= lower_a) & (folded <= lower_z);
+        const digit = (chunk >= digit_0) & (chunk <= digit_9);
+        const valid = alpha | digit | (chunk == underscore) |
+            (chunk == dash) | (chunk == dot) | (chunk == colon_char);
+        const invalid: u16 = ~@as(u16, @bitCast(valid));
+        const stop: usize = @ctz(invalid);
+        if (info.colon == 0xFFFF) {
+            const colons: u16 = @bitCast(chunk == colon_char);
+            if (colons != 0) {
+                const offset = @ctz(colons);
+                if (offset < stop and index + offset < 0xFFFF) {
+                    info.colon = @intCast(index + offset);
+                }
+            }
+        }
+        if (invalid != 0) {
+            index += stop;
+            break;
+        }
+        index += 16;
+    }
+
     while (index < bytes.len) {
         const byte = bytes[index];
         if (byte < 0x80) {
@@ -372,6 +410,35 @@ pub fn findInvalidLiteralCharVersion(
     version: Version,
 ) ?usize {
     var index: usize = 0;
+    // ASCII control bytes are the only invalid characters in an ASCII run.
+    // Check sixteen at a time and fall back to UTF-8 decoding at the first
+    // high byte.
+    const Vec = @Vector(16, u8);
+    const ctrl: Vec = @splat(0x20);
+    const tab: Vec = @splat('\t');
+    const lf: Vec = @splat('\n');
+    const cr: Vec = @splat('\r');
+    const del: Vec = @splat(0x7F);
+    const high: Vec = @splat(0x80);
+    while (index + 16 <= bytes.len) {
+        const chunk: Vec = bytes[index..][0..16].*;
+        var mask: u16 = @bitCast(chunk < ctrl);
+        mask &= ~@as(u16, @bitCast(
+            (chunk == tab) | (chunk == lf) | (chunk == cr),
+        ));
+        if (version == .xml_1_1) {
+            mask |= @bitCast(chunk == del);
+        }
+        const high_mask: u16 = @bitCast(chunk >= high);
+        if (mask != 0 and (high_mask == 0 or @ctz(mask) < @ctz(high_mask))) {
+            return index + @ctz(mask);
+        }
+        if (high_mask != 0) {
+            index += @ctz(high_mask);
+            break;
+        }
+        index += 16;
+    }
     while (index < bytes.len) {
         const byte = bytes[index];
         if (byte < 0x80) {

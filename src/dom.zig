@@ -470,39 +470,60 @@ const Builder = struct {
             self.allocator,
             element.attrs.len,
         );
-        for (element.attrs) |attr| {
-            var value = attr.value;
-            if (attr.needs_decode) {
-                value = try entities.decodeAttributeAlloc(
-                    self.allocator,
-                    attr.value,
-                    self.parser.entityTable(),
-                    .{},
-                    .{
-                        .version = self.parser.xmlVersion(),
-                        .preserve_undeclared = true,
-                        .preserve_external = true,
-                    },
-                );
-            }
-            var normalization_changed = false;
-            if (attr.tokenized) {
-                const normalized = try normalizeTokenized(self.allocator, value);
-                normalization_changed = !std.mem.eql(u8, value, normalized);
-                value = normalized;
-            }
-            const uri = if (namespace.Resolver.isNamespaceDeclaration(attr.name))
-                namespace.xmlns_uri
-            else
-                attr.namespace_uri;
-            self.attributes.appendAssumeCapacity(.{
+        // Copy the borrowed names and values in one branch-free pass. Entity
+        // decoding and tokenized normalization are rare, so they are handled
+        // afterwards instead of branching on every attribute here.
+        const out: []Attribute = if (element.attrs.len == 0)
+            &.{}
+        else
+            self.attributes.items.ptr[attr_start..][0..element.attrs.len];
+        for (element.attrs, out) |attr, *dst| {
+            dst.* = .{
                 .name = attr.name,
                 .colon = attr.colon,
-                .ns = uri,
-                .value = value,
-                .normalization_changed = normalization_changed,
+                .ns = attr.namespace_uri,
+                .value = attr.value,
                 .whitespace_char_ref = attr.whitespace_char_ref,
-            });
+            };
+        }
+        self.attributes.items.len += element.attrs.len;
+        for (out, element.attrs) |*dst, attr| {
+            if (attr.needs_decode or attr.tokenized) {
+                var value = attr.value;
+                if (attr.needs_decode) {
+                    value = try entities.decodeAttributeAlloc(
+                        self.allocator,
+                        attr.value,
+                        self.parser.entityTable(),
+                        .{},
+                        .{
+                            .version = self.parser.xmlVersion(),
+                            .preserve_undeclared = true,
+                            .preserve_external = true,
+                        },
+                    );
+                }
+                if (attr.tokenized) {
+                    const normalized = try normalizeTokenized(
+                        self.allocator,
+                        value,
+                    );
+                    dst.normalization_changed = !std.mem.eql(
+                        u8,
+                        value,
+                        normalized,
+                    );
+                    value = normalized;
+                }
+                dst.value = value;
+            }
+        }
+        if (!self.parser.options.namespaces) {
+            for (out, element.attrs) |*dst, attr| {
+                if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                    dst.ns = namespace.xmlns_uri;
+                }
+            }
         }
 
         const id = try self.addNode(.{
