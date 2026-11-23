@@ -5681,7 +5681,9 @@ const Runtime = struct {
         // A stable sort whose keys all compare equal preserves the input
         // order, so low-cardinality sort keys skip the comparison sort.
         if (sortKeysAllEqual(all_keys, entries[0].keys, sorts.len)) return nodes;
-        std.mem.sort(SortEntry, entries, sorts, sortEntryLessThan);
+        // The comparator breaks ties by original index, so the order is
+        // total and the cheaper unstable sort produces the same sequence.
+        std.mem.sortUnstable(SortEntry, entries, sorts, sortEntryLessThan);
         const out = try self.allocator.alloc(xpath.NodeRef, nodes.len);
         for (entries, 0..) |entry, index| out[index] = entry.node;
         _ = node;
