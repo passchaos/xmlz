@@ -1163,6 +1163,15 @@ const Evaluator = struct {
                         return node_value.value;
                     },
                     .element, .document => {
+                        // An element with a single text child is by far the
+                        // common case; its string value is that child's text.
+                        const first = node_value.first_child;
+                        if (first == dom.null_node) return "";
+                        if (first == node_value.last_child and
+                            context.document.node(first).kind == .text)
+                        {
+                            return context.document.node(first).value;
+                        }
                         var out: std.ArrayList(u8) = .empty;
                         try self.appendTextValue(context, id, &out);
                         return out.toOwnedSlice(self.allocator);
@@ -1394,12 +1403,17 @@ const Evaluator = struct {
         self: *Evaluator,
         tree: *const value.TreeFragment,
     ) Error![]const u8 {
+        const document = tree.document;
+        const root = document.node(document.documentNode());
+        // Text-only fragments are the common case for content-valued
+        // variables and parameters; no copy is needed.
+        const first = root.first_child;
+        if (first == dom.null_node) return "";
+        if (first == root.last_child and document.node(first).kind == .text) {
+            return document.node(first).value;
+        }
         var out: std.ArrayList(u8) = .empty;
-        try self.appendDocumentText(
-            tree.document,
-            tree.document.documentNode(),
-            &out,
-        );
+        try self.appendDocumentText(document, document.documentNode(), &out);
         return out.toOwnedSlice(self.allocator);
     }
 
