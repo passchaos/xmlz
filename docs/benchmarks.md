@@ -50,10 +50,11 @@ the best row kept, because the host was shared during measurement.
   which matches the steady-state behavior of malloc-based parsers. It reaches
   **492 MB/s** while staying fully validating.
 - Attribute values, element and attribute names, and literal character data
-  are scanned sixteen or thirty-two bytes at a time; the tokenizer keeps its
-  cursor in registers across a start tag and checks the common `name="value"`
-  and single-space separator shapes directly; and the DOM copies attributes in
-  a branch-free pass before handling the rare decode/normalization cases.
+  are scanned sixteen or thirty-two bytes at a time; text validation is folded
+  into the markup-special scan; the tokenizer keeps its cursor in registers
+  across a start tag and checks the common `name="value"` and single-space
+  separator shapes directly; and the DOM copies attributes in a branch-free
+  pass before handling the rare decode/normalization cases.
 - Large node and attribute arrays request transparent huge pages on Linux
   (`MADV_HUGEPAGE`, best-effort) to cut first-touch page-fault overhead.
 - xmlz's peak RSS includes the input buffer, the tree, decoded text, and

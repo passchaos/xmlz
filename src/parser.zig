@@ -1274,9 +1274,19 @@ pub const Parser = struct {
         self.text_whitespace_char_ref = false;
         self.text_has_nel_ls = false;
         var whitespace_char_ref = false;
+        var span_has_high = false;
         var index = start;
         while (true) {
-            index = findTextSpecial(self.input, index);
+            const special = findTextSpecial(
+                self.input,
+                index,
+                self.xml_version,
+            );
+            if (special.invalid) |bad| {
+                return self.fail(error.InvalidCharacter, bad);
+            }
+            span_has_high = span_has_high or special.has_high;
+            index = special.index;
             if (index >= self.input.len) break;
             switch (self.input[index]) {
                 '&' => {
@@ -1317,11 +1327,13 @@ pub const Parser = struct {
                             self.pos = index;
                             const span = self.input[start..index];
                             if (!self.options.trusted) {
-                                if (self.findInvalidLiteral(span)) |bad| {
-                                    return self.fail(
-                                        error.InvalidCharacter,
-                                        start + bad,
-                                    );
+                                if (span_has_high) {
+                                    if (self.findInvalidLiteral(span)) |bad| {
+                                        return self.fail(
+                                            error.InvalidCharacter,
+                                            start + bad,
+                                        );
+                                    }
                                 }
                                 self.text_whitespace_char_ref = whitespace_char_ref;
                                 self.text_has_nel_ls = hasXml11LineSeparator(
@@ -1361,8 +1373,10 @@ pub const Parser = struct {
         self.pos = index;
         const span = self.input[start..index];
         if (!self.options.trusted) {
-            if (self.findInvalidLiteral(span)) |bad| {
-                return self.fail(error.InvalidCharacter, start + bad);
+            if (span_has_high) {
+                if (self.findInvalidLiteral(span)) |bad| {
+                    return self.fail(error.InvalidCharacter, start + bad);
+                }
             }
             self.text_whitespace_char_ref = whitespace_char_ref;
             self.text_has_nel_ls = hasXml11LineSeparator(
@@ -4346,24 +4360,77 @@ fn isPubidChar(byte: u8) bool {
 
 /// Find the next byte that requires special handling in character data:
 /// `<` (markup), `&` (reference), or `]` (possible `]]>` terminator).
-fn findTextSpecial(input: []const u8, start: usize) usize {
+const TextSpecial = struct {
+    /// Offset of the first markup special or invalid literal byte, or the end
+    /// of the input.
+    index: usize,
+    /// A byte at or above 0x80 was seen before `index`; the caller validates
+    /// that run as UTF-8.
+    has_high: bool = false,
+    /// Offset of the first invalid literal byte, when one was seen.
+    invalid: ?usize = null,
+};
+
+/// Find the next `<`, `&`, or `]`, rejecting invalid literal characters in
+/// the same pass. Validating here avoids a second scan over every text node.
+fn findTextSpecial(
+    input: []const u8,
+    start: usize,
+    version: chars.Version,
+) TextSpecial {
     const Vec = @Vector(32, u8);
     const lt: Vec = @splat('<');
     const amp: Vec = @splat('&');
     const rb: Vec = @splat(']');
+    const ctrl: Vec = @splat(0x20);
+    const tab: Vec = @splat('\t');
+    const lf: Vec = @splat('\n');
+    const cr: Vec = @splat('\r');
+    const del: Vec = @splat(0x7F);
+    const high: Vec = @splat(0x80);
     var index = start;
+    var has_high = false;
     while (index + 32 <= input.len) : (index += 32) {
         const chunk: Vec = input[index..][0..32].*;
-        const mask: u32 = @bitCast((chunk == lt) | (chunk == amp) | (chunk == rb));
-        if (mask != 0) return index + @as(usize, @ctz(mask));
-    }
-    while (index < input.len) : (index += 1) {
-        switch (input[index]) {
-            '<', '&', ']' => return index,
-            else => {},
+        const special: u32 = @bitCast(
+            (chunk == lt) | (chunk == amp) | (chunk == rb),
+        );
+        var bad: u32 = @bitCast(chunk < ctrl);
+        bad &= ~@as(u32, @bitCast(
+            (chunk == tab) | (chunk == lf) | (chunk == cr),
+        ));
+        if (version == .xml_1_1) bad |= @bitCast(chunk == del);
+        const high_mask: u32 = @bitCast(chunk >= high);
+        has_high = has_high or high_mask != 0;
+        const stop = @min(@ctz(special), @ctz(bad));
+        if (stop != 32) {
+            const absolute = index + stop;
+            if (bad != 0 and @ctz(bad) == stop) {
+                return .{ .index = absolute, .has_high = has_high, .invalid = absolute };
+            }
+            return .{ .index = absolute, .has_high = has_high };
         }
     }
-    return input.len;
+    while (index < input.len) : (index += 1) {
+        const byte = input[index];
+        switch (byte) {
+            '<', '&', ']' => {
+                return .{ .index = index, .has_high = has_high };
+            },
+            else => {},
+        }
+        if (byte >= 0x80) {
+            has_high = true;
+            continue;
+        }
+        if (byte < 0x20 and byte != '\t' and byte != '\n' and byte != '\r') {
+            return .{ .index = index, .has_high = has_high, .invalid = index };
+        }
+        if (version == .xml_1_1 and byte == 0x7F) {
+            return .{ .index = index, .has_high = has_high, .invalid = index };
+        }
+    }
+    return .{ .index = input.len, .has_high = has_high };
 }
 
 const AttributeValueSpecial = struct {
