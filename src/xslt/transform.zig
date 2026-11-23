@@ -4213,45 +4213,35 @@ const Runtime = struct {
                         const saved_copy_source = self.copy_source;
                         self.copy_source = id;
                         defer self.copy_source = saved_copy_source;
-                        // A body that is one `xsl:apply-templates` needs no
-                        // body-level variable scope; dispatch it directly.
-                        if (instruction.body.len == 1) {
-                            switch (instruction.body[0]) {
-                                .apply_templates => |apply_instruction| {
-                                    if (apply_instruction.stream_identity and
-                                        apply_instruction.params.len == 0)
-                                    {
-                                        try self.applyIdentitySelect(
-                                            node,
-                                            apply_instruction.mode,
-                                            &.{},
-                                        );
-                                        return;
-                                    }
-                                    // A plain apply-templates has no select,
-                                    // sort keys, or parameters; skip the
-                                    // parameter evaluation and select checks.
-                                    if (apply_instruction.select == null and
-                                        apply_instruction.sorts.len == 0 and
-                                        apply_instruction.params.len == 0)
-                                    {
-                                        try self.applyTemplateChildren(
-                                            node,
-                                            apply_instruction.mode,
-                                            &.{},
-                                        );
-                                        return;
-                                    }
-                                    try self.executeApplyTemplates(
-                                        apply_instruction,
-                                        node,
-                                        position,
-                                        size,
-                                    );
-                                    return;
-                                },
-                                else => {},
-                            }
+                        // The body shape was classified at compile time, so
+                        // no instruction fields are re-tested per copy.
+                        switch (instruction.body_kind) {
+                            .identity_select => {
+                                try self.applyIdentitySelect(
+                                    node,
+                                    instruction.body[0].apply_templates.mode,
+                                    &.{},
+                                );
+                                return;
+                            },
+                            .plain_apply => {
+                                try self.applyTemplateChildren(
+                                    node,
+                                    instruction.body[0].apply_templates.mode,
+                                    &.{},
+                                );
+                                return;
+                            },
+                            .apply => {
+                                try self.executeApplyTemplates(
+                                    instruction.body[0].apply_templates,
+                                    node,
+                                    position,
+                                    size,
+                                );
+                                return;
+                            },
+                            .instructions => {},
                         }
                         try self.executeInstructions(
                             instruction.body,

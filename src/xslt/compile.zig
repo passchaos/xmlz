@@ -291,8 +291,23 @@ pub const CopyOf = struct {
     select: CompiledExpr,
 };
 
+/// Shape of a copy body that the runtime can dispatch without re-testing the
+/// compiled instruction's fields per copied node.
+pub const CopyBody = enum {
+    /// Ordinary instruction sequence.
+    instructions,
+    /// A single `xsl:apply-templates` with no select, sorts, or parameters.
+    plain_apply,
+    /// A single `xsl:apply-templates` whose select is the `@*|node()`
+    /// identity shape.
+    identity_select,
+    /// Any other single `xsl:apply-templates`.
+    apply,
+};
+
 pub const Copy = struct {
     body: []const Instruction,
+    body_kind: CopyBody = .instructions,
 };
 
 pub const ElementInstruction = struct {
@@ -1253,9 +1268,26 @@ const Compiler = struct {
                 .select = try self.parseExpression(id, select),
             } });
         } else if (std.mem.eql(u8, local, "copy")) {
-            try body.append(self.arena, .{ .copy = .{
+            var instruction: Copy = .{
                 .body = try self.compileBody(id, preserve),
-            } });
+            };
+            if (instruction.body.len == 1) {
+                switch (instruction.body[0]) {
+                    .apply_templates => |apply_instruction| {
+                        instruction.body_kind = if (apply_instruction.params.len != 0)
+                            .apply
+                        else if (apply_instruction.stream_identity)
+                            .identity_select
+                        else if (apply_instruction.select == null and
+                            apply_instruction.sorts.len == 0)
+                            .plain_apply
+                        else
+                            .apply;
+                    },
+                    else => {},
+                }
+            }
+            try body.append(self.arena, .{ .copy = instruction });
         } else if (std.mem.eql(u8, local, "element")) {
             const name = self.document.attribute(id, "name") orelse
                 return error.InvalidStylesheet;
