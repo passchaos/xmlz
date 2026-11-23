@@ -3785,12 +3785,9 @@ const Runtime = struct {
         switch (node) {
             .attribute => |attr| {
                 const attribute = self.source.attributesOf(attr.element)[attr.index];
-                try self.appendAttribute(
-                    attribute.name,
-                    attribute.prefixName(),
-                    attribute.localName(),
+                try self.appendAttributeRaw(
+                    attribute,
                     self.source.ns(attribute.ns),
-                    attribute.value,
                 );
             },
             .namespace_node => |ns| {
@@ -5011,6 +5008,32 @@ const Runtime = struct {
         }
     }
 
+    /// Append an attribute copied from a parsed document; its qualified name
+    /// and namespace were validated by the parser.
+    fn appendAttributeRaw(
+        self: *Runtime,
+        attr: dom.Attribute,
+        uri: []const u8,
+    ) Error!void {
+        if (uri.len == 0) {
+            self.builder.setAttributeRaw(
+                self.parent,
+                attr.name,
+                attr.colon(),
+                attr.value,
+            ) catch |err| return mapBuilderError(err);
+        } else {
+            try self.addNamespaceDecl(self.parent, attr.prefixName(), uri);
+            self.builder.setAttributeNsRaw(
+                self.parent,
+                attr.name,
+                attr.colon(),
+                uri,
+                attr.value,
+            ) catch |err| return mapBuilderError(err);
+        }
+    }
+
     fn generatedPrefix(self: *Runtime, uri: []const u8) Error![]const u8 {
         var buffer: [32]u8 = undefined;
         var index: usize = 1;
@@ -5125,12 +5148,9 @@ const Runtime = struct {
         switch (node) {
             .attribute => |attr| {
                 const attribute = source.attributesOf(attr.element)[attr.index];
-                try self.appendAttribute(
-                    attribute.name,
-                    attribute.prefixName(),
-                    attribute.localName(),
+                try self.appendAttributeRaw(
+                    attribute,
                     self.source.ns(attribute.ns),
-                    attribute.value,
                 );
             },
             .namespace_node => |ns| {

@@ -492,6 +492,70 @@ pub const Builder = struct {
         if (is_ns_decl) node.setNsDecls(true);
     }
 
+    /// Set an attribute whose qualified name, colon offset, and namespace
+    /// were validated when the source document was parsed.
+    pub fn setAttributeRaw(
+        self: *Builder,
+        element: dom.NodeId,
+        raw_name: []const u8,
+        colon: u16,
+        value: []const u8,
+    ) Error!void {
+        return self.setAttributeRawImpl(element, raw_name, colon, "", value);
+    }
+
+    /// Namespace-aware variant of `setAttributeRaw`.
+    pub fn setAttributeNsRaw(
+        self: *Builder,
+        element: dom.NodeId,
+        raw_name: []const u8,
+        colon: u16,
+        uri: []const u8,
+        value: []const u8,
+    ) Error!void {
+        return self.setAttributeRawImpl(element, raw_name, colon, uri, value);
+    }
+
+    inline fn setAttributeRawImpl(
+        self: *Builder,
+        element: dom.NodeId,
+        raw_name: []const u8,
+        colon: u16,
+        uri: []const u8,
+        value: []const u8,
+    ) Error!void {
+        if (element >= self.nodes.items.len or
+            self.nodes.items[element].kind != .element)
+        {
+            return error.InvalidTree;
+        }
+        const owned_name = try self.copyString(raw_name);
+        const is_ns_decl = namespace.Resolver.isNamespaceDeclaration(owned_name);
+        const node = &self.nodes.items[element];
+        const start = node.attr_start;
+        const count = node.attr_count;
+        for (self.attributes.items[start..][0..count]) |*attribute| {
+            if (std.mem.eql(u8, attribute.name, owned_name)) {
+                attribute.value = try self.dupe(value);
+                if (is_ns_decl) node.setNsDecls(true);
+                return;
+            }
+        }
+        const ns: dom.NamespaceId = if (uri.len != 0)
+            try self.internNamespace(uri)
+        else if (is_ns_decl)
+            try self.internNamespace(namespace.xmlns_uri)
+        else
+            0;
+        try self.appendAttribute(element, .{
+            .name = owned_name,
+            .ns = ns,
+            .value = try self.dupe(value),
+            .flags = colon,
+        });
+        if (is_ns_decl) node.setNsDecls(true);
+    }
+
     pub fn setAttributeNs(
         self: *Builder,
         element: dom.NodeId,
