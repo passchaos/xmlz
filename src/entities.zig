@@ -325,6 +325,68 @@ const Expansion = struct {
     }
 };
 
+/// Stack buffer size for the short-value decode fast path.
+const simple_decode_capacity = 256;
+
+/// Decode a short XML 1.0 span that contains only predefined entity
+/// references, character references, and line ends. Returns the decoded
+/// length, or null when a general entity or a limit requires the general
+/// path.
+fn decodeSimple(
+    raw: []const u8,
+    attribute: bool,
+    normalize: bool,
+    max_output: usize,
+    buffer: []u8,
+) ?usize {
+    var out: usize = 0;
+    var index: usize = 0;
+    while (index < raw.len) {
+        const byte = raw[index];
+        var advance: usize = 1;
+        var replacement: ?u8 = null;
+        if (byte == '&') {
+            const semicolon = std.mem.indexOfScalarPos(
+                u8,
+                raw,
+                index + 1,
+                ';',
+            ) orelse return null;
+            const body = raw[index + 1 .. semicolon];
+            if (body.len != 0 and body[0] == '#') {
+                const codepoint = if (body.len > 1 and body[1] == 'x')
+                    chars.parseHexCharRefVersion(body[1..], .xml_1_0)
+                else
+                    chars.parseDecimalCharRefVersion(body[1..], .xml_1_0);
+                const cp = codepoint orelse return null;
+                var encoded: [4]u8 = undefined;
+                const bytes = chars.encodeUtf8(&encoded, cp);
+                if (out + bytes.len > buffer.len or
+                    out + bytes.len > max_output) return null;
+                @memcpy(buffer[out..][0..bytes.len], bytes);
+                out += bytes.len;
+                index = semicolon + 1;
+                continue;
+            }
+            replacement = predefinedReplacement(body) orelse return null;
+            advance = semicolon + 1 - index;
+        } else if (byte == '\r') {
+            if (attribute or normalize) {
+                replacement = if (attribute) ' ' else '\n';
+                if (index + 1 < raw.len and raw[index + 1] == '\n') advance = 2;
+            }
+        } else if (attribute and (byte == '\t' or byte == '\n')) {
+            replacement = ' ';
+        }
+        const value = replacement orelse byte;
+        if (out + 1 > buffer.len or out + 1 > max_output) return null;
+        buffer[out] = value;
+        out += 1;
+        index += advance;
+    }
+    return out;
+}
+
 fn needsTextDecode(raw: []const u8, version: chars.Version) bool {
     var index: usize = 0;
     while (index < raw.len) : (index += 1) {
@@ -380,6 +442,19 @@ pub fn decodeTextAlloc(
     options: Options,
 ) DecodeError![]const u8 {
     if (!needsTextDecode(raw, options.version)) return raw;
+    if (raw.len <= simple_decode_capacity and options.version == .xml_1_0) {
+        var buffer: [simple_decode_capacity]u8 = undefined;
+        if (decodeSimple(
+            raw,
+            false,
+            options.normalize_line_endings,
+            limits.max_output_bytes,
+            &buffer,
+        )) |len| {
+            if (len == 0) return raw[0..0];
+            return allocator.dupe(u8, buffer[0..len]);
+        }
+    }
     var expansion: Expansion = .{
         .allocator = allocator,
         .table = table,
@@ -409,6 +484,19 @@ pub fn decodeAttributeAlloc(
     options: Options,
 ) DecodeError![]const u8 {
     if (!needsAttributeDecode(raw, options.version)) return raw;
+    if (raw.len <= simple_decode_capacity and options.version == .xml_1_0) {
+        var buffer: [simple_decode_capacity]u8 = undefined;
+        if (decodeSimple(
+            raw,
+            true,
+            true,
+            limits.max_output_bytes,
+            &buffer,
+        )) |len| {
+            if (len == 0) return raw[0..0];
+            return allocator.dupe(u8, buffer[0..len]);
+        }
+    }
     var expansion: Expansion = .{
         .allocator = allocator,
         .table = table,
