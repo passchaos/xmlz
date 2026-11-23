@@ -4228,6 +4228,20 @@ const Runtime = struct {
                                         );
                                         return;
                                     }
+                                    // A plain apply-templates has no select,
+                                    // sort keys, or parameters; skip the
+                                    // parameter evaluation and select checks.
+                                    if (apply_instruction.select == null and
+                                        apply_instruction.sorts.len == 0 and
+                                        apply_instruction.params.len == 0)
+                                    {
+                                        try self.applyTemplateChildren(
+                                            node,
+                                            apply_instruction.mode,
+                                            &.{},
+                                        );
+                                        return;
+                                    }
                                     try self.executeApplyTemplates(
                                         apply_instruction,
                                         node,
