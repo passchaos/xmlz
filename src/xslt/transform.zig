@@ -5321,8 +5321,8 @@ const Runtime = struct {
             const value = self.source.node(current);
             child = value.next_sibling;
             if (value.kind != .element) continue;
-            if (!std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
-            if (!std.mem.eql(u8, value.localName(), local)) continue;
+            if (!namesEqual(self.source.ns(value.ns), uri)) continue;
+            if (!namesEqual(value.localName(), local)) continue;
             // Inline `stringValue`'s single-text-child case: it covers the
             // common leaf lookup without another call.
             const first = value.first_child;
@@ -7044,6 +7044,12 @@ fn runExtensionFunction(
         }
         return err;
     }
+}
+
+/// Compare short names through the inline comparator without growing the
+/// caller's code; `std.mem.eql` is a generic out-of-line instantiation.
+noinline fn namesEqual(a: []const u8, b: []const u8) bool {
+    return name_match.equal(a, b);
 }
 
 fn prefixOf(node: *const dom.Node) []const u8 {
