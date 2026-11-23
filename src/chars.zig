@@ -444,7 +444,9 @@ pub inline fn xmlCodepointLength(
         const b2 = bytes[index + 2];
         const b3 = bytes[index + 3];
         if ((b1 | b2 | b3) & 0xC0 != 0x80) return null;
-        // Leads F0..F3 cover U+10000..U+FFFFF, which is always valid.
+        // F0 needs a high continuation byte to stay above the overlong
+        // range; F1..F3 are always valid; F4 caps the code point.
+        if (byte == 0xF0) return if (b1 >= 0x90) 4 else null;
         if (byte < 0xF4) return 4;
         const cp: u21 = (@as(u21, byte & 0x07) << 18) |
             (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) |
@@ -504,6 +506,29 @@ pub inline fn findInvalidLiteralCharVersion(
                 continue;
             }
             return index;
+        }
+        // Fast path: four 3-byte sequences with leads E1..EC, whose code
+        // points are always valid XML characters once the continuation bytes
+        // check out. (ED covers the surrogate range and EF covers U+FFFE and
+        // U+FFFF, so both stay on the scalar path.) Any deviation falls back
+        // to the scalar decoder, which also reports the exact bad index.
+        if (index + 16 <= bytes.len and byte >= 0xE1 and byte <= 0xEC) {
+            const Wide = @Vector(16, u8);
+            const chunk: Wide = bytes[index..][0..16].*;
+            const cont: u16 = @bitCast(
+                (chunk & @as(Wide, @splat(0xC0))) ==
+                    @as(Wide, @splat(0x80)),
+            );
+            const leads: u16 = @bitCast(
+                (chunk >= @as(Wide, @splat(0xE1))) &
+                    (chunk <= @as(Wide, @splat(0xEC))),
+            );
+            if ((cont & 0x0DB6) == 0x0DB6 and
+                (leads & 0x0249) == 0x0249)
+            {
+                index += 12;
+                continue;
+            }
         }
         const len = xmlCodepointLength(bytes, index, version) orelse
             return index;
@@ -683,4 +708,32 @@ pub inline fn findByteSoon(bytes: []const u8, start: usize, needle: u8) ?usize {
         return std.mem.indexOfScalarPos(u8, bytes, index, needle);
     }
     return null;
+}
+
+test "xmlCodepointLength enforces the UTF-8 and XML boundaries" {
+    const cases = [_]struct { bytes: []const u8, ok: bool }{
+        .{ .bytes = "\xE1\x80\x80", .ok = true }, // U+1000
+        .{ .bytes = "\xE4\xB8\xAD", .ok = true }, // U+4E2D
+        .{ .bytes = "\xE9\xBF\xBF", .ok = true }, // U+9FFF
+        .{ .bytes = "\xEC\xBF\xBF", .ok = true }, // U+CFFF
+        .{ .bytes = "\xED\x9F\xBF", .ok = true }, // U+D7FF
+        .{ .bytes = "\xEE\x80\x80", .ok = true }, // U+E000
+        .{ .bytes = "\xEF\xBF\xBD", .ok = true }, // U+FFFD
+        .{ .bytes = "\xF0\x90\x80\x80", .ok = true }, // U+10000
+        .{ .bytes = "\xF4\x8F\xBF\xBF", .ok = true }, // U+10FFFF
+        .{ .bytes = "\xED\xA0\x80", .ok = false }, // U+D800 surrogate
+        .{ .bytes = "\xED\xBF\xBF", .ok = false }, // U+DFFF surrogate
+        .{ .bytes = "\xEF\xBF\xBE", .ok = false }, // U+FFFE
+        .{ .bytes = "\xEF\xBF\xBF", .ok = false }, // U+FFFF
+        .{ .bytes = "\xE0\x9F\xBF", .ok = false }, // overlong three-byte
+        .{ .bytes = "\xF0\x8F\xBF\xBF", .ok = false }, // overlong four-byte
+        .{ .bytes = "\xF4\x90\x80\x80", .ok = false }, // above U+10FFFF
+        .{ .bytes = "\xC0\x80", .ok = false }, // overlong two-byte
+        .{ .bytes = "\xE4\xB8", .ok = false }, // truncated
+    };
+    for (cases) |case| {
+        const length = xmlCodepointLength(case.bytes, 0, .xml_1_0);
+        try std.testing.expectEqual(case.ok, length != null);
+        if (length) |len| try std.testing.expectEqual(case.bytes.len, len);
+    }
 }
