@@ -260,13 +260,13 @@ column amortizes parsing and serialization over the 20 applications.
 | --- | --- | ---: | ---: |
 | identity | xmlz | 0.128 | 6.41 |
 | identity | libxslt (lxml) | 1.036 | 51.81 |
-| sorted report | xmlz | 0.109 | 5.43 |
-| sorted report | libxslt (lxml) | 0.870 | 43.50 |
+| sorted report | xmlz | 0.103 | 5.14 |
+| sorted report | libxslt (lxml) | 0.906 | 45.31 |
 
 ## Interpretation
 
 - The identity transform is **8.1x faster than libxslt** and the sorted
-  report is **8.0x faster**; libxslt is measured through lxml in-process so
+  report is **8.8x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,

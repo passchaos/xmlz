@@ -567,13 +567,19 @@ pub const Builder = struct {
             node.attr_start = @intCast(destination);
         }
         if (self.attributes.items.len == self.attributes.capacity) {
-            try self.attributes.ensureTotalCapacity(
-                self.arena.allocator(),
-                self.attributes.items.len + 1,
-            );
+            try self.growAttributes();
         }
         self.attributes.appendAssumeCapacity(attribute);
         self.nodes.items[element].attr_count += 1;
+    }
+
+    /// Result trees can add many attributes through value templates, and the
+    /// default growth step re-copies the whole array often enough to show up
+    /// in profiles. Doubling halves those copies.
+    fn growAttributes(self: *Builder) Error!void {
+        const current = self.attributes.items.len;
+        const target = if (current < 256) 256 else current * 2;
+        try self.attributes.ensureTotalCapacity(self.arena.allocator(), target);
     }
 
     pub fn finish(self: *Builder) Error!dom.Document {
