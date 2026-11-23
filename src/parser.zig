@@ -698,6 +698,11 @@ pub const Parser = struct {
         // Bloom filter over attribute name keys: the quadratic duplicate
         // check only runs when two attributes map to the same bit.
         var seen_keys: u64 = 0;
+        // Hoist the mode flags: writes to `self.attrs` stop the compiler from
+        // proving they cannot alias `self.options`.
+        const namespaces = self.options.namespaces;
+        const trusted = self.options.trusted;
+        const attribute_limit = self.options.max_attributes;
         while (true) {
             const before_whitespace = pos;
             // A single space separates attributes in normal markup; only fall
@@ -736,11 +741,11 @@ pub const Parser = struct {
                 },
             }
 
-            if (attr_count == self.options.max_attributes) {
+            if (attr_count == attribute_limit) {
                 self.pos = pos;
                 return self.fail(error.AttributeLimitExceeded, pos);
             }
-            if (self.options.trusted) {
+            if (trusted) {
                 pos = try self.scanAttributeIntoTrusted(
                     &self.attrs[attr_count],
                     pos,
@@ -750,7 +755,7 @@ pub const Parser = struct {
             }
             const attr = &self.attrs[attr_count];
             attrs_need_work = attrs_need_work or attr.needs_decode;
-            if (self.options.namespaces) {
+            if (namespaces) {
                 if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
                     has_namespace_decls = true;
                     attr.namespace_uri = namespace.xmlns_uri;
@@ -758,7 +763,7 @@ pub const Parser = struct {
                     has_prefixed = true;
                 }
             }
-            if (!self.options.trusted) {
+            if (!trusted) {
                 const hash = attr.name_key *% 0x9E3779B1;
                 const bit = @as(u64, 1) << @as(u6, @truncate(hash >> 26));
                 if (seen_keys & bit != 0) {
