@@ -834,6 +834,18 @@ fn scanAttributeTrusted(value: []const u8, start: usize) Error!usize {
         mask |= @bitCast((chunk == amp) | (chunk == lt) | (chunk == quote));
         if (mask != 0) return index + @ctz(mask);
     }
+    if (index + 16 <= value.len) {
+        const Half = @Vector(16, u8);
+        const chunk: Half = value[index..][0..16].*;
+        var mask: u16 = @bitCast(chunk < @as(Half, @splat(0x20)));
+        mask |= @bitCast(
+            (chunk == @as(Half, @splat('&'))) |
+                (chunk == @as(Half, @splat('<'))) |
+                (chunk == @as(Half, @splat('"'))),
+        );
+        if (mask != 0) return index + @ctz(mask);
+        index += 16;
+    }
     while (index < value.len) : (index += 1) {
         if (attribute_special_table[value[index]]) return index;
     }
