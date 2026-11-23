@@ -4,6 +4,7 @@
 //! document owns the arena; do not call `deinit` on the builder.
 
 const std = @import("std");
+const small_bytes = @import("bytes.zig");
 const chars = @import("chars.zig");
 const dom = @import("dom.zig");
 const namespace = @import("namespace.zig");
@@ -581,7 +582,7 @@ pub const Builder = struct {
             self.slab_index = 0;
         }
         const start = self.slab_index;
-        @memcpy(self.slab[start..][0..bytes.len], bytes);
+        small_bytes.copyShort(self.slab[start..][0..bytes.len], bytes);
         self.slab_index = start + bytes.len;
         return self.slab[start..][0..bytes.len];
     }

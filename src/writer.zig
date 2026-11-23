@@ -6,6 +6,7 @@
 //! ending normalization cannot lose it.
 
 const std = @import("std");
+const small_bytes = @import("bytes.zig");
 const chars = @import("chars.zig");
 const dom = @import("dom.zig");
 
@@ -263,27 +264,7 @@ fn writeNode(
 /// writer copies millions of short names, values, and raw attribute spans,
 /// where the generic memcpy's size dispatch costs more than the copy.
 inline fn copyShort(out: []u8, in: []const u8) void {
-    const n = in.len;
-    if (n >= 16) {
-        @memcpy(out[0..n], in);
-        return;
-    }
-    if (n >= 8) {
-        out[0..8].* = in[0..8].*;
-        out[n - 8 ..][0..8].* = in[n - 8 ..][0..8].*;
-        return;
-    }
-    if (n >= 4) {
-        out[0..4].* = in[0..4].*;
-        out[n - 4 ..][0..4].* = in[n - 4 ..][0..4].*;
-        return;
-    }
-    if (n >= 2) {
-        out[0..2].* = in[0..2].*;
-        out[n - 2 ..][0..2].* = in[n - 2 ..][0..2].*;
-        return;
-    }
-    if (n == 1) out[0] = in[0];
+    small_bytes.copyShort(out, in);
 }
 
 inline fn isXmlnsAttribute(name: []const u8) bool {
@@ -383,7 +364,7 @@ fn writeStartTag(
                     // The raw source span is already `name="value"`; copy it
                     // once instead of assembling the pieces.
                     const raw: ?[]const u8 = if (attr.isRawAdjacent())
-                        attr.name.ptr[0..@intFromPtr(attr.value.ptr) +
+                        attr.name.ptr[0 .. @intFromPtr(attr.value.ptr) +
                             attr.value.len + 1 - @intFromPtr(attr.name.ptr)]
                     else
                         null;
@@ -448,7 +429,7 @@ fn writeStartTag(
                     try writer.writeByte(' ');
                     if (attr.isRawAdjacent()) {
                         try writer.writeAll(
-                            attr.name.ptr[0..@intFromPtr(attr.value.ptr) +
+                            attr.name.ptr[0 .. @intFromPtr(attr.value.ptr) +
                                 attr.value.len + 1 - @intFromPtr(attr.name.ptr)],
                         );
                         continue;

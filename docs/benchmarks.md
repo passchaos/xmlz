@@ -258,23 +258,25 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.178 | 8.92 |
-| identity | libxslt (lxml) | 1.035 | 51.76 |
-| sorted report | xmlz | 0.158 | 7.91 |
-| sorted report | libxslt (lxml) | 0.890 | 44.52 |
+| identity | xmlz | 0.160 | 8.00 |
+| identity | libxslt (lxml) | 1.029 | 51.46 |
+| sorted report | xmlz | 0.155 | 7.76 |
+| sorted report | libxslt (lxml) | 0.885 | 44.24 |
 
 ## Interpretation
 
-- The identity transform is **5.8x faster than libxslt** and the sorted
-  report is **5.6x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **6.4x faster than libxslt** and the sorted
+  report is **5.7x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
   short result strings pack into arena-owned slabs instead of paying one
-  allocation each, and result node and attribute arrays append through an
-  inline capacity check instead of the out-of-line `ArrayList.addOne`
-  capacity call. Simple child selects in `xsl:value-of` and attribute
-  value templates read the text directly instead of building node sets.
+  allocation each, and those strings are copied with overlapping
+  width-appropriate loads and stores instead of an out-of-line `memcpy`.
+  Result node and attribute arrays append through an inline capacity check
+  instead of the out-of-line `ArrayList.addOne` capacity call. Simple child
+  selects in `xsl:value-of` and attribute value templates read the text
+  directly instead of building node sets.
   Absolute times move with host load, so the ratio is the meaningful
   comparison.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
