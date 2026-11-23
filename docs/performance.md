@@ -66,6 +66,10 @@ experiments that were already rejected with evidence.
 - **Byte-exact index addressing** in parsed-attribute copies: writing through
   a moving pointer instead of `out[i]` removed a scaled address computation
   (DOM +1.2%).
+- **Transparent huge pages for one-shot parse arrays** (`madvise` hint in
+  `dom.Builder.run`): best-case SVG DOM 526 MB/s with the hint versus
+  372 MB/s without it under the same load. The hint is applied only when the
+  reservation is at least 2 MiB.
 
 ## Rejected with evidence
 
@@ -103,6 +107,10 @@ uop-cache slot.
   +0.9% to +1.2% instructions; LLVM's narrower reassembly is better there.
 - 16-byte unroll of the name scanner, 32-byte CJK validator over 10 code
   points, `@branchHint(.cold)` on the CJK block: neutral or worse.
+- Huge-page hints for the XSLT result builder's reused arena: page faults
+  dropped 16% but wall time rose 8–30% (the arena is reused, so there are no
+  repeated faults to save, and huge-page zeroing plus `khugepaged` work
+  dominate). The hint belongs to one-shot parse arrays only.
 
 ## Remaining architectural options
 
