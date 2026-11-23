@@ -4912,7 +4912,7 @@ const Runtime = struct {
 
     /// XSLT result trees merge adjacent text nodes; disable-output-escaping
     /// text only merges with other raw text so serializers keep its meaning.
-    fn mergeIntoLastText(
+    inline fn mergeIntoLastText(
         self: *Runtime,
         text: []const u8,
         raw: bool,
