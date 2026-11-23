@@ -102,6 +102,16 @@ pub fn bindingLessThan(_: void, a: Binding, b: Binding) bool {
     return std.mem.order(u8, a.prefix, b.prefix) == .lt;
 }
 
+/// Compare two short slices without the generic comparison's call overhead.
+inline fn sameSlice(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    if (a.ptr == b.ptr) return true;
+    for (a, b) |x, y| {
+        if (x != y) return false;
+    }
+    return true;
+}
+
 pub const Resolver = struct {
     bindings: [max_bindings]Binding = undefined,
     count: usize = 0,
@@ -187,11 +197,15 @@ pub const Resolver = struct {
 
     pub fn resolve(self: *const Resolver, prefix: []const u8) ?[]const u8 {
         if (prefix.len == 0) return self.default_ns;
-        if (std.mem.eql(u8, prefix, "xml")) return xml_uri;
+        if (prefix.len == 3 and prefix[0] == 'x' and prefix[1] == 'm' and
+            prefix[2] == 'l')
+        {
+            return xml_uri;
+        }
         var index = self.count;
         while (index > 0) {
             index -= 1;
-            if (std.mem.eql(u8, self.bindings[index].prefix, prefix)) {
+            if (sameSlice(self.bindings[index].prefix, prefix)) {
                 // Namespaces 1.1 prefix undeclaration leaves the prefix
                 // unbound rather than bound to the empty string.
                 if (self.bindings[index].uri.len == 0) return null;

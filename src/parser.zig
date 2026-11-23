@@ -1261,7 +1261,7 @@ pub const Parser = struct {
             end_namespace = resolved.uri;
         }
         const expected = self.open_names[self.depth - 1];
-        if (!std.mem.eql(u8, expected, name)) {
+        if (!sameName(expected, name)) {
             return self.fail(error.MismatchedEndTag, name_start);
         }
         const event_depth = self.depth;
@@ -4324,6 +4324,16 @@ fn evaluateConditionals(
         }
         pos = scan;
     }
+}
+
+/// Compare two names without the generic slice comparison's call overhead.
+inline fn sameName(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    if (a.ptr == b.ptr) return true;
+    for (a, b) |x, y| {
+        if (x != y) return false;
+    }
+    return true;
 }
 
 fn attributeNameKey(name: []const u8) u32 {
