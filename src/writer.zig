@@ -347,13 +347,24 @@ fn writeStartTag(
                     const attr = &attrs[index];
                     if (skip_decls and
                         shouldSkipAttribute(doc, id, attr, default_ns)) continue;
-                    if (!attr.isPlain() and !shortPlainAttribute(attr.value) and
+                    // The raw source span is already `name="value"`; copy it
+                    // once instead of assembling the pieces.
+                    const raw: ?[]const u8 = if (attr.isRawAdjacent())
+                        attr.name.ptr[0..@intFromPtr(attr.value.ptr) +
+                            attr.value.len + 1 - @intFromPtr(attr.name.ptr)]
+                    else
+                        null;
+                    if (raw == null and
+                        !attr.isPlain() and !shortPlainAttribute(attr.value) and
                         (if (validated)
                             try scanAttributeTrusted(attr.value, 0)
                         else
                             try scanAttribute(attr.value, 0)) !=
                             attr.value.len) break;
-                    const needed = 4 + attr.name.len + attr.value.len;
+                    const needed = if (raw) |bytes|
+                        1 + bytes.len
+                    else
+                        4 + attr.name.len + attr.value.len;
                     if (used + needed > out.len) {
                         writer.advance(used);
                         out = writer.unusedCapacitySlice();
@@ -362,15 +373,20 @@ fn writeStartTag(
                     }
                     out[used] = ' ';
                     used += 1;
-                    @memcpy(out[used..][0..attr.name.len], attr.name);
-                    used += attr.name.len;
-                    out[used] = '=';
-                    out[used + 1] = '"';
-                    used += 2;
-                    @memcpy(out[used..][0..attr.value.len], attr.value);
-                    used += attr.value.len;
-                    out[used] = '"';
-                    used += 1;
+                    if (raw) |bytes| {
+                        @memcpy(out[used..][0..bytes.len], bytes);
+                        used += bytes.len;
+                    } else {
+                        @memcpy(out[used..][0..attr.name.len], attr.name);
+                        used += attr.name.len;
+                        out[used] = '=';
+                        out[used + 1] = '"';
+                        used += 2;
+                        @memcpy(out[used..][0..attr.value.len], attr.value);
+                        used += attr.value.len;
+                        out[used] = '"';
+                        used += 1;
+                    }
                 }
                 if (index == attrs.len) {
                     if (out.len - used < 2) {
@@ -397,6 +413,13 @@ fn writeStartTag(
                     if (skip_decls and
                         shouldSkipAttribute(doc, id, attr, default_ns)) continue;
                     try writer.writeByte(' ');
+                    if (attr.isRawAdjacent()) {
+                        try writer.writeAll(
+                            attr.name.ptr[0..@intFromPtr(attr.value.ptr) +
+                                attr.value.len + 1 - @intFromPtr(attr.name.ptr)],
+                        );
+                        continue;
+                    }
                     try writer.writeAll(attr.name);
                     try writer.writeAll("=\"");
                     if (attr.isPlain()) {

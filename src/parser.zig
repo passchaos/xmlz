@@ -238,6 +238,10 @@ pub const Attribute = struct {
     /// True when an ATTLIST declaration gives this attribute a tokenized
     /// (non-CDATA) type, which changes attribute-value normalization.
     tokenized: bool = false,
+    /// True when the attribute was written as `name="value"` with no
+    /// surrounding whitespace and the value needs no decoding, so the source
+    /// span from the name through the value is already the output form.
+    raw_adjacent: bool = false,
     /// True when the attribute was supplied by an ATTLIST default rather than
     /// authored on the element.
     from_default: bool = false,
@@ -787,6 +791,7 @@ pub const Parser = struct {
         if (self.tokenized_attr_count != 0) {
             for (self.attrs[0..attr_count]) |*attr| {
                 attr.tokenized = self.isTokenizedAttribute(name, attr.name);
+                if (attr.tokenized) attr.raw_adjacent = false;
             }
             attrs_need_work = true;
         }
@@ -1022,9 +1027,11 @@ pub const Parser = struct {
         // around the equals sign, so check that shape before the general
         // whitespace-skipping path.
         var pos = name_start + name_info.len;
+        var fast_shape = false;
         if (pos + 1 < input.len and input[pos] == '=' and
             (input[pos + 1] == '"' or input[pos + 1] == '\''))
         {
+            fast_shape = true;
             pos += 1;
         } else {
             pos = skipWhitespaceAt(input, pos);
@@ -1140,6 +1147,7 @@ pub const Parser = struct {
             .needs_decode = needs_decode,
             .whitespace_char_ref = whitespace_char_ref,
             .tokenized = false,
+            .raw_adjacent = fast_shape and quote == '"' and !needs_decode,
         };
         return pos + 1;
     }
@@ -1156,9 +1164,11 @@ pub const Parser = struct {
         const name = input[name_start .. name_start + name_info.len];
 
         var pos = name_start + name_info.len;
+        var fast_shape = false;
         if (pos + 1 < input.len and input[pos] == '=' and
             (input[pos + 1] == '"' or input[pos + 1] == '\''))
         {
+            fast_shape = true;
             pos += 1;
         } else {
             pos = skipSpacesAt(input, pos);
@@ -1232,6 +1242,7 @@ pub const Parser = struct {
             .needs_decode = needs_decode,
             .whitespace_char_ref = false,
             .tokenized = false,
+            .raw_adjacent = fast_shape and quote == '"' and !needs_decode,
         };
         return pos + 1;
     }

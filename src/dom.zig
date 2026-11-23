@@ -35,6 +35,7 @@ pub const NamespaceId = u32;
 const attr_flag_normalization_changed: u32 = 1 << 16;
 const attr_flag_whitespace_char_ref: u32 = 1 << 17;
 const attr_flag_plain: u32 = 1 << 18;
+const attr_flag_raw_adjacent: u32 = 1 << 19;
 
 pub const Attribute = struct {
     /// Raw qualified name as authored.
@@ -67,6 +68,12 @@ pub const Attribute = struct {
     /// escaping: no references, markup, quotes, or line ends.
     pub inline fn isPlain(self: Attribute) bool {
         return self.flags & attr_flag_plain != 0;
+    }
+
+    /// True when the source span from the name through the value is already
+    /// the serialized form `name="value"`.
+    pub inline fn isRawAdjacent(self: Attribute) bool {
+        return self.flags & attr_flag_raw_adjacent != 0;
     }
 
     pub inline fn setPlain(self: *Attribute, value: bool) void {
@@ -714,8 +721,11 @@ const Builder = struct {
             }
             // A validated value with no references or line ends cannot
             // contain a character the serializer must escape.
-            if (!attr.needs_decode and !trusted) {
-                flags |= attr_flag_plain;
+            if (!trusted) {
+                if (!attr.needs_decode) flags |= attr_flag_plain;
+                // The parser clears this for tokenized attributes and any
+                // value that needs decoding.
+                if (attr.raw_adjacent) flags |= attr_flag_raw_adjacent;
             }
             dst.* = .{
                 .name = attr.name,
