@@ -230,7 +230,13 @@ fn writeNode(
         ),
         .text => {
             if (node.isRawText() or node.isTextPlain()) {
-                try writer.writeAll(node.value);
+                const out = writer.unusedCapacitySlice();
+                if (out.len >= node.value.len) {
+                    @memcpy(out[0..node.value.len], node.value);
+                    writer.advance(node.value.len);
+                } else {
+                    try writer.writeAll(node.value);
+                }
             } else {
                 try escapeTextVersionChecked(
                     writer,
