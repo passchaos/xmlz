@@ -222,7 +222,6 @@ pub const Attribute = struct {
     /// Raw value: references are not expanded and line endings are untouched.
     value: []const u8,
     name_range: SourceRange,
-    value_range: SourceRange,
     /// Resolved namespace URI when namespace processing is enabled; empty for
     /// unprefixed attributes and namespace declarations.
     namespace_uri: []const u8 = "",
@@ -1137,10 +1136,6 @@ pub const Parser = struct {
                 .start = @intCast(name_start),
                 .end = @intCast(name_start + name_info.len),
             },
-            .value_range = .{
-                .start = @intCast(value_start),
-                .end = @intCast(value_start + value.len),
-            },
             .namespace_uri = "",
             .colon = name_info.colon,
             .name_key = attributeNameKey(name),
@@ -1231,10 +1226,6 @@ pub const Parser = struct {
             .name_range = .{
                 .start = @intCast(name_start),
                 .end = @intCast(name_start + name_info.len),
-            },
-            .value_range = .{
-                .start = @intCast(value_start),
-                .end = @intCast(value_start + value.len),
             },
             .namespace_uri = "",
             .colon = name_info.colon,
@@ -3328,10 +3319,6 @@ pub const Parser = struct {
             .name = decl.name,
             .value = value,
             .name_range = .{ .start = 0, .end = 0 },
-            .value_range = .{
-                .start = @intCast(decl.value_offset),
-                .end = @intCast(decl.value_offset + value.len),
-            },
             .namespace_uri = if (namespace.Resolver.isNamespaceDeclaration(
                 decl.name,
             )) namespace.xmlns_uri else "",
