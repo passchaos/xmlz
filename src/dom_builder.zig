@@ -774,7 +774,7 @@ pub const Builder = struct {
 
     /// Copy short strings into a bump slab; large values get their own
     /// allocation. The slab itself is arena-owned.
-    fn copyString(self: *Builder, bytes: []const u8) Error![]const u8 {
+    inline fn copyString(self: *Builder, bytes: []const u8) Error![]const u8 {
         if (bytes.len == 0) return "";
         if (bytes.len > self.slab.len - self.slab_index) {
             return self.copyStringSlow(bytes);
