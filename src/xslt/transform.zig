@@ -2422,6 +2422,25 @@ const Runtime = struct {
         return false;
     }
 
+    /// Whether the matcher unconditionally accepts every non-document node,
+    /// which lets a lone `node()` rule resolve in constant time.
+    fn matcherAcceptsChildNodes(matcher: PatternMatcher) bool {
+        switch (matcher) {
+            .simple => |pattern| switch (pattern) {
+                .child_node => return true,
+                else => return false,
+            },
+            .simple_union => |patterns| {
+                for (patterns) |pattern| switch (pattern) {
+                    .child_node => return true,
+                    else => {},
+                };
+                return false;
+            },
+            .structural => return false,
+        }
+    }
+
     fn findTemplate(
         self: *Runtime,
         node: xpath.NodeRef,
@@ -2967,6 +2986,33 @@ const Runtime = struct {
         // instead of a full bucket scan.
         if (mode == null and self.template_index.nodes.count() == 0) {
             const index = &self.template_index;
+            // A lone rule that matches every non-document node (the standard
+            // identity pattern) resolves any element, text, comment, or
+            // processing instruction directly.
+            if (index.child_node.default.items.len == 1 and
+                index.element_any.default.items.len == 0 and
+                index.elements.count() == 0 and
+                index.elements_by_uri.count() == 0 and
+                index.text.default.items.len == 0 and
+                index.comment.default.items.len == 0 and
+                index.processing_instruction.default.items.len == 0)
+            {
+                const state = &self.template_states[index.child_node.default.items[0]];
+                if (state.matcher) |matcher| {
+                    if (matcherAcceptsChildNodes(matcher)) {
+                        const template = state.template;
+                        switch (node) {
+                            .node => |id| if (self.source.node(id).kind != .document) {
+                                if (template.precedence < maximum_precedence) {
+                                    return template;
+                                }
+                                return null;
+                            },
+                            .attribute, .namespace_node => {},
+                        }
+                    }
+                }
+            }
             switch (node) {
                 .node => |id| switch (self.source.node(id).kind) {
                     .text => if (index.text.default.items.len == 0 and
