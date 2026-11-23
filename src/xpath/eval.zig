@@ -219,32 +219,56 @@ const Evaluator = struct {
                 }
             }
         }
-        // `//name` collects children matching a name test from every
-        // descendant. A single preorder traversal is much cheaper than
+        // `//name` and `.//name` collect children matching a name test from
+        // every descendant. A single preorder traversal is much cheaper than
         // materializing every descendant and then testing their children.
-        if (path.absolute and path.start == null and
-            path.steps.len == 2 and
-            path.steps[0].axis == .descendant_or_self and
-            path.steps[0].predicates.len == 0 and
-            path.steps[0].node_test == .node and
-            path.steps[1].axis == .child and
-            !predicatesNeedPositions(path.steps[1].predicates))
-        {
-            const step = path.steps[1];
+        var descendant_root: ?value.NodeRef = null;
+        var descendant_step: ?ast.Step = null;
+        var descendant_cacheable = false;
+        if (path.start == null) {
+            // An absolute path starts at the document root; a relative path
+            // may start with an explicit `self::node()` step.
+            const offset: usize = if (path.absolute)
+                0
+            else if (path.steps.len == 3 and
+                path.steps[0].axis == .self_axis and
+                path.steps[0].predicates.len == 0 and
+                path.steps[0].node_test == .node)
+                1
+            else
+                path.steps.len;
+            if (offset + 2 == path.steps.len and
+                path.steps[offset].axis == .descendant_or_self and
+                path.steps[offset].predicates.len == 0 and
+                path.steps[offset].node_test == .node and
+                path.steps[offset + 1].axis == .child and
+                !predicatesNeedPositions(path.steps[offset + 1].predicates))
+            {
+                descendant_step = path.steps[offset + 1];
+                descendant_root = if (path.absolute)
+                    documentRootOf(context, context.node)
+                else
+                    context.node;
+                descendant_cacheable = path.absolute;
+            }
+        }
+        if (descendant_step) |step| {
+            const root = descendant_root.?;
             const prefix_uri = try resolveNameTestPrefix(
                 context,
                 step.node_test,
             );
             // `//name` depends only on the document, so cache the result
             // across evaluations when the caller provides a cache.
-            if (step.predicates.len == 0 and step.node_test == .name) {
+            if (descendant_cacheable and
+                step.predicates.len == 0 and step.node_test == .name)
+            {
                 const name_test = step.node_test.name;
                 if (name_test.local) |local| {
                     const uri = if (name_test.prefix != null)
                         prefix_uri orelse ""
                     else
                         "";
-                    const root = documentRootOf(context, context.node);
                     const cache = context.descendant_cache;
                     if (cache) |entries| {
                         if (entries.get(
@@ -284,7 +308,7 @@ const Evaluator = struct {
             var out: std.ArrayList(value.NodeRef) = .empty;
             try self.appendDescendantMatches(
                 context,
-                documentRootOf(context, context.node),
+                root,
                 step,
                 prefix_uri,
                 &out,
