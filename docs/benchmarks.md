@@ -263,18 +263,18 @@ once; the per-transform column amortizes parsing and serialization over the
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.120 | 6.01 |
-| identity | libxslt (lxml) | 1.037 | 51.86 |
-| identity (attributes) | xmlz | 0.140 | 6.99 |
-| identity (attributes) | libxslt (lxml) | 1.696 | 84.80 |
-| sorted report | xmlz | 0.086 | 4.31 |
-| sorted report | libxslt (lxml) | 0.886 | 44.31 |
+| identity | xmlz | 0.108 | 5.41 |
+| identity | libxslt (lxml) | 1.017 | 50.85 |
+| identity (attributes) | xmlz | 0.124 | 6.21 |
+| identity (attributes) | libxslt (lxml) | 1.677 | 83.87 |
+| sorted report | xmlz | 0.084 | 4.19 |
+| sorted report | libxslt (lxml) | 0.877 | 43.87 |
 
 ## Interpretation
 
-- The identity transform is **8.6x faster than libxslt**, the standard
-  identity transform (attributes copied) is **12.1x faster**, and the sorted
-  report is **10.3x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **9.4x faster than libxslt**, the standard
+  identity transform (attributes copied) is **13.5x faster**, and the sorted
+  report is **10.5x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -296,7 +296,12 @@ once; the per-transform column amortizes parsing and serialization over the
   declares, a body that is a single literal element runs without the
   instruction-dispatch layers, and the hot small helpers (slab string copy,
   result node creation, text append, simple child select) are inlined at
-  their call sites so the per-node path has no out-of-line returns.
+  their call sites so the per-node path has no out-of-line returns. Copy
+  bodies are classified at compile time (plain `apply-templates`, the
+  `@*|node()` identity select, or general instructions), and the general
+  evaluator fallbacks behind `xsl:value-of` and attribute value templates
+  stay out of line so the common child-name path does not carry their stack
+  frames.
   Absolute times move with host load, so the ratio is the meaningful
   comparison.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
