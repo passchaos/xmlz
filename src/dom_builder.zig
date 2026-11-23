@@ -278,7 +278,7 @@ pub const Builder = struct {
 
     /// Append character data to an existing text node, merging adjacent text
     /// like the XPath data model requires.
-    pub fn appendToText(
+    pub inline fn appendToText(
         self: *Builder,
         id: dom.NodeId,
         value: []const u8,
