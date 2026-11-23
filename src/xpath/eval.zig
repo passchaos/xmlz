@@ -528,25 +528,40 @@ const Evaluator = struct {
     ) Error!?[]const value.NodeRef {
         var out: std.ArrayList(value.NodeRef) = .empty;
         var axis_buffer: std.ArrayList(value.NodeRef) = .empty;
+        var matched: std.ArrayList(value.NodeRef) = .empty;
         var predicate_context = context.*;
         predicate_context.position = 1;
         predicate_context.size = 1;
         for (input) |node| {
-            axis_buffer.clearRetainingCapacity();
-            try self.appendAxisNodes(
+            matched.clearRetainingCapacity();
+            // Child and attribute steps test the name while walking the
+            // axis, which is cheaper than materializing and dispatching.
+            if (!try self.appendSingleAxis(
                 context,
                 node,
-                step.axis,
-                &axis_buffer,
-            );
-            for (axis_buffer.items) |candidate| {
-                if (!try self.matchesTest(
+                step,
+                prefix_uri,
+                &matched,
+            )) {
+                axis_buffer.clearRetainingCapacity();
+                try self.appendAxisNodes(
                     context,
-                    candidate,
-                    step.node_test,
+                    node,
                     step.axis,
-                    prefix_uri,
-                )) continue;
+                    &axis_buffer,
+                );
+                for (axis_buffer.items) |candidate| {
+                    if (!try self.matchesTest(
+                        context,
+                        candidate,
+                        step.node_test,
+                        step.axis,
+                        prefix_uri,
+                    )) continue;
+                    try matched.append(self.allocator, candidate);
+                }
+            }
+            for (matched.items) |candidate| {
                 predicate_context.node = candidate;
                 var keep = true;
                 for (step.predicates) |predicate| {
