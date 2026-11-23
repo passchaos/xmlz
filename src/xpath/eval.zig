@@ -921,40 +921,50 @@ const Evaluator = struct {
                 prefix_uri orelse ""
             else
                 "";
+            // Iterative preorder walk: recursion would revisit the whole
+            // document once per descendant.
             var child = node_value.first_child;
-            while (child != dom.null_node) : (child =
-                document.node(child).next_sibling)
-            {
+            while (child != dom.null_node) {
                 const child_value = document.node(child);
-                if (child_value.kind != .element) continue;
-                var matches = true;
-                if (name_test.local) |local| {
-                    matches = child_value.local.len == local.len and
-                        std.mem.eql(u8, child_value.local, local);
-                }
-                if (matches) {
-                    if (name_test.prefix != null) {
-                        matches = std.mem.eql(
-                            u8,
-                            child_value.ns,
-                            expected_uri,
-                        );
-                    } else if (name_test.local != null) {
-                        // An unprefixed name test selects no-namespace
-                        // elements; `*` matches regardless of namespace.
-                        matches = child_value.ns.len == 0;
+                if (child_value.kind == .element) {
+                    var matches = true;
+                    if (name_test.local) |local| {
+                        matches = child_value.local.len == local.len and
+                            std.mem.eql(u8, child_value.local, local);
+                    }
+                    if (matches) {
+                        if (name_test.prefix != null) {
+                            matches = std.mem.eql(
+                                u8,
+                                child_value.ns,
+                                expected_uri,
+                            );
+                        } else if (name_test.local != null) {
+                            // An unprefixed name test selects no-namespace
+                            // elements; `*` matches regardless of namespace.
+                            matches = child_value.ns.len == 0;
+                        }
+                    }
+                    if (matches) {
+                        try out.append(self.allocator, .{ .node = child });
                     }
                 }
-                if (matches) {
-                    try out.append(self.allocator, .{ .node = child });
+                if ((child_value.kind == .element or
+                    child_value.kind == .document) and
+                    child_value.first_child != dom.null_node)
+                {
+                    child = child_value.first_child;
+                    continue;
                 }
-                try self.appendDescendantMatches(
-                    context,
-                    .{ .node = child },
-                    step,
-                    prefix_uri,
-                    out,
-                );
+                while (true) {
+                    const current = document.node(child);
+                    if (current.next_sibling != dom.null_node) {
+                        child = current.next_sibling;
+                        break;
+                    }
+                    if (current.parent == id) return;
+                    child = current.parent;
+                }
             }
             return;
         }
