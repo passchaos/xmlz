@@ -118,13 +118,13 @@ input; the numbers below were measured sequentially, pinned, best of four.
 | libxml2 | reader | 141.05 |
 | libxml2 | DOM | 103.89 |
 
-Serialization on the same input: xmlz **3755.61 MB/s**, pugixml 1983.02,
-libxml2 452.05.
+Serialization on the same input: xmlz **4220.07 MB/s**, pugixml 2041.46,
+libxml2 451.11.
 
 - The pull parser is **3.4x faster than expat** and **7.4x faster than
   libxml2's reader** with namespaces enabled while validating UTF-8; trusted
   mode is **7.8x** and **16.8x** faster.
-- Serialization is **1.89x faster than pugixml** and **8.3x faster than
+- Serialization is **2.07x faster than pugixml** and **9.4x faster than
   libxml2**; parsed trees skip writer-side UTF-8 revalidation.
 - pugixml's non-validating DOM is faster than xmlz's validating one on this
   shape because it neither checks UTF-8 nor copies attribute values out of the
@@ -153,13 +153,13 @@ because the host was shared during measurement.
 
 | Serializer | MB/s | Peak RSS |
 | --- | ---: | ---: |
-| xmlz | 2599.81 | 100 MiB |
-| pugixml | 1095.98 | 115 MiB |
-| libxml2 | 268.55 | 356 MiB |
+| xmlz | 2724.01 | 100 MiB |
+| pugixml | 1119.41 | 115 MiB |
+| libxml2 | 266.66 | 356 MiB |
 
 ## Interpretation
 
-- xmlz's writer is **2.4x faster than pugixml** and **9.7x faster than
+- xmlz's writer is **2.4x faster than pugixml** and **10.2x faster than
   libxml2** while still validating XML 1.0 characters and escaping carriage
   returns, which neither comparison engine does.
 - Attributes written as `name="value"` with no decoding are already in their
