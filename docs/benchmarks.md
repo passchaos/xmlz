@@ -258,15 +258,15 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.244 | 12.20 |
-| identity | libxslt (lxml) | 1.004 | 50.18 |
-| sorted report | xmlz | 0.163 | 8.13 |
-| sorted report | libxslt (lxml) | 0.882 | 44.11 |
+| identity | xmlz | 0.200 | 10.00 |
+| identity | libxslt (lxml) | 1.047 | 52.33 |
+| sorted report | xmlz | 0.165 | 8.23 |
+| sorted report | libxslt (lxml) | 0.875 | 43.76 |
 
 ## Interpretation
 
-- The identity transform is **4.1x faster than libxslt** and the sorted
-  report is **5.4x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **5.2x faster than libxslt** and the sorted
+  report is **5.3x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -278,7 +278,9 @@ column amortizes parsing and serialization over the 20 applications.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
   directly against each node instead of precomputing a match set, and child
   iteration no longer materializes node-sets for `apply-templates` without
-  `select`.
+  `select`. When the stylesheet has no general-selector matches, text-like
+  nodes with no rules and the common `match="*"`-only index resolve straight
+  from the per-kind buckets without a candidate scan.
 - The merged source view aliases the parsed arrays until `document()` loads
   another document, copies skip in-scope namespace collection for
   namespace-free inputs, and result node storage is preallocated from the

@@ -2812,6 +2812,60 @@ const Runtime = struct {
         {
             try self.ensureDocumentMatches(node);
         }
+        // Fast path for simple-only stylesheets: with no general-selector
+        // matches and no mode, candidate lookup reduces to the per-kind
+        // buckets. Text-like nodes without rules skip collection entirely,
+        // and a lone unconditional element rule resolves in a few loads
+        // instead of a full bucket scan.
+        if (mode == null and self.template_index.nodes.count() == 0) {
+            const index = &self.template_index;
+            switch (node) {
+                .node => |id| switch (self.source.node(id).kind) {
+                    .text => if (index.text.default.items.len == 0 and
+                        index.child_node.default.items.len == 0)
+                    {
+                        return null;
+                    },
+                    .comment => if (index.comment.default.items.len == 0 and
+                        index.child_node.default.items.len == 0)
+                    {
+                        return null;
+                    },
+                    .processing_instruction => if (index.processing_instruction.default.items.len == 0 and
+                        index.child_node.default.items.len == 0)
+                    {
+                        return null;
+                    },
+                    .document => if (index.document_node.default.items.len == 0)
+                        return null,
+                    .element => {
+                        if (index.element_any.default.items.len == 1 and
+                            index.elements.count() == 0 and
+                            index.elements_by_uri.count() == 0 and
+                            index.child_node.default.items.len == 0)
+                        {
+                            const state = &self.template_states[index.element_any.default.items[0]];
+                            if (state.matcher) |matcher| {
+                                switch (matcher) {
+                                    .simple => |pattern| switch (pattern) {
+                                        .element_any => {
+                                            const template = state.template;
+                                            if (template.precedence < maximum_precedence) {
+                                                return template;
+                                            }
+                                            return null;
+                                        },
+                                        else => {},
+                                    },
+                                    .structural => {},
+                                }
+                            }
+                        }
+                    },
+                },
+                .attribute, .namespace_node => {},
+            }
+        }
         var best: ?*const compile.Template = null;
         // Patterns that cannot be matched structurally are precomputed into
         // this map; most stylesheets have none, so skip the hash lookup.
