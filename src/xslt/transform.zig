@@ -4044,6 +4044,24 @@ const Runtime = struct {
                     sorted.len * literal_attributes,
             ) catch |err| return mapBuilderError(err);
         }
+        // A body that is one literal result element (the common row
+        // template) skips the instruction-dispatch layers.
+        if (instruction.body.len == 1) {
+            const only = &instruction.body[0];
+            if (only.* == .literal_element) {
+                const mark = self.variable_len;
+                defer self.variable_len = mark;
+                for (sorted, 0..) |current, index| {
+                    try self.executeLiteralElement(
+                        only.literal_element,
+                        current,
+                        index + 1,
+                        sorted.len,
+                    );
+                }
+                return;
+            }
+        }
         for (sorted, 0..) |current, index| {
             try self.executeInstructions(
                 instruction.body,
