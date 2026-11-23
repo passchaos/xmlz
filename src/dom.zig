@@ -414,9 +414,12 @@ const Builder = struct {
                 },
                 .start_element => |element| try self.startElement(element),
                 .end_element => try self.endElement(),
-                .text => |text| try self.appendText(text, false),
+                .text => |text| try self.appendText(
+                    text,
+                    if (self.parser.text_needs_decode) .decode else .verbatim,
+                ),
                 .cdata => |data| {
-                    try self.appendText(data, true);
+                    try self.appendText(data, .normalize);
                     if (self.stack_len != 0) {
                         self.nodes.items[self.stack[self.stack_len - 1]]
                             .has_cdata_text = true;
@@ -549,22 +552,25 @@ const Builder = struct {
         self.stack_len -= 1;
     }
 
+    const TextMode = enum {
+        /// Entity references must be expanded.
+        decode,
+        /// CDATA needs line-ending normalization only.
+        normalize,
+        /// The parser already proved the span is plain.
+        verbatim,
+    };
+
     fn appendText(
         self: *Builder,
         raw: []const u8,
-        literal: bool,
+        mode: TextMode,
     ) Error!void {
         if (self.stack_len == 0) return;
         // Entity decoding also normalizes XML line endings, so only CDATA
         // needs the separate normalization pass.
-        const decoded = if (literal)
-            try normalizeLineEndings(
-                self.allocator,
-                raw,
-                self.parser.xmlVersion(),
-            )
-        else
-            try entities.decodeTextAlloc(
+        const decoded = switch (mode) {
+            .decode => try entities.decodeTextAlloc(
                 self.allocator,
                 raw,
                 self.parser.entityTable(),
@@ -574,7 +580,14 @@ const Builder = struct {
                     .preserve_undeclared = true,
                     .preserve_external = true,
                 },
-            );
+            ),
+            .normalize => try normalizeLineEndings(
+                self.allocator,
+                raw,
+                self.parser.xmlVersion(),
+            ),
+            .verbatim => raw,
+        };
         const parent = self.stack[self.stack_len - 1];
         _ = try self.addChildNode(parent, .{ .kind = .text, .value = decoded });
         if (self.parser.text_whitespace_char_ref) {
@@ -939,4 +952,13 @@ test "parser applies DTD namespace and ID declarations" {
         }
     }
     try testing.expect(saw_id);
+}
+
+test "DOM decodes mixed references and normalizes line endings" {
+    const input = "<!DOCTYPE d [<!ENTITY e 'EE'>]><d>&amp;x&e;y\r</d>";
+    var doc = try Document.parse(testing.allocator, input, .{});
+    defer doc.deinit();
+    const text = try doc.textContentAlloc(testing.allocator, doc.root());
+    defer testing.allocator.free(text);
+    try testing.expectEqualStrings("&xEEy\n", text);
 }

@@ -349,6 +349,9 @@ pub const Parser = struct {
     in_external_subset: bool = false,
     text_whitespace_char_ref: bool = false,
     text_has_nel_ls: bool = false,
+    /// True when the current text event contains a reference or a carriage
+    /// return, so consumers must decode or normalize it.
+    text_needs_decode: bool = true,
     tokenized_attrs: [128]struct {
         element: []const u8,
         name: []const u8,
@@ -1283,6 +1286,8 @@ pub const Parser = struct {
         self.text_has_nel_ls = false;
         var whitespace_char_ref = false;
         var span_has_high = false;
+        var span_has_cr = false;
+        var saw_reference = false;
         var index = start;
         while (true) {
             const special = findTextSpecial(
@@ -1294,6 +1299,7 @@ pub const Parser = struct {
                 return self.fail(error.InvalidCharacter, bad);
             }
             span_has_high = span_has_high or special.has_high;
+            span_has_cr = span_has_cr or special.has_cr;
             index = special.index;
             if (index >= self.input.len) break;
             switch (self.input[index]) {
@@ -1349,6 +1355,9 @@ pub const Parser = struct {
                                     self.xml_version,
                                 );
                             }
+                            self.text_needs_decode =
+                                self.xml_version == .xml_1_1 or
+                                saw_reference or span_has_cr;
                             return span;
                         }
                         self.pos = reference.end;
@@ -1356,6 +1365,7 @@ pub const Parser = struct {
                         if (!entity.external and entity.value.len == 0) {
                             // Preserve an empty entity reference as an empty
                             // text event so consumers can observe the content.
+                            self.text_needs_decode = false;
                             return "";
                         }
                         try self.expandEntityReference(
@@ -1364,6 +1374,7 @@ pub const Parser = struct {
                         );
                         return null;
                     }
+                    saw_reference = true;
                     index = reference.end;
                 },
                 ']' => {
@@ -1392,6 +1403,8 @@ pub const Parser = struct {
                 self.xml_version,
             );
         }
+        self.text_needs_decode = self.xml_version == .xml_1_1 or
+            saw_reference or span_has_cr;
         return span;
     }
 
@@ -4375,6 +4388,8 @@ const TextSpecial = struct {
     /// A byte at or above 0x80 was seen before `index`; the caller validates
     /// that run as UTF-8.
     has_high: bool = false,
+    /// A carriage return was seen before `index`.
+    has_cr: bool = false,
     /// Offset of the first invalid literal byte, when one was seen.
     invalid: ?usize = null,
 };
@@ -4398,6 +4413,7 @@ fn findTextSpecial(
     const high: Vec = @splat(0x80);
     var index = start;
     var has_high = false;
+    var has_cr = false;
     while (index + 32 <= input.len) : (index += 32) {
         const chunk: Vec = input[index..][0..32].*;
         const special: u32 = @bitCast(
@@ -4410,20 +4426,21 @@ fn findTextSpecial(
         if (version == .xml_1_1) bad |= @bitCast(chunk == del);
         const high_mask: u32 = @bitCast(chunk >= high);
         has_high = has_high or high_mask != 0;
+        has_cr = has_cr or @as(u32, @bitCast(chunk == cr)) != 0;
         const stop = @min(@ctz(special), @ctz(bad));
         if (stop != 32) {
             const absolute = index + stop;
             if (bad != 0 and @ctz(bad) == stop) {
-                return .{ .index = absolute, .has_high = has_high, .invalid = absolute };
+                return .{ .index = absolute, .has_high = has_high, .has_cr = has_cr, .invalid = absolute };
             }
-            return .{ .index = absolute, .has_high = has_high };
+            return .{ .index = absolute, .has_high = has_high, .has_cr = has_cr };
         }
     }
     while (index < input.len) : (index += 1) {
         const byte = input[index];
         switch (byte) {
             '<', '&', ']' => {
-                return .{ .index = index, .has_high = has_high };
+                return .{ .index = index, .has_high = has_high, .has_cr = has_cr };
             },
             else => {},
         }
@@ -4431,14 +4448,15 @@ fn findTextSpecial(
             has_high = true;
             continue;
         }
+        if (byte == '\r') has_cr = true;
         if (byte < 0x20 and byte != '\t' and byte != '\n' and byte != '\r') {
-            return .{ .index = index, .has_high = has_high, .invalid = index };
+            return .{ .index = index, .has_high = has_high, .has_cr = has_cr, .invalid = index };
         }
         if (version == .xml_1_1 and byte == 0x7F) {
-            return .{ .index = index, .has_high = has_high, .invalid = index };
+            return .{ .index = index, .has_high = has_high, .has_cr = has_cr, .invalid = index };
         }
     }
-    return .{ .index = input.len, .has_high = has_high };
+    return .{ .index = input.len, .has_high = has_high, .has_cr = has_cr };
 }
 
 const AttributeValueSpecial = struct {
