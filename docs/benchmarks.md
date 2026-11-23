@@ -259,22 +259,22 @@ plus `xsl:apply-templates` for every node), the standard identity transform
 once; the per-transform column amortizes parsing and serialization over the
 20 applications.
 
-## Results (2026-11-23)
+## Results (2026-11-24)
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.129 | 6.47 |
-| identity | libxslt (lxml) | 1.009 | 50.46 |
-| identity (attributes) | xmlz | 0.123 | 6.15 |
-| identity (attributes) | libxslt (lxml) | 1.939 | 96.97 |
-| sorted report | xmlz | 0.102 | 5.09 |
-| sorted report | libxslt (lxml) | 0.919 | 45.94 |
+| identity | xmlz | 0.125 | 6.23 |
+| identity | libxslt (lxml) | 1.031 | 51.57 |
+| identity (attributes) | xmlz | 0.128 | 6.41 |
+| identity (attributes) | libxslt (lxml) | 1.661 | 83.05 |
+| sorted report | xmlz | 0.097 | 4.87 |
+| sorted report | libxslt (lxml) | 0.930 | 46.49 |
 
 ## Interpretation
 
-- The identity transform is **7.8x faster than libxslt**, the standard
-  identity transform (attributes copied) is **15.8x faster**, and the sorted
-  report is **9.0x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **8.3x faster than libxslt**, the standard
+  identity transform (attributes copied) is **13.0x faster**, and the sorted
+  report is **9.5x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -291,7 +291,11 @@ once; the per-transform column amortizes parsing and serialization over the
   rejected with an integer compare instead of a URI string compare. Literal
   result element attributes are appended without a duplicate scan when the
   element has no attribute sets, since their names were validated and
-  deduplicated when the stylesheet was parsed.
+  deduplicated when the stylesheet was parsed. Result attribute storage is
+  reserved before a for-each loop from the literal result elements its body
+  declares, a body that is a single literal element runs without the
+  instruction-dispatch layers, and the slab string copy is inlined at its
+  call sites.
   Absolute times move with host load, so the ratio is the meaningful
   comparison.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
