@@ -20,24 +20,24 @@ the best row kept, because the host was shared during measurement.
 
 | Parser | Mode | MB/s | Peak RSS |
 | --- | --- | ---: | ---: |
-| xmlz | pull, trusted fast mode | 1143.08 | 17 MiB |
-| xmlz | pull, no namespaces | 969.30 | 17 MiB |
-| xmlz | pull, namespaces | 905.33 | 17 MiB |
+| xmlz | pull, trusted fast mode | 1132.00 | 17 MiB |
+| xmlz | pull, no namespaces | 972.51 | 17 MiB |
+| xmlz | pull, namespaces | 902.30 | 17 MiB |
 | xmlz | DOM, trusted fast mode, reusable arena | 725.18 | 111 MiB |
-| xmlz | DOM, reusable arena | 594.79 | 111 MiB |
-| xmlz | DOM, trusted fast mode | 518.49 | 111 MiB |
-| pugixml | DOM | 496.51 | 87 MiB |
-| xmlz | DOM, namespaces | 446.48 | 111 MiB |
-| expat | SAX | 154.03 | 33 MiB |
-| libxml2 | reader | 134.35 | 356 MiB |
-| libxml2 | DOM | 101.85 | 356 MiB |
+| xmlz | DOM, reusable arena | 593.09 | 111 MiB |
+| xmlz | DOM, trusted fast mode | 524.66 | 111 MiB |
+| pugixml | DOM | 511.92 | 87 MiB |
+| xmlz | DOM, namespaces | 448.48 | 111 MiB |
+| expat | SAX | 155.95 | 33 MiB |
+| libxml2 | reader | 134.51 | 356 MiB |
+| libxml2 | DOM | 96.69 | 356 MiB |
 
 ## Interpretation
 
 - The pull parser is the apples-to-apples streaming comparison. With
   namespaces xmlz is **5.8x faster than expat** and **6.7x faster than
   libxml2's reader** while performing full XML 1.0/1.1 and namespace
-  well-formedness checking; trusted mode is **7.4x** and **8.5x** faster.
+  well-formedness checking; trusted mode is **7.3x** and **8.4x** faster.
 - `trusted` mode assumes the input is already well-formed and skips character,
   name, duplicate-attribute, and namespace-constraint validation. It is opt-in
   and never used for the conformance suite.
@@ -46,15 +46,15 @@ the best row kept, because the host was shared during measurement.
   mutation of the input buffer, and its DOM row loads with `parse_default`,
   which drops the 186,144 whitespace-only text nodes that xmlz retains for
   round-tripping. xmlz's validating DOM beats libxml2's DOM by
-  **4.4x** (libxml2's DOM row varies between runs) and beats pugixml with a
-  fresh allocator (518 versus 497 MB/s) even though it retains every text node.
-  In trusted fast mode with a reusable arena it is **1.46x faster than
-  pugixml** (725 versus 497 MB/s); the fully validating namespace-aware
-  reusable-arena row is **1.20x faster** than pugixml's non-validating DOM.
+  **4.6x** (libxml2's DOM row varies between runs) and beats pugixml with a
+  fresh allocator (525 versus 512 MB/s) even though it retains every text node.
+  In trusted fast mode with a reusable arena it is **1.42x faster than
+  pugixml** (725 versus 512 MB/s); the fully validating namespace-aware
+  reusable-arena row is **1.16x faster** than pugixml's non-validating DOM.
 - `DOM, reusable arena` uses `dom.Document.parseIn` with an arena that is
   reset between parses. It avoids re-faulting fresh pages for every document,
   which matches the steady-state behavior of malloc-based parsers. It reaches
-  **595 MB/s** while staying fully validating.
+  **593 MB/s** while staying fully validating.
 - Attribute values, element and attribute names, and literal character data
   are scanned sixteen or thirty-two bytes at a time; text validation is folded
   into the markup-special scan; the tokenizer keeps its cursor in registers
@@ -100,28 +100,28 @@ input; the numbers below were measured sequentially, pinned, best of four.
 
 | Engine | Mode | MB/s |
 | --- | --- | ---: |
-| xmlz | pull, trusted fast mode | 2374.31 |
-| pugixml | DOM | 1176.32 |
-| xmlz | pull, no namespaces | 1145.33 |
-| xmlz | pull, namespaces | 1095.44 |
-| xmlz | DOM, trusted fast mode | 833.30 |
-| xmlz | DOM, reusable arena | 713.36 |
-| xmlz | DOM, namespaces | 554.81 |
-| expat | SAX | 307.39 |
-| libxml2 | reader | 140.24 |
-| libxml2 | DOM | 106.49 |
+| xmlz | pull, trusted fast mode | 2376.51 |
+| pugixml | DOM | 1183.77 |
+| xmlz | pull, no namespaces | 1137.51 |
+| xmlz | pull, namespaces | 1095.96 |
+| xmlz | DOM, trusted fast mode | 837.36 |
+| xmlz | DOM, reusable arena | 734.14 |
+| xmlz | DOM, namespaces | 579.22 |
+| expat | SAX | 310.35 |
+| libxml2 | reader | 141.15 |
+| libxml2 | DOM | 109.35 |
 
-Serialization on the same input: xmlz **3454.54 MB/s**, pugixml 1977.06,
-libxml2 450.96.
+Serialization on the same input: xmlz **3439.57 MB/s**, pugixml 2005.48,
+libxml2 453.33.
 
-- The pull parser is **3.6x faster than expat** and **7.8x faster than
+- The pull parser is **3.5x faster than expat** and **7.8x faster than
   libxml2's reader** with namespaces enabled while validating UTF-8; trusted
-  mode is **7.7x** and **16.9x** faster.
-- Serialization is **1.75x faster than pugixml** and **7.7x faster than
+  mode is **7.7x** and **16.8x** faster.
+- Serialization is **1.72x faster than pugixml** and **7.6x faster than
   libxml2**; parsed trees skip writer-side UTF-8 revalidation.
 - pugixml's non-validating DOM is faster than xmlz's validating one on this
   shape because it neither checks UTF-8 nor copies attribute values out of the
-  in-situ buffer. xmlz's validating DOM still beats libxml2's by **5.2x**.
+  in-situ buffer. xmlz's validating DOM still beats libxml2's by **5.3x**.
 
 ## Serialization
 
@@ -146,9 +146,9 @@ because the host was shared during measurement.
 
 | Serializer | MB/s | Peak RSS |
 | --- | ---: | ---: |
-| xmlz | 2014.51 | 125 MiB |
-| pugixml | 1089.96 | 115 MiB |
-| libxml2 | 266.07 | 356 MiB |
+| xmlz | 2030.32 | 125 MiB |
+| pugixml | 1096.20 | 115 MiB |
+| libxml2 | 266.85 | 356 MiB |
 
 ## Interpretation
 
