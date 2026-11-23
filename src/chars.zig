@@ -527,7 +527,9 @@ pub inline fn findInvalidLiteralCharVersion(
     var index: usize = 0;
     // ASCII control bytes are the only invalid characters in an ASCII run.
     // Check sixteen at a time and fall back to UTF-8 decoding at the first
-    // high byte.
+    // high byte. The vector check also runs after a decoded code point, so
+    // ASCII runs embedded in mixed text (digits and markup words between CJK
+    // characters) skip a block at a time instead of byte by byte.
     const Vec = @Vector(16, u8);
     const ctrl: Vec = @splat(0x20);
     const tab: Vec = @splat('\t');
@@ -535,26 +537,27 @@ pub inline fn findInvalidLiteralCharVersion(
     const cr: Vec = @splat('\r');
     const del: Vec = @splat(0x7F);
     const high: Vec = @splat(0x80);
-    while (index + 16 <= bytes.len) {
-        const chunk: Vec = bytes[index..][0..16].*;
-        var mask: u16 = @bitCast(chunk < ctrl);
-        mask &= ~@as(u16, @bitCast(
-            (chunk == tab) | (chunk == lf) | (chunk == cr),
-        ));
-        if (version == .xml_1_1) {
-            mask |= @bitCast(chunk == del);
-        }
-        const high_mask: u16 = @bitCast(chunk >= high);
-        if (mask != 0 and (high_mask == 0 or @ctz(mask) < @ctz(high_mask))) {
-            return index + @ctz(mask);
-        }
-        if (high_mask != 0) {
-            index += @ctz(high_mask);
-            break;
-        }
-        index += 16;
-    }
     while (index < bytes.len) {
+        if (index + 16 <= bytes.len and bytes[index] < 0x80) {
+            const chunk: Vec = bytes[index..][0..16].*;
+            var mask: u16 = @bitCast(chunk < ctrl);
+            mask &= ~@as(u16, @bitCast(
+                (chunk == tab) | (chunk == lf) | (chunk == cr),
+            ));
+            if (version == .xml_1_1) {
+                mask |= @bitCast(chunk == del);
+            }
+            const high_mask: u16 = @bitCast(chunk >= high);
+            if (mask != 0 and (high_mask == 0 or @ctz(mask) < @ctz(high_mask))) {
+                return index + @ctz(mask);
+            }
+            if (high_mask == 0) {
+                index += 16;
+                continue;
+            }
+            index += @ctz(high_mask);
+            continue;
+        }
         const byte = bytes[index];
         if (byte < 0x80) {
             if (byte == '\t' or byte == '\n' or byte == '\r') {
