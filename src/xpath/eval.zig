@@ -280,56 +280,117 @@ const Evaluator = struct {
                     .node => |node_id| node_id,
                     else => return false,
                 };
-                switch (step.axis) {
-                    .child => {
-                        const node_value = context.document.node(id);
-                        if (node_value.kind != .document and
-                            node_value.kind != .element)
-                        {
-                            return false;
-                        }
+                const name: ?ast.NameTest = switch (step.node_test) {
+                    .name => |name_value| name_value,
+                    else => null,
+                };
+                if (step.axis == .child) {
+                    const node_value = context.document.node(id);
+                    if (node_value.kind != .document and
+                        node_value.kind != .element)
+                    {
+                        return false;
+                    }
+                    if (name) |name_test| {
+                        // Dedicated loop for name tests: compare the expanded
+                        // name directly instead of dispatching per child.
+                        const check_namespace = name_test.prefix != null or
+                            name_test.local != null;
+                        const expected_uri = if (name_test.prefix != null)
+                            prefix_uri orelse ""
+                        else
+                            "";
                         var child = node_value.first_child;
                         while (child != dom.null_node) : (child =
                             context.document.node(child).next_sibling)
                         {
-                            const candidate: value.NodeRef = .{ .node = child };
-                            if (try self.matchesTest(
-                                context,
-                                candidate,
-                                step.node_test,
-                                step.axis,
-                                prefix_uri,
-                            )) {
-                                try out.append(self.allocator, candidate);
+                            const child_value = context.document.node(child);
+                            if (child_value.kind != .element) continue;
+                            if (check_namespace and
+                                !std.mem.eql(
+                                    u8,
+                                    child_value.ns,
+                                    expected_uri,
+                                )) continue;
+                            if (name_test.local) |local| {
+                                if (!std.mem.eql(
+                                    u8,
+                                    child_value.local,
+                                    local,
+                                )) continue;
                             }
+                            try out.append(self.allocator, .{ .node = child });
                         }
-                    },
-                    else => {
-                        if (context.document.node(id).kind != .element) {
-                            return false;
+                        return true;
+                    }
+                    var child = node_value.first_child;
+                    while (child != dom.null_node) : (child =
+                        context.document.node(child).next_sibling)
+                    {
+                        const candidate: value.NodeRef = .{ .node = child };
+                        if (try self.matchesTest(
+                            context,
+                            candidate,
+                            step.node_test,
+                            step.axis,
+                            prefix_uri,
+                        )) {
+                            try out.append(self.allocator, candidate);
                         }
-                        const attributes = context.document.attributesOf(id);
-                        for (attributes, 0..) |attribute, index| {
-                            if (namespace.Resolver.isNamespaceDeclaration(
-                                attribute.name,
+                    }
+                    return true;
+                }
+                if (context.document.node(id).kind != .element) {
+                    return false;
+                }
+                const attributes = context.document.attributesOf(id);
+                if (name) |name_test| {
+                    const check_namespace = name_test.prefix != null or
+                        name_test.local != null;
+                    const expected_uri = if (name_test.prefix != null)
+                        prefix_uri orelse ""
+                    else
+                        "";
+                    for (attributes, 0..) |attribute, index| {
+                        if (namespace.Resolver.isNamespaceDeclaration(
+                            attribute.name,
+                        )) continue;
+                        if (check_namespace and
+                            !std.mem.eql(u8, attribute.ns, expected_uri))
+                        {
+                            continue;
+                        }
+                        if (name_test.local) |local| {
+                            if (!std.mem.eql(
+                                u8,
+                                attribute.localName(),
+                                local,
                             )) continue;
-                            const candidate: value.NodeRef = .{
-                                .attribute = .{
-                                    .element = id,
-                                    .index = @intCast(index),
-                                },
-                            };
-                            if (try self.matchesTest(
-                                context,
-                                candidate,
-                                step.node_test,
-                                step.axis,
-                                prefix_uri,
-                            )) {
-                                try out.append(self.allocator, candidate);
-                            }
                         }
-                    },
+                        try out.append(self.allocator, .{ .attribute = .{
+                            .element = id,
+                            .index = @intCast(index),
+                        } });
+                    }
+                    return true;
+                }
+                for (attributes, 0..) |attribute, index| {
+                    if (namespace.Resolver.isNamespaceDeclaration(
+                        attribute.name,
+                    )) continue;
+                    const candidate: value.NodeRef = .{ .attribute = .{
+                        .element = id,
+                        .index = @intCast(index),
+                    } };
+                    if (try self.matchesTest(
+                        context,
+                        candidate,
+                        step.node_test,
+                        step.axis,
+                        prefix_uri,
+                    )) {
+                        try out.append(self.allocator, candidate);
+                    }
                 }
                 return true;
             },
