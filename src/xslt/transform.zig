@@ -4118,6 +4118,16 @@ const Runtime = struct {
                         if (instruction.body.len == 1) {
                             switch (instruction.body[0]) {
                                 .apply_templates => |apply_instruction| {
+                                    if (apply_instruction.stream_identity and
+                                        apply_instruction.params.len == 0)
+                                    {
+                                        try self.applyIdentitySelect(
+                                            node,
+                                            apply_instruction.mode,
+                                            &.{},
+                                        );
+                                        return;
+                                    }
                                     try self.executeApplyTemplates(
                                         apply_instruction,
                                         node,
