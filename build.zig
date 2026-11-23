@@ -408,4 +408,31 @@ pub fn build(b: *std.Build) void {
     const libxml2_run = b.addRunArtifact(libxml2_bench);
     libxml2_run.addFileArg(bench_input);
     bench_step.dependOn(&libxml2_run.step);
+
+    // Non-ASCII input: CJK attribute values and character data.
+    const bench_cjk_step = b.step(
+        "bench-cjk",
+        "Run the non-ASCII benchmark input against pugixml and libxml2",
+    );
+    const gen_cjk_run = b.addRunArtifact(gen);
+    const bench_cjk_input = gen_cjk_run.addOutputFileArg("cjk-large.xml");
+    gen_cjk_run.addArg("cjk");
+    bench_cjk_step.dependOn(&gen_cjk_run.step);
+
+    const xmlz_cjk_run = b.addRunArtifact(xmlz_bench);
+    xmlz_cjk_run.addFileArg(bench_cjk_input);
+    xmlz_cjk_run.addArg("all");
+    bench_cjk_step.dependOn(&xmlz_cjk_run.step);
+
+    const expat_cjk_run = b.addRunArtifact(expat_bench);
+    expat_cjk_run.addFileArg(bench_cjk_input);
+    bench_cjk_step.dependOn(&expat_cjk_run.step);
+
+    const pugixml_cjk_run = b.addRunArtifact(pugixml_bench);
+    pugixml_cjk_run.addFileArg(bench_cjk_input);
+    bench_cjk_step.dependOn(&pugixml_cjk_run.step);
+
+    const libxml2_cjk_run = b.addRunArtifact(libxml2_bench);
+    libxml2_cjk_run.addFileArg(bench_cjk_input);
+    bench_cjk_step.dependOn(&libxml2_cjk_run.step);
 }

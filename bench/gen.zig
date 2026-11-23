@@ -6,11 +6,24 @@ pub fn main(init: std.process.Init) !void {
     defer args.deinit();
     _ = args.next();
     const path = args.next() orelse "svg-large.xml";
+    const kind = args.next() orelse "svg";
     const target_bytes: usize = 16 * 1024 * 1024;
 
     var allocating: std.Io.Writer.Allocating = .init(init.gpa);
     defer allocating.deinit();
     const writer = &allocating.writer;
+
+    if (std.mem.eql(u8, kind, "cjk")) {
+        try generateCjk(writer, target_bytes);
+        const data = try allocating.toOwnedSlice();
+        defer init.gpa.free(data);
+        try std.Io.Dir.cwd().writeFile(init.io, .{
+            .sub_path = path,
+            .data = data,
+        });
+        std.debug.print("generated {s}: {d} bytes\n", .{ path, data.len });
+        return;
+    }
 
     try writer.writeAll(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" ++
@@ -54,4 +67,21 @@ pub fn main(init: std.process.Init) !void {
         .data = data,
     });
     std.debug.print("generated {s}: {d} bytes\n", .{ path, data.len });
+}
+
+/// Deterministic non-ASCII document: ASCII element and attribute names with
+/// CJK attribute values and character data, plus a few predefined references.
+fn generateCjk(writer: *std.Io.Writer, target_bytes: usize) !void {
+    try writer.writeAll(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<document>",
+    );
+    var index: usize = 0;
+    while (writer.end < target_bytes) : (index += 1) {
+        try writer.print(
+            "<entry id=\"{d}\" name=\"中文属性值{d}示例\" note=\"更多属性文本数据\">" ++
+                "段落文本内容示例数据{d}，包含中文与 ASCII 混合 text &amp; more</entry>",
+            .{ index, index, index },
+        );
+    }
+    try writer.writeAll("</document>\n");
 }
