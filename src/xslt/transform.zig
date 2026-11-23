@@ -4,6 +4,7 @@ const std = @import("std");
 const dom = @import("../dom.zig");
 const dom_builder = @import("../dom_builder.zig");
 const local_arena = @import("../local_arena.zig");
+const name_match = @import("../names.zig");
 const encoding = @import("../encoding.zig");
 const namespace = @import("../namespace.zig");
 const xmlbase = @import("../xmlbase.zig");
@@ -2219,7 +2220,7 @@ const Runtime = struct {
                         return false;
                     }
                     return if (name.local) |local|
-                        std.mem.eql(u8, value.local, local)
+                        name_match.equal(value.local, local)
                     else
                         true;
                 },
@@ -2235,7 +2236,7 @@ const Runtime = struct {
                         return false;
                     }
                     return if (name.local) |local|
-                        std.mem.eql(u8, value.localName(), local)
+                        name_match.equal(value.localName(), local)
                     else
                         true;
                 },
@@ -3085,7 +3086,7 @@ const Runtime = struct {
             if (name.check_namespace and
                 !std.mem.eql(u8, attribute.ns, name.uri)) continue;
             if (name.local) |local| {
-                if (!std.mem.eql(u8, attribute.localName(), local)) continue;
+                if (!name_match.equal(attribute.localName(), local)) continue;
             }
             return attribute.value;
         }
@@ -3111,7 +3112,7 @@ const Runtime = struct {
             if (name.check_namespace and
                 !std.mem.eql(u8, child_value.ns, name.uri)) continue;
             if (name.local) |local| {
-                if (!std.mem.eql(u8, child_value.local, local)) continue;
+                if (!name_match.equal(child_value.local, local)) continue;
             }
             return true;
         }
@@ -3200,7 +3201,7 @@ const Runtime = struct {
                         return false;
                     }
                     return if (name.local) |local|
-                        std.mem.eql(u8, value.local, local)
+                        name_match.equal(value.local, local)
                     else
                         true;
                 },
@@ -3214,7 +3215,7 @@ const Runtime = struct {
                         return false;
                     }
                     return if (name.local) |local|
-                        std.mem.eql(u8, value.localName(), local)
+                        name_match.equal(value.localName(), local)
                     else
                         true;
                 },
