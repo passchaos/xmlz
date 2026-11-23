@@ -858,7 +858,15 @@ const Builder = struct {
 
     fn addNode(self: *Builder, node: Node) Error!NodeId {
         const id: NodeId = @intCast(self.nodes.items.len);
-        try self.nodes.append(self.allocator, node);
+        // `append` calls `ensureTotalCapacity` even when capacity remains,
+        // and that function is not inlined; keep the common case a branch.
+        if (self.nodes.items.len == self.nodes.capacity) {
+            try self.nodes.ensureTotalCapacity(
+                self.allocator,
+                self.nodes.items.len + 1,
+            );
+        }
+        self.nodes.appendAssumeCapacity(node);
         return id;
     }
 
