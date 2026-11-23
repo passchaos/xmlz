@@ -317,7 +317,7 @@ pub inline fn scanNameInfo(bytes: []const u8) NameInfo {
 /// Fast name scan for trusted, already-well-formed input. Stops at markup
 /// delimiters and records the first colon. Non-ASCII bytes are treated as name
 /// bytes; the caller has promised valid UTF-8 names.
-pub fn scanNameInfoFast(bytes: []const u8) NameInfo {
+pub inline fn scanNameInfoFast(bytes: []const u8) NameInfo {
     var info: NameInfo = .{ .len = 0 };
     var index: usize = 0;
     while (index < bytes.len) : (index += 1) {
