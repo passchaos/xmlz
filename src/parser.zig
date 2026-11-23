@@ -687,6 +687,9 @@ pub const Parser = struct {
         var has_namespace_decls = false;
         var has_prefixed = false;
         var attrs_need_work = false;
+        // Bloom filter over attribute name keys: the quadratic duplicate
+        // check only runs when two attributes map to the same bit.
+        var seen_keys: u64 = 0;
         while (true) {
             const before_whitespace = pos;
             // A single space separates attributes in normal markup; only fall
@@ -748,17 +751,22 @@ pub const Parser = struct {
                 }
             }
             if (!self.options.trusted) {
-                for (self.attrs[0..attr_count]) |existing| {
-                    if (existing.name_key == attr.name_key and
-                        std.mem.eql(u8, existing.name, attr.name))
-                    {
-                        self.pos = pos;
-                        return self.fail(
-                            error.DuplicateAttribute,
-                            attr.name_range.start,
-                        );
+                const hash = attr.name_key *% 0x9E3779B1;
+                const bit = @as(u64, 1) << @as(u6, @truncate(hash >> 26));
+                if (seen_keys & bit != 0) {
+                    for (self.attrs[0..attr_count]) |existing| {
+                        if (existing.name_key == attr.name_key and
+                            std.mem.eql(u8, existing.name, attr.name))
+                        {
+                            self.pos = pos;
+                            return self.fail(
+                                error.DuplicateAttribute,
+                                attr.name_range.start,
+                            );
+                        }
                     }
                 }
+                seen_keys |= bit;
             }
             attr_count += 1;
         }
