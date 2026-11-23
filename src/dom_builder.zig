@@ -165,7 +165,7 @@ pub const Builder = struct {
             .kind = .element,
             .name = raw,
             .colon = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
-            .ns = try self.internNamespace(uri),
+            .ns = if (uri.len == 0) 0 else try self.internNamespace(uri),
             .attr_start = @intCast(self.attributes.items.len),
             .attr_count = 0,
         };
@@ -201,7 +201,7 @@ pub const Builder = struct {
             .kind = .element,
             .name = raw,
             .colon = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
-            .ns = try self.internNamespace(uri),
+            .ns = if (uri.len == 0) 0 else try self.internNamespace(uri),
             .attr_start = @intCast(self.attributes.items.len),
             .attr_count = 0,
         };
@@ -509,7 +509,7 @@ pub const Builder = struct {
         }
         try self.appendAttribute(element, .{
             .name = raw,
-            .ns = try self.internNamespace(uri),
+            .ns = if (uri.len == 0) 0 else try self.internNamespace(uri),
             .value = try self.dupe(value),
             .flags = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
         });
