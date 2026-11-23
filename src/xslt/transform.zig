@@ -1060,6 +1060,10 @@ const Runtime = struct {
     fragment_documents: std.ArrayList(*dom.Document) = .empty,
     current_template: ?*const compile.Template = null,
     current_mode: ?[]const u8 = null,
+    /// Source node whose copy is the current result parent. When a child of
+    /// that node is copied, its inherited namespaces are already in scope in
+    /// the result tree.
+    copy_source: dom.NodeId = dom.null_node,
     now: ?[]const u8 = null,
     /// True when any document in the view declares a namespace, allowing the
     /// copy instructions to skip in-scope namespace collection.
@@ -3842,24 +3846,35 @@ const Runtime = struct {
                         self.builder.appendChild(self.parent, new_id) catch |err|
                             return mapBuilderError(err);
                         if (self.source_has_namespaces) {
-                            const bindings = try self.source.inScopeNamespaces(
-                                self.allocator,
-                                id,
-                            );
-                            for (bindings) |binding| {
-                                if (std.mem.eql(u8, binding.prefix, "xml")) {
-                                    continue;
-                                }
-                                try self.addNamespaceDecl(
-                                    new_id,
-                                    binding.prefix,
-                                    binding.uri,
+                            if (node_value.parent == self.copy_source) {
+                                // The result parent is the copy of this
+                                // element's source parent, so inherited
+                                // bindings are already in scope; only the
+                                // element's own declarations are missing.
+                                try self.addOwnNamespaceDecls(new_id, id);
+                            } else {
+                                const bindings = try self.source.inScopeNamespaces(
+                                    self.allocator,
+                                    id,
                                 );
+                                for (bindings) |binding| {
+                                    if (std.mem.eql(u8, binding.prefix, "xml")) {
+                                        continue;
+                                    }
+                                    try self.addNamespaceDecl(
+                                        new_id,
+                                        binding.prefix,
+                                        binding.uri,
+                                    );
+                                }
                             }
                         }
                         const saved_parent = self.parent;
                         self.parent = new_id;
                         defer self.parent = saved_parent;
+                        const saved_copy_source = self.copy_source;
+                        self.copy_source = id;
+                        defer self.copy_source = saved_copy_source;
                         // A body that is one `xsl:apply-templates` needs no
                         // body-level variable scope; dispatch it directly.
                         if (instruction.body.len == 1) {
@@ -5138,6 +5153,29 @@ const Runtime = struct {
             );
             self.builder.setAttribute(id, name, uri) catch |err|
                 return mapBuilderError(err);
+        }
+    }
+
+    /// Add only the namespace declarations authored on one source element.
+    /// The caller guarantees the result parent already carries the inherited
+    /// ones, so walking the source ancestors is unnecessary.
+    fn addOwnNamespaceDecls(
+        self: *Runtime,
+        new_id: dom.NodeId,
+        id: dom.NodeId,
+    ) Error!void {
+        for (self.source.attributesOf(id)) |attr| {
+            if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                continue;
+            }
+            const prefix = if (attr.name.len == 5)
+                ""
+            else
+                attr.name["xmlns:".len..];
+            if (std.mem.eql(u8, prefix, "xml")) continue;
+            // An empty URI undeclares the prefix, so it binds no namespace.
+            if (attr.value.len == 0) continue;
+            try self.addNamespaceDecl(new_id, prefix, attr.value);
         }
     }
 
