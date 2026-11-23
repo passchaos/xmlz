@@ -577,7 +577,10 @@ pub inline fn findInvalidLiteralCharVersion(
         // to the scalar decoder, which also reports the exact bad index.
         if (index + 16 <= bytes.len and byte >= 0xE1 and byte <= 0xEC) {
             const Wide = @Vector(16, u8);
-            const chunk: Wide = bytes[index..][0..16].*;
+            // Explicit unaligned load: indexing the slice makes LLVM
+            // reassemble the vector from the byte it already has in a
+            // register plus narrower loads.
+            const chunk: Wide = @as(*align(1) const Wide, @ptrCast(bytes[index..].ptr)).*;
             const cont: u16 = @bitCast(
                 (chunk & @as(Wide, @splat(0xC0))) ==
                     @as(Wide, @splat(0x80)),
