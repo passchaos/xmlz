@@ -208,12 +208,12 @@ pub const Builder = struct {
         return node.id;
     }
 
-    pub fn createText(self: *Builder, value: []const u8) Error!dom.NodeId {
+    pub inline fn createText(self: *Builder, value: []const u8) Error!dom.NodeId {
         return self.createTextNode(value, false);
     }
 
     /// Create a text node that serializers emit without escaping.
-    pub fn createTextRaw(self: *Builder, value: []const u8) Error!dom.NodeId {
+    pub inline fn createTextRaw(self: *Builder, value: []const u8) Error!dom.NodeId {
         return self.createTextNode(value, true);
     }
 
