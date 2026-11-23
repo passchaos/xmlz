@@ -258,20 +258,22 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.186 | 9.29 |
-| identity | libxslt (lxml) | 1.021 | 51.05 |
-| sorted report | xmlz | 0.154 | 7.70 |
-| sorted report | libxslt (lxml) | 0.874 | 43.72 |
+| identity | xmlz | 0.178 | 8.92 |
+| identity | libxslt (lxml) | 1.035 | 51.76 |
+| sorted report | xmlz | 0.158 | 7.91 |
+| sorted report | libxslt (lxml) | 0.890 | 44.52 |
 
 ## Interpretation
 
-- The identity transform is **5.5x faster than libxslt** and the sorted
-  report is **5.7x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **5.8x faster than libxslt** and the sorted
+  report is **5.6x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
   short result strings pack into arena-owned slabs instead of paying one
-  allocation each, and simple child selects in `xsl:value-of` and attribute
+  allocation each, and result node and attribute arrays append through an
+  inline capacity check instead of the out-of-line `ArrayList.addOne`
+  capacity call. Simple child selects in `xsl:value-of` and attribute
   value templates read the text directly instead of building node sets.
   Absolute times move with host load, so the ratio is the meaningful
   comparison.

@@ -524,7 +524,13 @@ pub const Builder = struct {
             self.attributes.items.len = destination + count;
             node.attr_start = @intCast(destination);
         }
-        try self.attributes.append(self.arena.allocator(), attribute);
+        if (self.attributes.items.len == self.attributes.capacity) {
+            try self.attributes.ensureTotalCapacity(
+                self.arena.allocator(),
+                self.attributes.items.len + 1,
+            );
+        }
+        self.attributes.appendAssumeCapacity(attribute);
         self.nodes.items[element].attr_count += 1;
     }
 
@@ -549,7 +555,15 @@ pub const Builder = struct {
             return error.OutOfMemory;
         }
         const id: dom.NodeId = @intCast(self.nodes.items.len);
-        const slot = try self.nodes.addOne(self.arena.allocator());
+        // `addOne` calls `ensureTotalCapacity` even when capacity remains,
+        // and that call is not inlined; keep the common case branch-only.
+        if (self.nodes.items.len == self.nodes.capacity) {
+            try self.nodes.ensureTotalCapacity(
+                self.arena.allocator(),
+                self.nodes.items.len + 1,
+            );
+        }
+        const slot = self.nodes.addOneAssumeCapacity();
         return .{ .id = id, .slot = slot };
     }
 
