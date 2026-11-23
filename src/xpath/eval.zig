@@ -122,8 +122,12 @@ const Evaluator = struct {
                     context,
                 );
                 var combined: std.ArrayList(value.NodeRef) = .empty;
-                try combined.appendSlice(self.allocator, lhs);
-                try combined.appendSlice(self.allocator, rhs);
+                try combined.ensureTotalCapacity(
+                    self.allocator,
+                    lhs.len + rhs.len,
+                );
+                combined.appendSliceAssumeCapacity(lhs);
+                combined.appendSliceAssumeCapacity(rhs);
                 return .{ .node_set = try self.sortDedup(combined.items) };
             },
             .eq, .ne, .lt, .le, .gt, .ge => {
