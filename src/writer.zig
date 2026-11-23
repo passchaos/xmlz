@@ -250,34 +250,6 @@ fn writeNode(
     }
 }
 
-
-/// Copy a short slice with overlapping loads and stores. Attribute names and
-/// values are only a few bytes, where the generic memcpy's size dispatch
-/// costs more than the copy itself.
-inline fn copyShort(out: []u8, in: []const u8) void {
-    const n = in.len;
-    if (n >= 16) {
-        @memcpy(out[0..n], in);
-        return;
-    }
-    if (n >= 8) {
-        out[0..8].* = in[0..8].*;
-        out[n - 8 ..][0..8].* = in[n - 8 ..][0..8].*;
-        return;
-    }
-    if (n >= 4) {
-        out[0..4].* = in[0..4].*;
-        out[n - 4 ..][0..4].* = in[n - 4 ..][0..4].*;
-        return;
-    }
-    if (n >= 2) {
-        out[0..2].* = in[0..2].*;
-        out[n - 2 ..][0..2].* = in[n - 2 ..][0..2].*;
-        return;
-    }
-    if (n == 1) out[0] = in[0];
-}
-
 inline fn isXmlnsAttribute(name: []const u8) bool {
     if (name.len != 5) return false;
     return std.mem.eql(u8, name, "xmlns");
@@ -295,7 +267,7 @@ inline fn xmlnsPrefix(name: []const u8) ?[]const u8 {
 inline fn shouldSkipAttribute(
     doc: *const dom.Document,
     id: dom.NodeId,
-    attr: *const dom.Attribute,
+    attr: dom.Attribute,
     default_ns: []const u8,
 ) bool {
     if (isXmlnsAttribute(attr.name)) {
@@ -344,7 +316,7 @@ fn writeStartTag(
             var used: usize = 0;
             out[used] = '<';
             used += 1;
-            copyShort(out[used..], node.name);
+            @memcpy(out[used..][0..node.name.len], node.name);
             used += node.name.len;
             var direct = true;
             if (needs_synth_ns) {
@@ -368,7 +340,7 @@ fn writeStartTag(
             if (direct) {
                 var index: usize = 0;
                 while (index < attrs.len) : (index += 1) {
-                    const attr = &attrs[index];
+                    const attr = attrs[index];
                     if (skip_decls and
                         shouldSkipAttribute(doc, id, attr, default_ns)) continue;
                     if (!attr.plain and !shortPlainAttribute(attr.value) and
@@ -386,12 +358,12 @@ fn writeStartTag(
                     }
                     out[used] = ' ';
                     used += 1;
-                    copyShort(out[used..], attr.name);
+                    @memcpy(out[used..][0..attr.name.len], attr.name);
                     used += attr.name.len;
                     out[used] = '=';
                     out[used + 1] = '"';
                     used += 2;
-                    copyShort(out[used..], attr.value);
+                    @memcpy(out[used..][0..attr.value.len], attr.value);
                     used += attr.value.len;
                     out[used] = '"';
                     used += 1;
@@ -417,7 +389,7 @@ fn writeStartTag(
                 // Finish the tag through the generic writer starting at the
                 // attribute that could not be written directly.
                 while (index < attrs.len) : (index += 1) {
-                    const attr = &attrs[index];
+                    const attr = attrs[index];
                     if (skip_decls and
                         shouldSkipAttribute(doc, id, attr, default_ns)) continue;
                     try writer.writeByte(' ');
@@ -451,7 +423,7 @@ fn writeStartTag(
     if (xhtml_ns) {
         try writer.writeAll(" xmlns=\"http://www.w3.org/1999/xhtml\"");
     }
-    for (attrs) |*attr| {
+    for (attrs) |attr| {
         if (skip_decls and shouldSkipAttribute(doc, id, attr, default_ns)) continue;
         try writer.writeByte(' ');
         try writer.writeAll(attr.name);
@@ -587,7 +559,7 @@ fn writeEndTag(writer: *std.Io.Writer, name: []const u8) Error!void {
     if (out.len >= name.len + 3) {
         out[0] = '<';
         out[1] = '/';
-        copyShort(out[2..], name);
+        @memcpy(out[2..][0..name.len], name);
         out[name.len + 2] = '>';
         writer.advance(name.len + 3);
         return;
