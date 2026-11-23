@@ -244,6 +244,21 @@ pub const Builder = struct {
         // to be serializer-plain.
         node.setTextPlain(false);
         const total = node.value.len + value.len;
+        // When this node's value is the current slab tail, the appended bytes
+        // can follow it directly instead of copying the old value again.
+        if (node.value.len != 0) {
+            const slab_start = @intFromPtr(self.slab.ptr);
+            const value_start = @intFromPtr(node.value.ptr);
+            if (value_start + node.value.len == slab_start + self.slab_index and
+                value.len <= self.slab.len - self.slab_index)
+            {
+                const start = self.slab_index;
+                small_bytes.copyShort(self.slab[start..][0..value.len], value);
+                self.slab_index = start + value.len;
+                node.value = self.slab[value_start - slab_start ..][0..total];
+                return;
+            }
+        }
         if (total > self.slab.len - self.slab_index) {
             if (total >= slab_size / 4) {
                 const combined = try self.arena.allocator().alloc(u8, total);
