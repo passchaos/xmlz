@@ -81,6 +81,16 @@ pub const Builder = struct {
         try self.attributes.ensureTotalCapacity(allocator, count);
     }
 
+    /// Current result sizes, so callers can reserve space relative to what
+    /// has already been built.
+    pub fn nodeCount(self: *const Builder) usize {
+        return self.nodes.items.len;
+    }
+
+    pub fn attributeCount(self: *const Builder) usize {
+        return self.attributes.items.len;
+    }
+
     pub fn deinit(self: *Builder) void {
         if (!self.finished) self.arena.deinit();
         self.finished = true;

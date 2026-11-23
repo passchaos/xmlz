@@ -266,6 +266,10 @@ pub const ForEach = struct {
     select: CompiledExpr,
     sorts: []const SortKey = &.{},
     body: []const Instruction,
+    /// Attributes one iteration of the body creates through literal result
+    /// elements (counted recursively), so the runtime can size the result
+    /// attribute array before the loop instead of growing it repeatedly.
+    attributes_per_iteration: u16 = 0,
 };
 
 pub const If = struct {
@@ -1105,6 +1109,37 @@ const Compiler = struct {
         return body.toOwnedSlice(self.arena);
     }
 
+    /// Attributes that one pass over `body` creates through literal result
+    /// elements, counted recursively through the constructs whose bodies
+    /// always run. Unknown-output constructs (copies, apply-templates,
+    /// nested loops) contribute nothing, so the count is a lower bound used
+    /// to size result storage.
+    fn literalAttributeCount(
+        self: *Compiler,
+        body: []const Instruction,
+    ) u16 {
+        var total: usize = 0;
+        for (body) |*instruction| switch (instruction.*) {
+            .literal_element => |element| {
+                total += element.attributes.len + element.namespaces.len;
+                total += self.literalAttributeCount(element.body);
+            },
+            .if_ => |if_instruction| {
+                total += self.literalAttributeCount(if_instruction.body);
+            },
+            .choose => |choose| {
+                for (choose.whens) |when| {
+                    total += self.literalAttributeCount(when.body);
+                }
+                if (choose.otherwise) |otherwise| {
+                    total += self.literalAttributeCount(otherwise);
+                }
+            },
+            else => {},
+        };
+        return @intCast(@min(total, std.math.maxInt(u16)));
+    }
+
     fn compileInstruction(
         self: *Compiler,
         id: dom.NodeId,
@@ -1199,6 +1234,8 @@ const Compiler = struct {
             };
             instruction.sorts = try self.compileSorts(id);
             instruction.body = try self.compileBody(id, preserve);
+            instruction.attributes_per_iteration =
+                self.literalAttributeCount(instruction.body);
             try body.append(self.arena, .{ .for_each = instruction });
         } else if (std.mem.eql(u8, local, "if")) {
             const test_value = self.document.attribute(id, "test") orelse

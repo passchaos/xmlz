@@ -4030,6 +4030,20 @@ const Runtime = struct {
             position,
             size,
         );
+        // Each iteration usually emits at least one result node, and the
+        // attributes of literal result elements are known at compile time;
+        // reserving that much up front avoids the doubling copies for large
+        // loops.
+        self.builder.reserveNodes(
+            self.builder.nodeCount() + sorted.len,
+        ) catch |err| return mapBuilderError(err);
+        const literal_attributes = instruction.attributes_per_iteration;
+        if (literal_attributes != 0) {
+            self.builder.reserveAttributes(
+                self.builder.attributeCount() +
+                    sorted.len * literal_attributes,
+            ) catch |err| return mapBuilderError(err);
+        }
         for (sorted, 0..) |current, index| {
             try self.executeInstructions(
                 instruction.body,
