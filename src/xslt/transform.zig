@@ -982,6 +982,9 @@ const Runtime = struct {
     /// constant-time template lookup; invalidated with the index version.
     lone_child_template: ?*const compile.Template = null,
     lone_attribute_template: ?*const compile.Template = null,
+    /// The `xsl:copy` instruction when the lone child rule is exactly the
+    /// standard identity body, which needs no template bookkeeping.
+    lone_child_copy: ?compile.Copy = null,
     lone_template_version: u32 = std.math.maxInt(u32),
     /// Winning template for each `xsl:template name`, keyed by name.
     named_templates: std.StringHashMapUnmanaged(
@@ -2465,6 +2468,31 @@ const Runtime = struct {
         }
     }
 
+    /// The `xsl:copy` instruction when the template is exactly the standard
+    /// identity body: no parameters, one copy, and a streaming identity
+    /// select. Such a body references no variables and no apply-imports, so
+    /// the copy can run without template bookkeeping.
+    fn identityCopyOf(template: *const compile.Template) ?compile.Copy {
+        if (template.params.len != 0 or template.body.len != 1) return null;
+        const copy = switch (template.body[0]) {
+            .copy => |value| value,
+            else => return null,
+        };
+        if (copy.body.len != 1) return null;
+        switch (copy.body[0]) {
+            .apply_templates => |apply_instruction| {
+                if (!apply_instruction.stream_identity or
+                    apply_instruction.mode != null or
+                    apply_instruction.params.len != 0)
+                {
+                    return null;
+                }
+            },
+            else => return null,
+        }
+        return copy;
+    }
+
     /// Recompute the cached lone rules when the template index changed.
     fn refreshLoneTemplates(self: *Runtime) void {
         if (self.lone_template_version == self.template_index.version) {
@@ -2473,6 +2501,7 @@ const Runtime = struct {
         self.lone_template_version = self.template_index.version;
         self.lone_child_template = null;
         self.lone_attribute_template = null;
+        self.lone_child_copy = null;
         const index = &self.template_index;
         if (index.nodes.count() != 0) return;
         if (index.element_any.default.items.len == 0 and
@@ -2486,7 +2515,9 @@ const Runtime = struct {
             const state = &self.template_states[index.child_node.default.items[0]];
             if (state.matcher) |matcher| {
                 if (matcherAcceptsChildNodes(matcher)) {
-                    self.lone_child_template = state.template;
+                    const template = state.template;
+                    self.lone_child_template = template;
+                    self.lone_child_copy = identityCopyOf(template);
                 }
             }
         }
@@ -3836,11 +3867,14 @@ const Runtime = struct {
         self.current_mode = mode;
         defer self.current_mode = saved_mode;
         // The standard identity index resolves to a lone child rule; dispatch
-        // it here so the per-child lookup chain is skipped.
+        // it here so the per-child lookup chain is skipped, and run the copy
+        // directly when the template is exactly the identity body.
         var lone_child: ?*const compile.Template = null;
+        var lone_copy: ?compile.Copy = null;
         if (mode == null) {
             self.refreshLoneTemplates();
             lone_child = self.lone_child_template;
+            lone_copy = self.lone_child_copy;
         }
         var position: usize = 0;
         if (value.kind == .element) {
@@ -3868,7 +3902,9 @@ const Runtime = struct {
             child = child_value.next_sibling;
             position += 1;
             const child_ref: xpath.NodeRef = .{ .node = current };
-            if (lone_child) |template| {
+            if (lone_copy) |copy| {
+                try self.executeCopy(copy, child_ref, position, size);
+            } else if (lone_child) |template| {
                 try self.executeTemplate(
                     template,
                     child_ref,
