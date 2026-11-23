@@ -404,7 +404,7 @@ const Compiler = struct {
         if (root_id == dom.null_node) return error.InvalidCatalog;
         const root_node = document.node(root_id);
         if (root_node.kind != .element or
-            !std.mem.eql(u8, root_node.ns, namespace_uri) or
+            !std.mem.eql(u8, document.ns(root_node.ns), namespace_uri) or
             !std.mem.eql(u8, root_node.local, "catalog"))
         {
             return error.InvalidCatalog;
@@ -457,7 +457,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = document.node(child).next_sibling) {
             const node = document.node(child);
             if (node.kind != .element or
-                !std.mem.eql(u8, node.ns, namespace_uri))
+                !std.mem.eql(u8, document.ns(node.ns), namespace_uri))
             {
                 continue;
             }

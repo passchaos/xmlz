@@ -74,7 +74,7 @@ fn collectPatterns(
     while (child != dom.null_node) : (child = document.node(child).next_sibling) {
         const node = document.node(child);
         if (node.kind != .element) continue;
-        if (std.mem.eql(u8, node.ns, namespace_uri) and
+        if (std.mem.eql(u8, document.ns(node.ns), namespace_uri) and
             std.mem.eql(u8, node.local, "pattern"))
         {
             if (ancestor == null or inside_ancestor) {
@@ -83,7 +83,7 @@ fn collectPatterns(
             continue;
         }
         const is_ancestor = if (ancestor) |value|
-            std.mem.eql(u8, node.ns, value.namespace) and
+            std.mem.eql(u8, document.ns(node.ns), value.namespace) and
                 std.mem.eql(u8, node.local, value.local)
         else
             false;

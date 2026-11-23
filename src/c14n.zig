@@ -346,7 +346,7 @@ const Canonicalizer = struct {
             try entries.append(self.allocator, .{
                 .name = attribute.name,
                 .local = attribute.localName(),
-                .ns = attribute.ns,
+                .ns = self.document.ns(attribute.ns),
                 .value = attribute.value,
             });
         }
@@ -385,7 +385,7 @@ const Canonicalizer = struct {
         local: []const u8,
     ) ?[]const u8 {
         for (self.document.attributesOf(id), 0..) |attribute, index| {
-            if (!std.mem.eql(u8, attribute.ns, ns) or
+            if (!std.mem.eql(u8, self.document.ns(attribute.ns), ns) or
                 !std.mem.eql(u8, attribute.localName(), local))
             {
                 continue;
@@ -417,7 +417,7 @@ const Canonicalizer = struct {
                 const node = self.document.node(current);
                 if (node.kind != .element) break;
                 for (self.document.attributesOf(current), 0..) |attribute, index| {
-                    if (!std.mem.eql(u8, attribute.ns, namespace.xml_uri) or
+                    if (!std.mem.eql(u8, self.document.ns(attribute.ns), namespace.xml_uri) or
                         !std.mem.eql(u8, attribute.localName(), local))
                     {
                         continue;
@@ -464,7 +464,7 @@ const Canonicalizer = struct {
 
         var selected_base = false;
         for (self.document.attributesOf(id), 0..) |attribute, index| {
-            if (!std.mem.eql(u8, attribute.ns, namespace.xml_uri) or
+            if (!std.mem.eql(u8, self.document.ns(attribute.ns), namespace.xml_uri) or
                 !std.mem.eql(u8, attribute.localName(), "base"))
             {
                 continue;

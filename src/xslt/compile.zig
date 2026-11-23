@@ -479,7 +479,7 @@ const Compiler = struct {
         if (root == dom.null_node) return error.InvalidStylesheet;
         const root_node = document.node(root);
         const full_stylesheet =
-            isXsl(root_node, "stylesheet") or isXsl(root_node, "transform");
+            isXsl(self.document, root_node, "stylesheet") or isXsl(self.document, root_node, "transform");
         if (full_stylesheet) {
             if (document.attribute(root, "version")) |version| {
                 if (!std.mem.eql(u8, version, "1.0") and
@@ -521,7 +521,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = document.node(child).next_sibling) {
             const child_node = document.node(child);
             if (child_node.kind != .element) continue;
-            if (!isXsl(child_node, null)) continue;
+            if (!isXsl(self.document, child_node, null)) continue;
             if (std.mem.eql(u8, child_node.local, "annotation")) continue;
             if (std.mem.eql(u8, child_node.local, "import")) {
                 if (seen_non_import) return error.InvalidStylesheet;
@@ -544,13 +544,13 @@ const Compiler = struct {
             if (child_node.kind != .element) continue;
             if (std.mem.eql(
                 u8,
-                child_node.ns,
+                self.document.ns(child_node.ns),
                 exslt_functions_namespace,
             ) and std.mem.eql(u8, child_node.local, "function")) {
                 try self.compileFunction(child);
                 continue;
             }
-            if (!isXsl(child_node, null)) continue;
+            if (!isXsl(self.document, child_node, null)) continue;
             const local = child_node.local;
             if (std.mem.eql(u8, local, "import")) continue;
             if (std.mem.eql(u8, local, "include")) {
@@ -620,8 +620,8 @@ const Compiler = struct {
         const root = document_ptr.root();
         if (root == dom.null_node) return error.InvalidStylesheet;
         const root_node = document_ptr.node(root);
-        if (!isXsl(root_node, "stylesheet") and
-            !isXsl(root_node, "transform"))
+        if (!isXsl(self.document, root_node, "stylesheet") and
+            !isXsl(self.document, root_node, "transform"))
         {
             return error.InvalidStylesheet;
         }
@@ -721,7 +721,7 @@ const Compiler = struct {
                 continue;
             }
             if (child_node.kind != .element) continue;
-            if (isXsl(child_node, "param")) {
+            if (isXsl(self.document, child_node, "param")) {
                 if (seen_non_param) return error.InvalidStylesheet;
                 try params.append(self.arena, try self.compileVariable(child, true));
                 continue;
@@ -920,7 +920,7 @@ const Compiler = struct {
                 return error.InvalidStylesheet;
             }
             if (child_node.kind != .element) continue;
-            if (!isXsl(child_node, "attribute")) {
+            if (!isXsl(self.document, child_node, "attribute")) {
                 return error.InvalidStylesheet;
             }
             try self.compileInstruction(child, false, &instructions);
@@ -1073,8 +1073,8 @@ const Compiler = struct {
             const child_node = self.document.node(child);
             switch (child_node.kind) {
                 .element => {
-                    if (isXsl(child_node, "sort") or
-                        isXsl(child_node, "with-param"))
+                    if (isXsl(self.document, child_node, "sort") or
+                        isXsl(self.document, child_node, "with-param"))
                     {
                         continue;
                     }
@@ -1105,7 +1105,7 @@ const Compiler = struct {
     ) Error!void {
         const node = self.document.node(id);
         if (self.compiling_function and
-            std.mem.eql(u8, node.ns, exslt_functions_namespace) and
+            std.mem.eql(u8, self.document.ns(node.ns), exslt_functions_namespace) and
             std.mem.eql(u8, node.local, "result"))
         {
             try body.append(self.arena, .{
@@ -1113,13 +1113,13 @@ const Compiler = struct {
             });
             return;
         }
-        if (node.ns.len != 0 and
-            !std.mem.eql(u8, node.ns, xsl_namespace) and
-            try self.isExtensionNamespace(id, node.ns))
+        if (node.ns != 0 and
+            !std.mem.eql(u8, self.document.ns(node.ns), xsl_namespace) and
+            try self.isExtensionNamespace(id, self.document.ns(node.ns)))
         {
             // libxslt's built-in test module: the `test` element emits a
             // comment so extension dispatch can be exercised by the suite.
-            if (std.mem.eql(u8, node.ns, libxslt_namespace) and
+            if (std.mem.eql(u8, self.document.ns(node.ns), libxslt_namespace) and
                 std.mem.eql(u8, node.local, "test"))
             {
                 const comment_body = try self.arena.alloc(Instruction, 1);
@@ -1136,7 +1136,7 @@ const Compiler = struct {
             try self.compileFallbacks(id, preserve, body);
             return;
         }
-        if (node.ns.len == 0 or !std.mem.eql(u8, node.ns, xsl_namespace)) {
+        if (node.ns == 0 or !std.mem.eql(u8, self.document.ns(node.ns), xsl_namespace)) {
             try body.append(self.arena, .{
                 .literal_element = try self.compileLiteralElement(id, preserve),
             });
@@ -1294,7 +1294,7 @@ const Compiler = struct {
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
-            if (child_node.kind != .element or !isXsl(child_node, "with-param")) continue;
+            if (child_node.kind != .element or !isXsl(self.document, child_node, "with-param")) continue;
             const name = self.document.attribute(child, "name") orelse
                 return error.InvalidStylesheet;
             try params.append(self.arena, .{
@@ -1310,7 +1310,7 @@ const Compiler = struct {
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
-            if (child_node.kind != .element or !isXsl(child_node, "sort")) continue;
+            if (child_node.kind != .element or !isXsl(self.document, child_node, "sort")) continue;
             var sort: SortKey = .{};
             if (self.document.attribute(child, "select")) |select| {
                 sort.select = try self.parseExpression(child, select);
@@ -1341,7 +1341,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
-            if (isXsl(child_node, "when")) {
+            if (isXsl(self.document, child_node, "when")) {
                 if (otherwise != null) return error.InvalidStylesheet;
                 const test_value = self.document.attribute(child, "test") orelse
                     return error.InvalidStylesheet;
@@ -1349,7 +1349,7 @@ const Compiler = struct {
                     .test_expr = try self.parseExpression(child, test_value),
                     .body = try self.compileBody(child, preserve),
                 });
-            } else if (isXsl(child_node, "otherwise")) {
+            } else if (isXsl(self.document, child_node, "otherwise")) {
                 if (otherwise != null) return error.InvalidStylesheet;
                 otherwise = try self.compileBody(child, preserve);
             }
@@ -1428,7 +1428,7 @@ const Compiler = struct {
             const child_node = self.document.node(child);
             switch (child_node.kind) {
                 .element => {
-                    if (isXsl(child_node, "param")) {
+                    if (isXsl(self.document, child_node, "param")) {
                         try params.append(
                             self.arena,
                             try self.compileVariable(child, true),
@@ -1498,7 +1498,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element) continue;
-            if (!isXsl(node, "fallback")) continue;
+            if (!isXsl(self.document, node, "fallback")) continue;
             try body.appendSlice(
                 self.arena,
                 try self.compileBody(child, preserve),
@@ -1518,13 +1518,15 @@ const Compiler = struct {
             const current_node = self.document.node(current);
             const current_is_xsl = std.mem.eql(
                 u8,
-                current_node.ns,
+                self.document.ns(current_node.ns),
                 xsl_namespace,
             );
             for (self.document.attributesOf(current)) |attr| {
-                const namespaced = attr.ns.len != 0 and
-                    std.mem.eql(u8, attr.ns, xsl_namespace);
-                if (!namespaced and !(current_is_xsl and attr.ns.len == 0)) {
+                const namespaced = attr.ns != 0 and
+                    std.mem.eql(u8, self.document.ns(attr.ns), xsl_namespace);
+                if (!namespaced and
+                    !(current_is_xsl and attr.ns == 0))
+                {
                     continue;
                 }
                 if (!std.mem.eql(
@@ -1581,7 +1583,7 @@ const Compiler = struct {
         preserve: bool,
     ) Error!LiteralElement {
         const node = self.document.node(id);
-        const element_alias = self.findAlias(node.ns);
+        const element_alias = self.findAlias(self.document.ns(node.ns));
         const element_prefix = if (element_alias) |alias|
             alias.result_prefix
         else
@@ -1589,7 +1591,7 @@ const Compiler = struct {
         const element_ns = if (element_alias) |alias|
             alias.result_uri
         else
-            node.ns;
+            self.document.ns(node.ns);
         var element: LiteralElement = .{
             .prefix = element_prefix,
             .local = node.local,
@@ -1640,11 +1642,13 @@ const Compiler = struct {
         }
         for (self.document.attributesOf(id)) |attr| {
             if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
-            if (attr.ns.len != 0 and std.mem.eql(u8, attr.ns, xsl_namespace)) {
+            if (attr.ns != 0 and
+                std.mem.eql(u8, self.document.ns(attr.ns), xsl_namespace))
+            {
                 continue;
             }
-            const alias = self.findAlias(attr.ns);
-            const attr_ns = if (alias) |found| found.result_uri else attr.ns;
+            const alias = self.findAlias(self.document.ns(attr.ns));
+            const attr_ns = if (alias) |found| found.result_uri else self.document.ns(attr.ns);
             const attr_prefix = if (alias) |found|
                 found.result_prefix
             else
@@ -1666,11 +1670,15 @@ const Compiler = struct {
         var attributes: std.ArrayList(LiteralAttribute) = .empty;
         for (self.document.attributesOf(id)) |attr| {
             if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
-            if (attr.ns.len != 0 and std.mem.eql(u8, attr.ns, xsl_namespace)) continue;
-            const alias = self.findAlias(attr.ns);
+            if (attr.ns != 0 and
+                std.mem.eql(u8, self.document.ns(attr.ns), xsl_namespace))
+            {
+                continue;
+            }
+            const alias = self.findAlias(self.document.ns(attr.ns));
             var attr_name = attr.name;
             var attr_prefix = attr.prefixName();
-            var attr_ns = attr.ns;
+            var attr_ns = self.document.ns(attr.ns);
             if (alias) |found| {
                 attr_prefix = found.result_prefix;
                 attr_ns = found.result_uri;
@@ -1709,13 +1717,15 @@ const Compiler = struct {
         while (true) {
             const current_is_xsl = std.mem.eql(
                 u8,
-                self.document.node(current).ns,
+                self.document.ns(self.document.node(current).ns),
                 xsl_namespace,
             );
             for (self.document.attributesOf(current)) |attr| {
-                const namespaced = attr.ns.len != 0 and
-                    std.mem.eql(u8, attr.ns, xsl_namespace);
-                if (!namespaced and !(current_is_xsl and attr.ns.len == 0)) {
+                const namespaced = attr.ns != 0 and
+                    std.mem.eql(u8, self.document.ns(attr.ns), xsl_namespace);
+                if (!namespaced and
+                    !(current_is_xsl and attr.ns == 0))
+                {
                     continue;
                 }
                 if (!std.mem.eql(u8, attr.localName(), "exclude-result-prefixes") and
@@ -1914,8 +1924,8 @@ const Compiler = struct {
     }
 };
 
-fn isXsl(node: *const dom.Node, local: ?[]const u8) bool {
-    if (!std.mem.eql(u8, node.ns, xsl_namespace)) return false;
+fn isXsl(document: *const dom.Document, node: *const dom.Node, local: ?[]const u8) bool {
+    if (!std.mem.eql(u8, document.ns(node.ns), xsl_namespace)) return false;
     if (local) |expected| return std.mem.eql(u8, node.local, expected);
     return true;
 }

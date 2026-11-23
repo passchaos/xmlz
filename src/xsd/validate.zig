@@ -92,7 +92,7 @@ const Validator = struct {
             return;
         }
         const node = self.document.node(root);
-        const decl = self.schema.findElement(node.ns, node.local) orelse {
+        const decl = self.schema.findElement(self.document.ns(node.ns), node.local) orelse {
             try self.addError(root, "no declaration for root element");
             return;
         };
@@ -277,7 +277,7 @@ const Validator = struct {
     ) Error!void {
         if (wildcard.process == .skip) return;
         const node = self.document.node(id);
-        const decl = self.schema.findElement(node.ns, node.local);
+        const decl = self.schema.findElement(self.document.ns(node.ns), node.local);
         if (decl) |found| {
             try self.validateElement(id, found);
         } else if (wildcard.process == .strict) {
@@ -295,15 +295,15 @@ const Validator = struct {
 
         for (self.document.attributesOf(id)) |attr| {
             if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
-            if (attr.ns.len != 0 and
-                std.mem.eql(u8, attr.ns, schema.xsi_namespace))
+            if (attr.ns != 0 and
+                std.mem.eql(u8, self.document.ns(attr.ns), schema.xsi_namespace))
             {
                 continue;
             }
             const local = attr.localName();
             var found = false;
             for (complex.attributes, 0..) |use, index| {
-                if (!std.mem.eql(u8, use.decl.namespace_uri, attr.ns) or
+                if (!std.mem.eql(u8, use.decl.namespace_uri, self.document.ns(attr.ns)) or
                     !std.mem.eql(u8, use.decl.name, local))
                 {
                     continue;
@@ -319,9 +319,9 @@ const Validator = struct {
             }
             if (found) continue;
             if (complex.any_attribute) |wildcard| {
-                if (wildcardAllows(wildcard, attr.ns)) {
+                if (wildcardAllows(wildcard, self.document.ns(attr.ns))) {
                     if (wildcard.process != .skip) {
-                        if (self.schema.findAttribute(attr.ns, local)) |decl| {
+                        if (self.schema.findAttribute(self.document.ns(attr.ns), local)) |decl| {
                             try self.validateAttributeValue(id, attr, decl);
                         } else if (wildcard.process == .strict) {
                             try self.addAttributeError(
@@ -395,8 +395,8 @@ const Validator = struct {
     fn validateSimpleAttributes(self: *Validator, id: dom.NodeId) Error!void {
         for (self.document.attributesOf(id)) |attr| {
             if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
-            if (attr.ns.len != 0 and
-                std.mem.eql(u8, attr.ns, schema.xsi_namespace))
+            if (attr.ns != 0 and
+                std.mem.eql(u8, self.document.ns(attr.ns), schema.xsi_namespace))
             {
                 continue;
             }
@@ -1026,7 +1026,7 @@ const Matcher = struct {
                 var actual = element.decl;
                 const direct_match =
                     std.mem.eql(u8, child.local, element.decl.name) and
-                    std.mem.eql(u8, child.ns, element.decl.namespace_uri);
+                    std.mem.eql(u8, self.validator.document.ns(child.ns), element.decl.namespace_uri);
                 if (!direct_match) {
                     if (!element.decl.global) return null;
                     const blocked = element.decl.block.merge(
@@ -1034,7 +1034,7 @@ const Matcher = struct {
                     );
                     if (blocked.substitution) return null;
                     const candidate = self.validator.schema.findElement(
-                        child.ns,
+                        self.validator.document.ns(child.ns),
                         child.local,
                     ) orelse return null;
                     if (!self.validator.schema.isSubstitutionMember(
@@ -1073,7 +1073,7 @@ const Matcher = struct {
                 if (index >= self.children.len) return null;
                 const child_id = self.children[index];
                 const child = self.validator.document.node(child_id);
-                if (!wildcardAllows(any.wildcard, child.ns)) {
+                if (!wildcardAllows(any.wildcard, self.validator.document.ns(child.ns))) {
                     return null;
                 }
                 self.assignments.append(self.validator.allocator, .{

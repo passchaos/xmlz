@@ -732,7 +732,7 @@ const Compiler = struct {
         const root = self.document.root();
         if (root == dom.null_node) return error.InvalidSchema;
         const root_node = self.document.node(root);
-        if (!isXsd(root_node, "schema")) return error.InvalidSchema;
+        if (!isXsd(self.document, root_node, "schema")) return error.InvalidSchema;
         self.root = root;
 
         const schema_document = try self.arena.create(SchemaDocument);
@@ -791,12 +791,12 @@ const Compiler = struct {
         const root = self.document.root();
         if (root == dom.null_node) return error.InvalidSchema;
         const root_node = self.document.node(root);
-        if (!isXsd(root_node, "schema")) return error.InvalidSchema;
+        if (!isXsd(self.document, root_node, "schema")) return error.InvalidSchema;
         var child = self.document.node(root).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
-            if (!isXsd(child_node, null)) continue;
+            if (!isXsd(self.document, child_node, null)) continue;
             if (std.mem.eql(u8, child_node.local, "annotation")) continue;
             if (std.mem.eql(u8, child_node.local, "element")) {
                 const decl = try self.globalElement(child);
@@ -865,7 +865,7 @@ const Compiler = struct {
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
-            if (node.kind != .element or !isXsd(node, null)) continue;
+            if (node.kind != .element or !isXsd(self.document, node, null)) continue;
             if (std.mem.eql(u8, node.local, "annotation")) continue;
             if (std.mem.eql(u8, node.local, "simpleType") or
                 std.mem.eql(u8, node.local, "complexType"))
@@ -942,7 +942,7 @@ const Compiler = struct {
         const root = document_ptr.root();
         if (root == dom.null_node) return error.InvalidSchema;
         const root_node = document_ptr.node(root);
-        if (!isXsd(root_node, "schema")) return error.InvalidSchema;
+        if (!isXsd(self.document, root_node, "schema")) return error.InvalidSchema;
 
         const included_namespace = document_ptr.attribute(
             root,
@@ -1229,7 +1229,7 @@ const Compiler = struct {
         var child = self.document.node(decl.node).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
-            if (child_node.kind != .element or !isXsd(child_node, null)) {
+            if (child_node.kind != .element or !isXsd(self.document, child_node, null)) {
                 continue;
             }
             if (std.mem.eql(u8, child_node.local, "annotation")) continue;
@@ -1300,7 +1300,7 @@ const Compiler = struct {
         var child = self.document.node(decl.node).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
-            if (child_node.kind != .element or !isXsd(child_node, null)) {
+            if (child_node.kind != .element or !isXsd(self.document, child_node, null)) {
                 continue;
             }
             if (std.mem.eql(u8, child_node.local, "annotation")) continue;
@@ -1331,7 +1331,7 @@ const Compiler = struct {
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
-            if (child_node.kind != .element or !isXsd(child_node, null)) {
+            if (child_node.kind != .element or !isXsd(self.document, child_node, null)) {
                 continue;
             }
             var kind: ?IdentityKind = null;
@@ -1374,7 +1374,7 @@ const Compiler = struct {
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
-            if (child_node.kind != .element or !isXsd(child_node, null)) {
+            if (child_node.kind != .element or !isXsd(self.document, child_node, null)) {
                 continue;
             }
             if (std.mem.eql(u8, child_node.local, "selector")) {
@@ -1500,7 +1500,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
-            if (!isXsd(child_node, null)) continue;
+            if (!isXsd(self.document, child_node, null)) continue;
             if (std.mem.eql(u8, child_node.local, "annotation")) continue;
             if (std.mem.eql(u8, child_node.local, "restriction")) {
                 var base: ?TypeUse = null;
@@ -1516,7 +1516,7 @@ const Compiler = struct {
                 while (facet_child != dom.null_node) : (facet_child = self.document.node(facet_child).next_sibling) {
                     const facet_node = self.document.node(facet_child);
                     if (facet_node.kind != .element) continue;
-                    if (!isXsd(facet_node, null)) continue;
+                    if (!isXsd(self.document, facet_node, null)) continue;
                     if (std.mem.eql(u8, facet_node.local, "simpleType")) {
                         if (inline_type != null or base != null) {
                             return error.InvalidSchema;
@@ -1547,7 +1547,7 @@ const Compiler = struct {
                 while (list_child != dom.null_node) : (list_child = self.document.node(list_child).next_sibling) {
                     const list_node = self.document.node(list_child);
                     if (list_node.kind == .element and
-                        isXsd(list_node, "simpleType"))
+                        isXsd(self.document, list_node, "simpleType"))
                     {
                         if (inline_type != null or item != null) {
                             return error.InvalidSchema;
@@ -1578,7 +1578,7 @@ const Compiler = struct {
                 while (union_child != dom.null_node) : (union_child = self.document.node(union_child).next_sibling) {
                     const union_node = self.document.node(union_child);
                     if (union_node.kind == .element and
-                        isXsd(union_node, "simpleType"))
+                        isXsd(self.document, union_node, "simpleType"))
                     {
                         try members.append(
                             self.arena,
@@ -1690,7 +1690,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
-            if (!isXsd(child_node, null)) continue;
+            if (!isXsd(self.document, child_node, null)) continue;
             if (std.mem.eql(u8, child_node.local, "annotation")) continue;
             if (std.mem.eql(u8, child_node.local, "sequence") or
                 std.mem.eql(u8, child_node.local, "choice") or
@@ -1727,7 +1727,7 @@ const Compiler = struct {
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
-            if (child_node.kind != .element or !isXsd(child_node, null)) continue;
+            if (child_node.kind != .element or !isXsd(self.document, child_node, null)) continue;
             if (std.mem.eql(u8, child_node.local, "annotation")) continue;
             const restriction = std.mem.eql(u8, child_node.local, "restriction");
             if (!restriction and !std.mem.eql(u8, child_node.local, "extension")) {
@@ -1744,7 +1744,7 @@ const Compiler = struct {
             var facet_child = self.document.node(child).first_child;
             while (facet_child != dom.null_node) : (facet_child = self.document.node(facet_child).next_sibling) {
                 const facet_node = self.document.node(facet_child);
-                if (facet_node.kind != .element or !isXsd(facet_node, null)) {
+                if (facet_node.kind != .element or !isXsd(self.document, facet_node, null)) {
                     continue;
                 }
                 if (std.mem.eql(u8, facet_node.local, "annotation")) continue;
@@ -1783,7 +1783,7 @@ const Compiler = struct {
         var child = self.document.node(id).first_child;
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
-            if (child_node.kind != .element or !isXsd(child_node, null)) continue;
+            if (child_node.kind != .element or !isXsd(self.document, child_node, null)) continue;
             if (std.mem.eql(u8, child_node.local, "annotation")) continue;
             const restriction = std.mem.eql(u8, child_node.local, "restriction");
             if (!restriction and !std.mem.eql(u8, child_node.local, "extension")) {
@@ -1800,7 +1800,7 @@ const Compiler = struct {
             while (content_child != dom.null_node) : (content_child = self.document.node(content_child).next_sibling) {
                 const content_node = self.document.node(content_child);
                 if (content_node.kind != .element or
-                    !isXsd(content_node, null))
+                    !isXsd(self.document, content_node, null))
                 {
                     continue;
                 }
@@ -2053,7 +2053,7 @@ const Compiler = struct {
             while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
                 const child_node = self.document.node(child);
                 if (child_node.kind != .element) continue;
-                if (!isXsd(child_node, null)) continue;
+                if (!isXsd(self.document, child_node, null)) continue;
                 if (std.mem.eql(u8, child_node.local, "annotation")) continue;
                 if (std.mem.eql(u8, child_node.local, "element") or
                     std.mem.eql(u8, child_node.local, "sequence") or
@@ -2122,7 +2122,7 @@ const Compiler = struct {
             while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
                 const child_node = self.document.node(child);
                 if (child_node.kind == .element and
-                    std.mem.eql(u8, child_node.ns, xsd_namespace) and
+                    std.mem.eql(u8, self.document.ns(child_node.ns), xsd_namespace) and
                     (std.mem.eql(u8, child_node.local, "simpleType") or
                         std.mem.eql(u8, child_node.local, "complexType")))
                 {
@@ -2246,7 +2246,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind == .element and
-                std.mem.eql(u8, child_node.ns, xsd_namespace) and
+                std.mem.eql(u8, self.document.ns(child_node.ns), xsd_namespace) and
                 (std.mem.eql(u8, child_node.local, "simpleType") or
                     std.mem.eql(u8, child_node.local, "complexType")))
             {
@@ -3115,8 +3115,8 @@ fn parseUnsigned(value: []const u8) Error!usize {
         return error.InvalidSchema;
 }
 
-fn isXsd(node: *const dom.Node, local: ?[]const u8) bool {
-    if (!std.mem.eql(u8, node.ns, xsd_namespace)) return false;
+fn isXsd(document: *const dom.Document, node: *const dom.Node, local: ?[]const u8) bool {
+    if (!std.mem.eql(u8, document.ns(node.ns), xsd_namespace)) return false;
     if (local) |expected| return std.mem.eql(u8, node.local, expected);
     return true;
 }

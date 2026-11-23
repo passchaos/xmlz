@@ -28,31 +28,80 @@ pub const Kind = enum {
     processing_instruction,
 };
 
+/// Index into `Document.namespaces`. Zero is the empty namespace.
+pub const NamespaceId = u32;
+
+/// Attribute flag bits stored above the colon offset.
+const attr_flag_normalization_changed: u32 = 1 << 16;
+const attr_flag_whitespace_char_ref: u32 = 1 << 17;
+const attr_flag_plain: u32 = 1 << 18;
+
 pub const Attribute = struct {
     /// Raw qualified name as authored.
     name: []const u8,
-    /// Byte offset of the first colon in the raw name, or 0xFFFF.
-    colon: u16 = 0xFFFF,
-    /// Resolved namespace URI; empty when the attribute has no namespace.
-    ns: []const u8,
     /// Decoded and normalized value.
     value: []const u8,
+    /// Index into `Document.namespaces`; zero when the attribute has no
+    /// namespace.
+    ns: NamespaceId = 0,
+    /// Bits 0..15 hold the byte offset of the first colon in the raw name
+    /// (0xFFFF when absent); the upper bits hold the normalization and
+    /// serializer flags.
+    flags: u32 = 0xFFFF,
+
+    pub inline fn colon(self: Attribute) u16 {
+        return @truncate(self.flags);
+    }
+
     /// True when tokenized normalization changed the decoded value.
-    normalization_changed: bool = false,
+    pub inline fn normalizationChanged(self: Attribute) bool {
+        return self.flags & attr_flag_normalization_changed != 0;
+    }
+
     /// True when a character reference produced tab, LF, or CR.
-    whitespace_char_ref: bool = false,
+    pub inline fn whitespaceCharRef(self: Attribute) bool {
+        return self.flags & attr_flag_whitespace_char_ref != 0;
+    }
+
     /// True when the parser proved the value needs no serialization
     /// escaping: no references, markup, quotes, or line ends.
-    plain: bool = false,
+    pub inline fn isPlain(self: Attribute) bool {
+        return self.flags & attr_flag_plain != 0;
+    }
+
+    pub inline fn setPlain(self: *Attribute, value: bool) void {
+        if (value) {
+            self.flags |= attr_flag_plain;
+        } else {
+            self.flags &= ~attr_flag_plain;
+        }
+    }
+
+    pub inline fn setNormalizationChanged(self: *Attribute, value: bool) void {
+        if (value) {
+            self.flags |= attr_flag_normalization_changed;
+        } else {
+            self.flags &= ~attr_flag_normalization_changed;
+        }
+    }
 
     pub fn localName(self: Attribute) []const u8 {
-        return if (self.colon == 0xFFFF) self.name else self.name[self.colon + 1 ..];
+        const index = self.colon();
+        return if (index == 0xFFFF) self.name else self.name[index + 1 ..];
     }
 
     pub fn prefixName(self: Attribute) []const u8 {
-        return if (self.colon == 0xFFFF) "" else self.name[0..self.colon];
+        const index = self.colon();
+        return if (index == 0xFFFF) "" else self.name[0..index];
     }
 };
+
+const node_flag_raw_text: u8 = 1 << 0;
+const node_flag_ws_char_ref_text: u8 = 1 << 1;
+const node_flag_nel_ls_text: u8 = 1 << 2;
+const node_flag_cdata_text: u8 = 1 << 3;
+const node_flag_ns_decls: u8 = 1 << 4;
+const node_flag_text_plain: u8 = 1 << 5;
 
 pub const Node = struct {
     kind: Kind,
@@ -63,24 +112,73 @@ pub const Node = struct {
     /// Raw element name or PI target.
     name: []const u8 = "",
     local: []const u8 = "",
-    /// Resolved namespace URI; empty when the element has no namespace.
-    ns: []const u8 = "",
+    /// Index into `Document.namespaces`; zero when the element has no
+    /// namespace.
+    ns: NamespaceId = 0,
     /// Text/comment/PI payload.
     value: []const u8 = "",
     attr_start: u32 = 0,
     attr_count: u32 = 0,
+    /// Boolean node state; see the `node_flag_*` constants.
+    flags: u8 = 0,
+
     /// Text produced with XSLT disable-output-escaping; serializers emit it raw.
-    raw_text: bool = false,
+    pub inline fn isRawText(self: Node) bool {
+        return self.flags & node_flag_raw_text != 0;
+    }
+
+    pub inline fn setRawText(self: *Node, value: bool) void {
+        if (value) {
+            self.flags |= node_flag_raw_text;
+        } else {
+            self.flags &= ~node_flag_raw_text;
+        }
+    }
+
     /// DTD validation provenance for element-only content.
-    has_whitespace_char_ref_text: bool = false,
-    has_nel_ls_text: bool = false,
-    has_cdata_text: bool = false,
+    pub inline fn hasWhitespaceCharRefText(self: Node) bool {
+        return self.flags & node_flag_ws_char_ref_text != 0;
+    }
+
+    pub inline fn setWhitespaceCharRefText(self: *Node, value: bool) void {
+        if (value) self.flags |= node_flag_ws_char_ref_text;
+    }
+
+    pub inline fn hasNelLsText(self: Node) bool {
+        return self.flags & node_flag_nel_ls_text != 0;
+    }
+
+    pub inline fn setNelLsText(self: *Node, value: bool) void {
+        if (value) self.flags |= node_flag_nel_ls_text;
+    }
+
+    pub inline fn hasCdataText(self: Node) bool {
+        return self.flags & node_flag_cdata_text != 0;
+    }
+
+    pub inline fn setCdataText(self: *Node, value: bool) void {
+        if (value) self.flags |= node_flag_cdata_text;
+    }
+
     /// The element carries an `xmlns` / `xmlns:prefix` declaration, so
     /// serializers must inspect its attributes for redundant bindings.
-    has_ns_decls: bool = false,
+    pub inline fn hasNsDecls(self: Node) bool {
+        return self.flags & node_flag_ns_decls != 0;
+    }
+
+    pub inline fn setNsDecls(self: *Node, value: bool) void {
+        if (value) self.flags |= node_flag_ns_decls;
+    }
+
     /// True when the parser proved the text needs no serialization escaping
     /// (no references, markup, line ends, or `>`).
-    text_plain: bool = false,
+    pub inline fn isTextPlain(self: Node) bool {
+        return self.flags & node_flag_text_plain != 0;
+    }
+
+    pub inline fn setTextPlain(self: *Node, value: bool) void {
+        if (value) self.flags |= node_flag_text_plain;
+    }
 };
 
 pub const Options = struct {
@@ -100,6 +198,9 @@ pub const Document = struct {
     owns_arena: bool = true,
     nodes: []Node,
     attributes: []Attribute,
+    /// Namespace URI table. Index zero is the empty namespace; node and
+    /// attribute records store indexes into this table.
+    namespaces: []const []const u8,
     declaration: ?parser_mod.Declaration = null,
     doctype: ?parser_mod.Doctype = null,
     /// DTD view from the parser. Slices borrow the parser's input/scratch
@@ -129,6 +230,7 @@ pub const Document = struct {
             .arena = arena,
             .nodes = builder.nodes.items,
             .attributes = builder.attributes.items,
+            .namespaces = builder.namespaces.items,
             .declaration = builder.declaration,
             .doctype = builder.doctype,
             .dtd = builder.parser.dtd(),
@@ -160,6 +262,7 @@ pub const Document = struct {
             .owns_arena = false,
             .nodes = builder.nodes.items,
             .attributes = builder.attributes.items,
+            .namespaces = builder.namespaces.items,
             .declaration = builder.declaration,
             .doctype = builder.doctype,
             .dtd = builder.parser.dtd(),
@@ -170,6 +273,19 @@ pub const Document = struct {
     pub fn deinit(self: *Document) void {
         if (self.owns_arena) self.arena.deinit();
         self.* = undefined;
+    }
+
+    /// Resolve a namespace table index to its URI.
+    pub inline fn ns(self: *const Document, id: NamespaceId) []const u8 {
+        return self.namespaces[id];
+    }
+
+    /// Find the table index for a URI, or null when it was never interned.
+    pub inline fn lookupNamespace(self: *const Document, uri: []const u8) ?NamespaceId {
+        for (self.namespaces, 0..) |existing, index| {
+            if (std.mem.eql(u8, existing, uri)) return @intCast(index);
+        }
+        return null;
     }
 
     /// The synthetic document node (always id 0).
@@ -210,7 +326,7 @@ pub const Document = struct {
         local: []const u8,
     ) ?[]const u8 {
         for (self.attributesOf(id)) |attr| {
-            if (std.mem.eql(u8, attr.ns, uri) and
+            if (std.mem.eql(u8, self.ns(attr.ns), uri) and
                 std.mem.eql(u8, attr.localName(), local))
             {
                 return attr.value;
@@ -262,7 +378,7 @@ pub const Document = struct {
         while (child != null_node) : (child = self.nodes[child].next_sibling) {
             const node_value = &self.nodes[child];
             if (node_value.kind == .element and
-                std.mem.eql(u8, node_value.ns, uri) and
+                std.mem.eql(u8, self.ns(node_value.ns), uri) and
                 std.mem.eql(u8, node_value.local, local))
             {
                 return child;
@@ -364,6 +480,7 @@ const Builder = struct {
     parser: parser_mod.Parser,
     nodes: std.ArrayList(Node) = .empty,
     attributes: std.ArrayList(Attribute) = .empty,
+    namespaces: std.ArrayListUnmanaged([]const u8) = .empty,
     stack: [parser_mod.max_open_elements]NodeId = undefined,
     stack_len: usize = 0,
     declaration: ?parser_mod.Declaration = null,
@@ -386,7 +503,19 @@ const Builder = struct {
         };
     }
 
+    /// Intern a namespace URI and return its table index. Index zero is the
+    /// empty namespace.
+    fn internNamespace(self: *Builder, uri: []const u8) Error!NamespaceId {
+        if (uri.len == 0) return 0;
+        for (self.namespaces.items, 0..) |existing, index| {
+            if (std.mem.eql(u8, existing, uri)) return @intCast(index);
+        }
+        try self.namespaces.append(self.allocator, uri);
+        return @intCast(self.namespaces.items.len - 1);
+    }
+
     fn run(self: *Builder) Error!void {
+        try self.namespaces.append(self.allocator, "");
         const counts = countStructural(self.parser.input);
         try self.nodes.ensureTotalCapacity(
             self.allocator,
@@ -436,7 +565,7 @@ const Builder = struct {
                     try self.appendText(data, .normalize);
                     if (self.stack_len != 0) {
                         self.nodes.items[self.stack[self.stack_len - 1]]
-                            .has_cdata_text = true;
+                            .setCdataText(true);
                     }
                 },
                 .comment => |data| {
@@ -495,16 +624,28 @@ const Builder = struct {
             &.{}
         else
             self.attributes.items.ptr[attr_start..][0..element.attrs.len];
+        const element_ns = if (element.namespace_uri.len == 0)
+            0
+        else
+            try self.internNamespace(element.namespace_uri);
         for (element.attrs, out) |attr, *dst| {
+            var flags: u32 = attr.colon;
+            if (attr.whitespace_char_ref) {
+                flags |= attr_flag_whitespace_char_ref;
+            }
+            // A validated value with no references or line ends cannot
+            // contain a character the serializer must escape.
+            if (!attr.needs_decode and !self.parser.options.trusted) {
+                flags |= attr_flag_plain;
+            }
             dst.* = .{
                 .name = attr.name,
-                .colon = attr.colon,
-                .ns = attr.namespace_uri,
                 .value = attr.value,
-                .whitespace_char_ref = attr.whitespace_char_ref,
-                // A validated value with no references or line ends cannot
-                // contain a character the serializer must escape.
-                .plain = !attr.needs_decode and !self.parser.options.trusted,
+                .ns = if (attr.namespace_uri.len == 0)
+                    0
+                else
+                    try self.internNamespace(attr.namespace_uri),
+                .flags = flags,
             };
         }
         self.attributes.items.len += element.attrs.len;
@@ -530,11 +671,11 @@ const Builder = struct {
                             self.allocator,
                             value,
                         );
-                        dst.normalization_changed = !std.mem.eql(
+                        dst.setNormalizationChanged(!std.mem.eql(
                             u8,
                             value,
                             normalized,
-                        );
+                        ));
                         value = normalized;
                     }
                     dst.value = value;
@@ -544,7 +685,7 @@ const Builder = struct {
         if (!self.parser.options.namespaces) {
             for (out, element.attrs) |*dst, attr| {
                 if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
-                    dst.ns = namespace.xmlns_uri;
+                    dst.ns = try self.internNamespace(namespace.xmlns_uri);
                     has_ns_decls = true;
                 }
             }
@@ -554,10 +695,10 @@ const Builder = struct {
             .kind = .element,
             .name = element.name,
             .local = element_local,
-            .ns = element.namespace_uri,
+            .ns = element_ns,
             .attr_start = attr_start,
             .attr_count = @intCast(self.attributes.items.len - attr_start),
-            .has_ns_decls = has_ns_decls,
+            .flags = if (has_ns_decls) node_flag_ns_decls else 0,
         });
         try self.appendChild(parent, id);
 
@@ -627,13 +768,13 @@ const Builder = struct {
         _ = try self.addChildNode(parent, .{
             .kind = .text,
             .value = decoded,
-            .text_plain = plain,
+            .flags = if (plain) node_flag_text_plain else 0,
         });
         if (self.parser.text_whitespace_char_ref) {
-            self.nodes.items[parent].has_whitespace_char_ref_text = true;
+            self.nodes.items[parent].setWhitespaceCharRefText(true);
         }
         if (self.parser.text_has_nel_ls) {
-            self.nodes.items[parent].has_nel_ls_text = true;
+            self.nodes.items[parent].setNelLsText(true);
         }
     }
 
@@ -795,7 +936,7 @@ test "DOM parses elements attributes text and namespaces" {
     const root = doc.root();
     try testing.expect(root != null_node);
     try testing.expectEqualStrings("svg", doc.node(root).local);
-    try testing.expectEqualStrings("http://www.w3.org/2000/svg", doc.node(root).ns);
+    try testing.expectEqualStrings("http://www.w3.org/2000/svg", doc.ns(doc.node(root).ns));
     try testing.expectEqualStrings("10", doc.attribute(root, "width").?);
 
     const group = doc.findChild(root, "g").?;
@@ -822,7 +963,7 @@ test "DOM resolves prefixes and keeps namespace declarations" {
     for (doc.attributesOf(root)) |attr| {
         if (std.mem.eql(u8, attr.name, "p:attr")) {
             found_prefixed = true;
-            try testing.expectEqualStrings("urn:p", attr.ns);
+            try testing.expectEqualStrings("urn:p", doc.ns(attr.ns));
             try testing.expectEqualStrings("attr", attr.localName());
         }
     }
@@ -978,7 +1119,7 @@ test "parser applies DTD namespace and ID declarations" {
     try testing.expectEqualStrings("k", doc.attribute(root, "p:kind").?);
     for (doc.attributesOf(root)) |attr| {
         if (std.mem.eql(u8, attr.name, "p:kind")) {
-            try testing.expectEqualStrings("urn:p", attr.ns);
+            try testing.expectEqualStrings("urn:p", doc.ns(attr.ns));
         }
     }
     var saw_id = false;

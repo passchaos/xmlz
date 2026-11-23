@@ -112,7 +112,7 @@ pub const Result = struct {
             const root = self.document.root();
             if (root != dom.null_node) {
                 const root_node = self.document.node(root);
-                if (root_node.ns.len == 0 and std.ascii.eqlIgnoreCase(
+                if (self.document.ns(root_node.ns).len == 0 and std.ascii.eqlIgnoreCase(
                     root_node.local,
                     "html",
                 )) {
@@ -884,7 +884,11 @@ fn upperBoundU32(ids: []const u32, id: u32) usize {
 
 /// Build the key used by `NamePositions` for one node, or null when the
 /// expanded name does not fit the stack buffer.
-fn nodeNameKey(node: *const dom.Node, buffer: []u8) ?[]const u8 {
+fn nodeNameKey(
+    document: *const dom.Document,
+    node: *const dom.Node,
+    buffer: []u8,
+) ?[]const u8 {
     var length: usize = 0;
     switch (node.kind) {
         .document => {
@@ -893,10 +897,11 @@ fn nodeNameKey(node: *const dom.Node, buffer: []u8) ?[]const u8 {
         },
         .element => {
             buffer[0] = 'e';
-            const total = 1 + node.ns.len + 1 + node.local.len;
+            const uri = document.ns(node.ns);
+            const total = 1 + uri.len + 1 + node.local.len;
             if (total > buffer.len) return null;
-            @memcpy(buffer[1..][0..node.ns.len], node.ns);
-            length = 1 + node.ns.len;
+            @memcpy(buffer[1..][0..uri.len], uri);
+            length = 1 + uri.len;
             buffer[length] = 0;
             length += 1;
             @memcpy(buffer[length..][0..node.local.len], node.local);
@@ -1021,6 +1026,9 @@ const Runtime = struct {
     source_node_count: usize = 0,
     merged_nodes: std.ArrayList(dom.Node) = .empty,
     merged_attributes: std.ArrayList(dom.Attribute) = .empty,
+    /// Namespace table for the merged view: the source table followed by the
+    /// tables of documents loaded through `document()`.
+    merged_namespaces: std.ArrayListUnmanaged([]const u8) = .empty,
     loaded_documents: std.ArrayList(*dom.Document) = .empty,
     document_cache: std.StringHashMap(dom.NodeId),
     /// Merged document-node ids for documents loaded by `document()`.
@@ -1080,6 +1088,7 @@ const Runtime = struct {
         const document = try self.allocator.create(dom.Document);
         document.* = .{
             .arena = std.heap.ArenaAllocator.init(self.allocator),
+            .namespaces = self.source.namespaces,
             .nodes = &.{},
             .attributes = &.{},
         };
@@ -1130,6 +1139,7 @@ const Runtime = struct {
         const document = try self.allocator.create(dom.Document);
         document.* = .{
             .arena = std.heap.ArenaAllocator.init(self.allocator),
+            .namespaces = self.source.namespaces,
             .nodes = self.source.nodes,
             .attributes = self.source.attributes,
             .declaration = self.source.declaration,
@@ -1152,6 +1162,16 @@ const Runtime = struct {
         self.loaded_documents.clearRetainingCapacity();
     }
 
+    /// Intern a namespace URI in the merged view's table.
+    fn internMergedNamespace(self: *Runtime, uri: []const u8) Error!dom.NamespaceId {
+        if (uri.len == 0) return 0;
+        for (self.merged_namespaces.items, 0..) |existing, index| {
+            if (std.mem.eql(u8, existing, uri)) return @intCast(index);
+        }
+        try self.merged_namespaces.append(self.allocator, uri);
+        return @intCast(self.merged_namespaces.items.len - 1);
+    }
+
     /// Append a document's nodes to the merged view and return the id of its
     /// document node.
     fn appendDocumentNodes(
@@ -1167,6 +1187,20 @@ const Runtime = struct {
                 self.allocator,
                 self.source.attributes,
             );
+            try self.merged_namespaces.appendSlice(
+                self.allocator,
+                self.source.namespaces,
+            );
+        }
+        // Namespace ids are document-relative, so map the loaded document's
+        // table into the merged one before copying its records.
+        const ns_map = try self.allocator.alloc(
+            dom.NamespaceId,
+            document.namespaces.len,
+        );
+        defer self.allocator.free(ns_map);
+        for (document.namespaces, 0..) |uri, index| {
+            ns_map[index] = try self.internMergedNamespace(uri);
         }
         const node_offset: dom.NodeId = @intCast(self.merged_nodes.items.len);
         const attr_offset: u32 = @intCast(self.merged_attributes.items.len);
@@ -1183,18 +1217,25 @@ const Runtime = struct {
                 copy.next_sibling += node_offset;
             }
             if (copy.attr_count != 0) copy.attr_start += attr_offset;
+            copy.ns = ns_map[copy.ns];
             self.merged_nodes.appendAssumeCapacity(copy);
         }
-        try self.merged_attributes.appendSlice(
+        try self.merged_attributes.ensureUnusedCapacity(
             self.allocator,
-            document.attributes,
+            document.attributes.len,
         );
+        for (document.attributes) |attribute| {
+            var copy = attribute;
+            copy.ns = ns_map[copy.ns];
+            self.merged_attributes.appendAssumeCapacity(copy);
+        }
         if (!self.source_has_namespaces and documentHasNamespaces(document)) {
             self.source_has_namespaces = true;
         }
         if (self.merged) |merged| {
             merged.nodes = self.merged_nodes.items;
             merged.attributes = self.merged_attributes.items;
+            merged.namespaces = self.merged_namespaces.items;
         }
         try self.document_roots.append(self.allocator, node_offset);
         return node_offset;
@@ -1477,7 +1518,7 @@ const Runtime = struct {
             return new_id;
         }
         const strip = source.kind == .element and
-            self.shouldStrip(source.ns, source.local);
+            self.shouldStrip(self.source.ns(source.ns), source.local);
         var child = source.first_child;
         var last: dom.NodeId = dom.null_node;
         while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
@@ -2140,7 +2181,7 @@ const Runtime = struct {
                     continue;
                 }
                 if (check_namespace and
-                    !std.mem.eql(u8, attribute.ns, uri))
+                    !std.mem.eql(u8, self.source.ns(attribute.ns), uri))
                 {
                     continue;
                 }
@@ -2174,7 +2215,7 @@ const Runtime = struct {
                     continue;
                 }
                 if (check_namespace and
-                    !std.mem.eql(u8, attribute.ns, uri))
+                    !std.mem.eql(u8, self.source.ns(attribute.ns), uri))
                 {
                     continue;
                 }
@@ -2192,7 +2233,7 @@ const Runtime = struct {
                 if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
                     continue;
                 }
-                if (check_namespace and !std.mem.eql(u8, attribute.ns, uri)) {
+                if (check_namespace and !std.mem.eql(u8, self.source.ns(attribute.ns), uri)) {
                     continue;
                 }
                 if (name_test.local) |local| {
@@ -2227,7 +2268,7 @@ const Runtime = struct {
         while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
             const value = self.source.node(child);
             if (value.kind != .element) continue;
-            if (check_namespace and !std.mem.eql(u8, value.ns, uri)) continue;
+            if (check_namespace and !std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
             if (name_test.local) |local| {
                 if (!name_match.equal(value.local, local)) continue;
             }
@@ -2250,7 +2291,7 @@ const Runtime = struct {
         while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
             const value = self.source.node(child);
             if (value.kind != .element) continue;
-            if (check_namespace and !std.mem.eql(u8, value.ns, uri)) continue;
+            if (check_namespace and !std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
             if (name_test.local) |local| {
                 if (!name_match.equal(value.local, local)) continue;
             }
@@ -2263,7 +2304,7 @@ const Runtime = struct {
         while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
             const value = self.source.node(child);
             if (value.kind != .element) continue;
-            if (check_namespace and !std.mem.eql(u8, value.ns, uri)) continue;
+            if (check_namespace and !std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
             if (name_test.local) |local| {
                 if (!name_match.equal(value.local, local)) continue;
             }
@@ -2288,7 +2329,7 @@ const Runtime = struct {
                     const value = self.source.node(id);
                     if (value.kind != .element) return false;
                     if (name.check_namespace and
-                        !namespaceMatches(value.ns, name.uri))
+                        !namespaceMatches(self.source.ns(value.ns), name.uri))
                     {
                         return false;
                     }
@@ -2304,7 +2345,7 @@ const Runtime = struct {
                 .attribute => |attr| {
                     const value = self.source.attributesOf(attr.element)[attr.index];
                     if (name.check_namespace and
-                        !namespaceMatches(value.ns, name.uri))
+                        !namespaceMatches(self.source.ns(value.ns), name.uri))
                     {
                         return false;
                     }
@@ -2808,7 +2849,7 @@ const Runtime = struct {
                         );
                         if (index.elements.count() != 0) {
                             if (index.elements.get(.{
-                                .uri = value.ns,
+                                .uri = self.source.ns(value.ns),
                                 .local = value.local,
                             })) |bucket| {
                                 try self.addCandidates(
@@ -2820,7 +2861,7 @@ const Runtime = struct {
                             }
                         }
                         if (index.elements_by_uri.count() != 0) {
-                            if (index.elements_by_uri.get(value.ns)) |bucket| {
+                            if (index.elements_by_uri.get(self.source.ns(value.ns))) |bucket| {
                                 try self.addCandidates(
                                     bucket.candidates(mode),
                                     node,
@@ -2900,7 +2941,7 @@ const Runtime = struct {
                 );
                 if (index.attributes.count() != 0) {
                     if (index.attributes.get(.{
-                        .uri = name.ns,
+                        .uri = self.source.ns(name.ns),
                         .local = name.localName(),
                     })) |bucket| {
                         try self.addCandidates(
@@ -2912,7 +2953,7 @@ const Runtime = struct {
                     }
                 }
                 if (index.attributes_by_uri.count() != 0) {
-                    if (index.attributes_by_uri.get(name.ns)) |bucket| {
+                    if (index.attributes_by_uri.get(self.source.ns(name.ns))) |bucket| {
                         try self.addCandidates(
                             bucket.candidates(mode),
                             node,
@@ -3179,7 +3220,7 @@ const Runtime = struct {
                 continue;
             }
             if (name.check_namespace and
-                !namespaceMatches(attribute.ns, name.uri)) continue;
+                !namespaceMatches(self.source.ns(attribute.ns), name.uri)) continue;
             if (name.local) |local| {
                 if (!name_match.equal(attribute.localName(), local)) continue;
             }
@@ -3205,7 +3246,7 @@ const Runtime = struct {
             const child_value = self.source.node(child);
             if (child_value.kind != .element) continue;
             if (name.check_namespace and
-                !namespaceMatches(child_value.ns, name.uri)) continue;
+                !namespaceMatches(self.source.ns(child_value.ns), name.uri)) continue;
             if (name.local) |local| {
                 if (!name_match.equal(child_value.local, local)) continue;
             }
@@ -3291,7 +3332,7 @@ const Runtime = struct {
                     const value = self.source.node(id);
                     if (value.kind != .element) return false;
                     if (name.check_namespace and
-                        !namespaceMatches(value.ns, name.uri))
+                        !namespaceMatches(self.source.ns(value.ns), name.uri))
                     {
                         return false;
                     }
@@ -3305,7 +3346,7 @@ const Runtime = struct {
                         attr.element,
                     )[attr.index];
                     if (name.check_namespace and
-                        !namespaceMatches(value.ns, name.uri))
+                        !namespaceMatches(self.source.ns(value.ns), name.uri))
                     {
                         return false;
                     }
@@ -3571,7 +3612,7 @@ const Runtime = struct {
                     attribute.name,
                     attribute.prefixName(),
                     attribute.localName(),
-                    attribute.ns,
+                    self.source.ns(attribute.ns),
                     attribute.value,
                 );
             },
@@ -3589,7 +3630,7 @@ const Runtime = struct {
                         const new_id = self.builder.createElementNsUnchecked(
                             prefixOf(node_value),
                             node_value.local,
-                            node_value.ns,
+                            self.source.ns(node_value.ns),
                         ) catch |err| return mapBuilderError(err);
                         self.builder.appendChild(self.parent, new_id) catch |err|
                             return mapBuilderError(err);
@@ -4011,6 +4052,7 @@ const Runtime = struct {
             const positions = try self.ensureNamePositions(range_start);
             var key_buffer: [256]u8 = undefined;
             const key = nodeNameKey(
+                self.source,
                 self.source.node(node_id),
                 &key_buffer,
             ) orelse return false;
@@ -4054,7 +4096,7 @@ const Runtime = struct {
                 .document => try key_buffer.append(self.allocator, 'd'),
                 .element => {
                     try key_buffer.append(self.allocator, 'e');
-                    try key_buffer.appendSlice(self.allocator, node.ns);
+                    try key_buffer.appendSlice(self.allocator, self.source.ns(node.ns));
                     try key_buffer.append(self.allocator, 0);
                     try key_buffer.appendSlice(self.allocator, node.local);
                 },
@@ -4712,7 +4754,7 @@ const Runtime = struct {
         const parent_node = self.builder.nodeAt(self.parent);
         if (parent_node.last_child == dom.null_node) return false;
         const last = self.builder.nodeAt(parent_node.last_child);
-        if (last.kind != .text or last.raw_text != raw) return false;
+        if (last.kind != .text or last.isRawText() != raw) return false;
         self.builder.appendToText(parent_node.last_child, text) catch |err|
             return mapBuilderError(err);
         return true;
@@ -4884,7 +4926,7 @@ const Runtime = struct {
                     attribute.name,
                     attribute.prefixName(),
                     attribute.localName(),
-                    attribute.ns,
+                    self.source.ns(attribute.ns),
                     attribute.value,
                 );
             },
@@ -4912,7 +4954,7 @@ const Runtime = struct {
                 const new_id = self.builder.createElementNsUnchecked(
                     prefixOf(node_value),
                     node_value.local,
-                    node_value.ns,
+                    self.source.ns(node_value.ns),
                 ) catch |err| return mapBuilderError(err);
                 self.builder.appendChild(self.parent, new_id) catch |err|
                     return mapBuilderError(err);
@@ -4921,7 +4963,7 @@ const Runtime = struct {
                     if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
                         continue;
                     }
-                    if (attr.ns.len == 0) {
+                    if (source.ns(attr.ns).len == 0) {
                         self.builder.setAttribute(
                             new_id,
                             attr.name,
@@ -4932,7 +4974,7 @@ const Runtime = struct {
                             new_id,
                             attr.prefixName(),
                             attr.localName(),
-                            attr.ns,
+                            source.ns(attr.ns),
                             attr.value,
                         ) catch |err| return mapBuilderError(err);
                     }
@@ -4974,8 +5016,10 @@ const Runtime = struct {
                 has_prefix = true;
             }
         }
-        if (!has_default and prefix.len == 0 and node_value.ns.len != 0) {
-            try self.addNamespaceDecl(new_id, "", node_value.ns);
+        if (!has_default and prefix.len == 0 and
+            self.source.ns(node_value.ns).len != 0)
+        {
+            try self.addNamespaceDecl(new_id, "", self.source.ns(node_value.ns));
         }
         if (prefix.len != 0 and !has_prefix) {
             const bindings = try source.inScopeNamespaces(self.allocator, id);
@@ -5103,7 +5147,7 @@ const Runtime = struct {
         while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
             const value = self.source.node(child);
             if (value.kind != .element) continue;
-            if (!std.mem.eql(u8, value.ns, uri)) continue;
+            if (!std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
             if (!std.mem.eql(u8, value.local, local)) continue;
             return try self.stringValue(.{ .node = child });
         }
@@ -6599,8 +6643,8 @@ fn defaultCountMatches(
                             current_node.local,
                         ) and std.mem.eql(
                             u8,
-                            candidate_node.ns,
-                            current_node.ns,
+                            document.ns(candidate_node.ns),
+                            document.ns(current_node.ns),
                         ),
                         .processing_instruction => std.mem.eql(
                             u8,
@@ -6626,7 +6670,11 @@ fn defaultCountMatches(
                         u8,
                         left.localName(),
                         right.localName(),
-                    ) and std.mem.eql(u8, left.ns, right.ns);
+                    ) and std.mem.eql(
+                        u8,
+                        document.ns(left.ns),
+                        document.ns(right.ns),
+                    );
                 },
                 else => false,
             };
@@ -6859,7 +6907,7 @@ fn writeHtmlNode(
             default_ns,
         ),
         .text => {
-            if (raw_text or node_value.raw_text) {
+            if (raw_text or node_value.isRawText()) {
                 try out.writeAll(node_value.value);
             } else {
                 try writeHtmlText(out, node_value.value);
@@ -6892,7 +6940,7 @@ fn writeHtmlElement(
     default_ns: []const u8,
 ) std.Io.Writer.Error!void {
     const node_value = document.node(id);
-    const info = if (node_value.ns.len == 0)
+    const info = if (document.ns(node_value.ns).len == 0)
         htmlTagInfo(node_value.local)
     else
         null;
@@ -6909,22 +6957,22 @@ fn writeHtmlElement(
     if (!prefixed) {
         if (declared_default) |value| {
             child_default = value;
-        } else if (!std.mem.eql(u8, node_value.ns, default_ns)) {
+        } else if (!std.mem.eql(u8, document.ns(node_value.ns), default_ns)) {
             synthesize_default = true;
-            child_default = node_value.ns;
+            child_default = document.ns(node_value.ns);
         }
     }
     try out.writeByte('<');
     try out.writeAll(node_value.name);
     if (synthesize_default) {
         try out.writeAll(" xmlns=\"");
-        try writeHtmlAttribute(out, node_value.ns);
+        try writeHtmlAttribute(out, document.ns(node_value.ns));
         try out.writeByte('"');
     }
     for (document.attributesOf(id)) |attr| {
         try out.writeByte(' ');
         try out.writeAll(attr.name);
-        if (attr.ns.len == 0 and isHtmlBooleanAttribute(attr.name)) {
+        if (document.ns(attr.ns).len == 0 and isHtmlBooleanAttribute(attr.name)) {
             continue;
         }
         try out.writeAll("=\"");
@@ -6998,7 +7046,7 @@ fn writeHtmlElement(
                 }
             }
         }
-        const raw_text = node_value.ns.len == 0 and
+        const raw_text = document.ns(node_value.ns).len == 0 and
             (std.ascii.eqlIgnoreCase(node_value.local, "script") or
                 std.ascii.eqlIgnoreCase(node_value.local, "style"));
         child = node_value.first_child;

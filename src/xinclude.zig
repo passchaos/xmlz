@@ -121,13 +121,13 @@ const Processor = struct {
                     if (element_base) |allocated| self.allocator.free(allocated);
                 }
                 const current_base = element_base orelse base;
-                if (std.mem.eql(u8, node.ns, namespace_uri) and
+                if (std.mem.eql(u8, source.ns(node.ns), namespace_uri) and
                     std.mem.eql(u8, node.local, "include"))
                 {
                     try self.processInclude(source, current_base, id, parent);
                     return;
                 }
-                if (std.mem.eql(u8, node.ns, namespace_uri) and
+                if (std.mem.eql(u8, source.ns(node.ns), namespace_uri) and
                     std.mem.eql(u8, node.local, "fallback"))
                 {
                     return error.InvalidInclude;
@@ -136,7 +136,7 @@ const Processor = struct {
                 const new_id = self.builder.createElementNs(
                     prefixOf(node),
                     node.local,
-                    node.ns,
+                    source.ns(node.ns),
                 ) catch |err| return mapBuilderError(err);
                 for (source.attributesOf(id)) |attribute| {
                     if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
@@ -145,7 +145,7 @@ const Processor = struct {
                             attribute.name,
                             attribute.value,
                         ) catch |err| return mapBuilderError(err);
-                    } else if (attribute.ns.len == 0) {
+                    } else if (source.ns(attribute.ns).len == 0) {
                         self.builder.setAttribute(
                             new_id,
                             attribute.name,
@@ -156,7 +156,7 @@ const Processor = struct {
                             new_id,
                             attribute.prefixName(),
                             attribute.localName(),
-                            attribute.ns,
+                            source.ns(attribute.ns),
                             attribute.value,
                         ) catch |err| return mapBuilderError(err);
                     }
@@ -604,7 +604,7 @@ const Processor = struct {
         var child = source.node(id).first_child;
         while (child != dom.null_node) : (child = source.node(child).next_sibling) {
             const node = source.node(child);
-            if (node.kind == .element and std.mem.eql(u8, node.ns, namespace_uri) and
+            if (node.kind == .element and std.mem.eql(u8, source.ns(node.ns), namespace_uri) and
                 std.mem.eql(u8, node.local, "fallback"))
             {
                 var fallback_child = node.first_child;
@@ -919,7 +919,7 @@ test "XInclude inherits namespace declarations from the included root" {
     const root = document.root();
     const inc = document.findChild(root, "inc") orelse
         return error.TestUnexpectedResult;
-    try testing.expectEqualStrings("urn:inc", document.node(inc).ns);
+    try testing.expectEqualStrings("urn:inc", document.ns(document.node(inc).ns));
     try testing.expectEqualStrings(
         "urn:inc",
         document.attribute(inc, "xmlns") orelse "",
@@ -927,7 +927,7 @@ test "XInclude inherits namespace declarations from the included root" {
     const child = document.findChild(inc, "x") orelse
         return error.TestUnexpectedResult;
     try testing.expectEqualStrings("x", document.node(child).name);
-    try testing.expectEqualStrings("urn:inc", document.node(child).ns);
+    try testing.expectEqualStrings("urn:inc", document.ns(document.node(child).ns));
 }
 
 test "XInclude applies xml:base to include resolution" {

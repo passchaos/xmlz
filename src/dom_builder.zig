@@ -25,6 +25,8 @@ pub const Builder = struct {
     /// Attributes for every node, stored flat; each element records its
     /// range so `finish` does not need a second pass over the tree.
     attributes: std.ArrayList(dom.Attribute) = .empty,
+    /// Namespace URI table shared with the finished document.
+    namespaces: std.ArrayListUnmanaged([]const u8) = .empty,
     declaration: ?parser_mod.Declaration = null,
     doctype: ?parser_mod.Doctype = null,
     finished: bool = false,
@@ -41,7 +43,18 @@ pub const Builder = struct {
         var builder: Builder = .{ .arena = std.heap.ArenaAllocator.init(allocator) };
         errdefer builder.arena.deinit();
         _ = try builder.addNode(.{ .kind = .document });
+        try builder.namespaces.append(builder.arena.allocator(), "");
         return builder;
+    }
+
+    /// Intern a namespace URI and return its table index.
+    fn internNamespace(self: *Builder, uri: []const u8) Error!dom.NamespaceId {
+        if (uri.len == 0) return 0;
+        for (self.namespaces.items, 0..) |existing, index| {
+            if (std.mem.eql(u8, existing, uri)) return @intCast(index);
+        }
+        try self.namespaces.append(self.arena.allocator(), try self.dupe(uri));
+        return @intCast(self.namespaces.items.len - 1);
     }
 
     /// Preallocate node storage for an expected result size. Growth beyond
@@ -143,7 +156,7 @@ pub const Builder = struct {
             .kind = .element,
             .name = raw,
             .local = owned_local,
-            .ns = try self.copyString(uri),
+            .ns = try self.internNamespace(uri),
         });
     }
 
@@ -176,7 +189,7 @@ pub const Builder = struct {
             .kind = .element,
             .name = raw,
             .local = owned_local,
-            .ns = try self.copyString(uri),
+            .ns = try self.internNamespace(uri),
         });
     }
 
@@ -194,11 +207,12 @@ pub const Builder = struct {
         value: []const u8,
         raw: bool,
     ) Error!dom.NodeId {
-        return self.addNode(.{
+        const id = try self.addNode(.{
             .kind = .text,
             .value = try self.dupe(value),
-            .raw_text = raw,
         });
+        if (raw) self.nodes.items[id].setRawText(true);
+        return id;
     }
 
     /// Append character data to an existing text node, merging adjacent text
@@ -214,7 +228,7 @@ pub const Builder = struct {
         if (value.len == 0) return;
         // The appended bytes are unvalidated, so the node is no longer known
         // to be serializer-plain.
-        node.text_plain = false;
+        node.setTextPlain(false);
         const total = node.value.len + value.len;
         if (total > self.slab.len - self.slab_index) {
             if (total >= slab_size / 4) {
@@ -378,20 +392,23 @@ pub const Builder = struct {
         for (self.attributes.items[start..][0..count]) |*attribute| {
             if (std.mem.eql(u8, attribute.name, owned_name)) {
                 attribute.value = try self.dupe(value);
-                if (is_ns_decl) node.has_ns_decls = true;
+                if (is_ns_decl) node.setNsDecls(true);
                 return;
             }
         }
         try self.appendAttribute(element, .{
             .name = owned_name,
-            .colon = if (qname.prefix.len == 0)
+            .ns = if (is_ns_decl)
+                try self.internNamespace(namespace.xmlns_uri)
+            else
+                0,
+            .value = try self.dupe(value),
+            .flags = if (qname.prefix.len == 0)
                 0xFFFF
             else
                 @intCast(qname.prefix.len),
-            .ns = if (is_ns_decl) namespace.xmlns_uri else "",
-            .value = try self.dupe(value),
         });
-        if (is_ns_decl) node.has_ns_decls = true;
+        if (is_ns_decl) node.setNsDecls(true);
     }
 
     pub fn setAttributeNs(
@@ -426,18 +443,18 @@ pub const Builder = struct {
         for (self.attributes.items[start..][0..count]) |*attribute| {
             if (std.mem.eql(u8, attribute.name, raw)) {
                 attribute.value = try self.dupe(value);
-                attribute.ns = try self.dupe(uri);
-                if (is_ns_decl) node.has_ns_decls = true;
+                attribute.ns = try self.internNamespace(uri);
+                if (is_ns_decl) node.setNsDecls(true);
                 return;
             }
         }
         try self.appendAttribute(element, .{
             .name = raw,
-            .colon = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
-            .ns = try self.dupe(uri),
+            .ns = try self.internNamespace(uri),
             .value = try self.dupe(value),
+            .flags = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
         });
-        if (is_ns_decl) node.has_ns_decls = true;
+        if (is_ns_decl) node.setNsDecls(true);
     }
 
     pub fn removeAttribute(
@@ -499,6 +516,7 @@ pub const Builder = struct {
         self.finished = true;
         return .{
             .arena = self.arena,
+            .namespaces = self.namespaces.items,
             .nodes = self.nodes.items,
             .attributes = self.attributes.items,
             .declaration = self.declaration,
@@ -642,7 +660,7 @@ test "builder supports namespace elements and attributes" {
     defer document.deinit();
 
     try testing.expectEqualStrings("p:child", document.node(child).name);
-    try testing.expectEqualStrings("urn:p", document.node(child).ns);
+    try testing.expectEqualStrings("urn:p", document.ns(document.node(child).ns));
     try testing.expectEqualStrings("v", document.attributeNs(child, "urn:p", "attr").?);
 }
 

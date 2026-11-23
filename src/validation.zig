@@ -253,9 +253,9 @@ fn validateContent(
             const node = document.node(id);
             if (has_non_whitespace_text or
                 (options.strict_element_content and has_any_text) or
-                node.has_whitespace_char_ref_text or
-                node.has_nel_ls_text or
-                node.has_cdata_text or
+                node.hasWhitespaceCharRefText() or
+                node.hasNelLsText() or
+                node.hasCdataText() or
                 !try matchesContent(temp, content, child_names.items))
             {
                 try issues.append(issue_allocator, .{
@@ -416,7 +416,7 @@ fn validateAttributes(
             const present = findAttribute(attributes, decl.name);
             if (present) |attribute| {
                 if (decl.attr_type != .cdata and
-                    attribute.normalization_changed)
+                    attribute.normalizationChanged())
                 {
                     try issues.append(issue_allocator, .{
                         .kind = .standalone_external_declaration,
@@ -840,7 +840,7 @@ fn validateAttributeValue(
             }
         },
         .nmtokens => {
-            if (attribute.whitespace_char_ref) {
+            if (attribute.whitespaceCharRef()) {
                 try invalidValue(issues, issue_allocator, id, decl.name);
             }
             var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n");

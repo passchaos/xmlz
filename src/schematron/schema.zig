@@ -159,7 +159,7 @@ const Compiler = struct {
         if (root == dom.null_node) return error.InvalidSchema;
         const node = self.document.node(root);
         if (node.kind != .element or
-            !std.mem.eql(u8, node.ns, namespace_uri) or
+            !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
             !std.mem.eql(u8, node.local, "schema"))
         {
             return error.InvalidSchema;
@@ -173,7 +173,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element or
-                !std.mem.eql(u8, child_node.ns, namespace_uri))
+                !std.mem.eql(u8, self.document.ns(child_node.ns), namespace_uri))
             {
                 continue;
             }
@@ -188,7 +188,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element or
-                !std.mem.eql(u8, child_node.ns, namespace_uri))
+                !std.mem.eql(u8, self.document.ns(child_node.ns), namespace_uri))
             {
                 continue;
             }
@@ -253,7 +253,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element or
-                !std.mem.eql(u8, node.ns, namespace_uri) or
+                !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
                 !std.mem.eql(u8, node.local, "pattern"))
             {
                 continue;
@@ -265,7 +265,7 @@ const Compiler = struct {
     fn collectAbstractPattern(self: *Compiler, id: dom.NodeId) Error!void {
         const node = self.document.node(id);
         if (node.kind != .element or
-            !std.mem.eql(u8, node.ns, namespace_uri) or
+            !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
             !std.mem.eql(u8, node.local, "pattern"))
         {
             return error.InvalidSchema;
@@ -284,7 +284,7 @@ const Compiler = struct {
         while (rule_child != dom.null_node) : (rule_child = self.document.node(rule_child).next_sibling) {
             const rule_node = self.document.node(rule_child);
             if (rule_node.kind != .element or
-                !std.mem.eql(u8, rule_node.ns, namespace_uri) or
+                !std.mem.eql(u8, self.document.ns(rule_node.ns), namespace_uri) or
                 !std.mem.eql(u8, rule_node.local, "rule"))
             {
                 continue;
@@ -315,7 +315,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element or
-                !std.mem.eql(u8, node.ns, namespace_uri) or
+                !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
                 !std.mem.eql(u8, node.local, "param"))
             {
                 continue;
@@ -382,7 +382,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element or
-                !std.mem.eql(u8, node.ns, namespace_uri) or
+                !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
                 !std.mem.eql(u8, node.local, "active"))
             {
                 continue;
@@ -405,7 +405,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element or
-                !std.mem.eql(u8, node.ns, namespace_uri) or
+                !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
                 !std.mem.eql(u8, node.local, "diagnostic"))
             {
                 continue;
@@ -424,7 +424,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element or
-                !std.mem.eql(u8, node.ns, namespace_uri) or
+                !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
                 !std.mem.eql(u8, node.local, "property"))
             {
                 continue;
@@ -475,7 +475,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element or
-                !std.mem.eql(u8, node.ns, namespace_uri))
+                !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri))
             {
                 continue;
             }
@@ -510,7 +510,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element or
-                !std.mem.eql(u8, node.ns, namespace_uri))
+                !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri))
             {
                 continue;
             }
@@ -570,7 +570,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element or
-                !std.mem.eql(u8, node.ns, namespace_uri))
+                !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri))
             {
                 continue;
             }
@@ -648,7 +648,7 @@ const Compiler = struct {
                     .text = try self.substitute(node.value, params),
                 }),
                 .element => {
-                    if (std.mem.eql(u8, node.ns, namespace_uri) and
+                    if (std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) and
                         std.mem.eql(u8, node.local, "value-of"))
                     {
                         const select = self.document.attribute(
@@ -661,7 +661,7 @@ const Compiler = struct {
                                 try self.substitute(select, params),
                             ),
                         });
-                    } else if (std.mem.eql(u8, node.ns, namespace_uri) and
+                    } else if (std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) and
                         std.mem.eql(u8, node.local, "name"))
                     {
                         const path = self.document.attribute(child, "path");

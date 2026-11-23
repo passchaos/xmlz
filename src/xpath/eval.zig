@@ -175,6 +175,7 @@ const Evaluator = struct {
                                     0..,
                                 ) |attribute, index| {
                                     if (!attributeNameMatches(
+                                        document,
                                         attribute,
                                         expected_uri,
                                         local,
@@ -421,10 +422,10 @@ const Evaluator = struct {
                             if (child_value.kind != .element) continue;
                             if (check_namespace) {
                                 if (expected_uri.len == 0) {
-                                    if (child_value.ns.len != 0) continue;
+                                    if (context.document.ns(child_value.ns).len != 0) continue;
                                 } else if (!std.mem.eql(
                                     u8,
-                                    child_value.ns,
+                                    context.document.ns(child_value.ns),
                                     expected_uri,
                                 )) continue;
                             }
@@ -468,6 +469,7 @@ const Evaluator = struct {
                     if (name_test.local) |local| {
                         for (attributes, 0..) |attribute, index| {
                             if (!attributeNameMatches(
+                                context.document,
                                 attribute,
                                 expected_uri,
                                 local,
@@ -485,10 +487,10 @@ const Evaluator = struct {
                         )) continue;
                         if (check_namespace) {
                             if (expected_uri.len == 0) {
-                                if (attribute.ns.len != 0) continue;
+                                if (context.document.ns(attribute.ns).len != 0) continue;
                             } else if (!std.mem.eql(
                                 u8,
-                                attribute.ns,
+                                context.document.ns(attribute.ns),
                                 expected_uri,
                             )) continue;
                         }
@@ -1006,13 +1008,13 @@ const Evaluator = struct {
                         if (name_test.prefix != null) {
                             matches = std.mem.eql(
                                 u8,
-                                child_value.ns,
+                                document.ns(child_value.ns),
                                 expected_uri,
                             );
                         } else if (name_test.local != null) {
                             // An unprefixed name test selects no-namespace
                             // elements; `*` matches regardless of namespace.
-                            matches = child_value.ns.len == 0;
+                            matches = document.ns(child_value.ns).len == 0;
                         }
                     }
                     if (matches) {
@@ -1256,6 +1258,7 @@ const Evaluator = struct {
         if (document.node(id).kind != .element) return false;
         for (document.attributesOf(id)) |candidate| {
             if (attributeNameMatches(
+                document,
                 candidate,
                 attribute.uri,
                 attribute.local,
@@ -1282,6 +1285,7 @@ const Evaluator = struct {
         if (document.node(id).kind != .element) return false;
         for (document.attributesOf(id)) |candidate| {
             if (!attributeNameMatches(
+                document,
                 candidate,
                 attribute.uri,
                 attribute.local,
@@ -1383,7 +1387,7 @@ const Evaluator = struct {
                         const node_value = context.document.node(id);
                         if (node_value.kind != .element) return false;
                         local = node_value.local;
-                        uri = node_value.ns;
+                        uri = context.document.ns(node_value.ns);
                     },
                     .attribute => |attr| {
                         if (axis != .attribute) return false;
@@ -1391,7 +1395,7 @@ const Evaluator = struct {
                             attr.element,
                         )[attr.index];
                         local = node_value.localName();
-                        uri = node_value.ns;
+                        uri = context.document.ns(node_value.ns);
                     },
                     .namespace_node => return false,
                 }
@@ -1458,12 +1462,16 @@ const Evaluator = struct {
     ) []const u8 {
         _ = self;
         return switch (node) {
-            .attribute => |attribute| context.document
-                .attributesOf(attribute.element)[attribute.index].ns,
+            .attribute => |attribute| context.document.ns(
+                context.document.attributesOf(attribute.element)[attribute.index].ns,
+            ),
             .namespace_node => "",
             .node => |id| blk: {
                 const node_value = context.document.node(id);
-                break :blk if (node_value.kind == .element) node_value.ns else "";
+                break :blk if (node_value.kind == .element)
+                    context.document.ns(node_value.ns)
+                else
+                    "";
             },
         };
     }
@@ -2956,14 +2964,15 @@ const Evaluator = struct {
 /// `document()` rather than the principal source document.
 /// Match an attribute against an expanded name test.
 fn attributeNameMatches(
+    document: *const dom.Document,
     attribute: dom.Attribute,
     expected_uri: []const u8,
     local: []const u8,
 ) bool {
     if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) return false;
     if (expected_uri.len == 0) {
-        if (attribute.ns.len != 0) return false;
-    } else if (!std.mem.eql(u8, attribute.ns, expected_uri)) return false;
+        if (document.ns(attribute.ns).len != 0) return false;
+    } else if (!std.mem.eql(u8, document.ns(attribute.ns), expected_uri)) return false;
     const attribute_local = attribute.localName();
     return attribute_local.len == local.len and
         std.mem.eql(u8, attribute_local, local);

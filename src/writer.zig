@@ -115,6 +115,7 @@ pub fn writeDocument(
             options.indent != null,
             version,
             "",
+            0,
             doc.chars_validated,
         );
         // libxslt separates top-level comments that have a following node
@@ -165,9 +166,9 @@ pub fn writeDoctype(writer: *std.Io.Writer, doctype: Doctype) Error!void {
     try writer.writeByte('>');
 }
 
-fn isCdataElement(options: Options, node: *const dom.Node) bool {
+fn isCdataElement(options: Options, doc: *const dom.Document, node: *const dom.Node) bool {
     for (options.cdata_elements) |name| {
-        if (std.mem.eql(u8, name.uri, node.ns) and
+        if (std.mem.eql(u8, name.uri, doc.ns(node.ns)) and
             std.mem.eql(u8, name.local, node.local))
         {
             return true;
@@ -210,6 +211,7 @@ fn writeNode(
     pretty: bool,
     version: chars.Version,
     default_ns: []const u8,
+    default_ns_id: dom.NamespaceId,
     validated: bool,
 ) Error!void {
     const node = doc.node(id);
@@ -223,10 +225,11 @@ fn writeNode(
             pretty,
             version,
             default_ns,
+            default_ns_id,
             validated,
         ),
         .text => {
-            if (node.raw_text or node.text_plain) {
+            if (node.isRawText() or node.isTextPlain()) {
                 try writer.writeAll(node.value);
             } else {
                 try escapeTextVersionChecked(
@@ -303,10 +306,10 @@ fn writeStartTag(
     const attrs = doc.attributesOf(id);
     // Only elements that carry namespace declarations need the redundant
     // binding check; most elements skip it entirely.
-    const skip_decls = node.has_ns_decls;
+    const skip_decls = node.hasNsDecls();
     // XHTML serialization gives a plain <html> root the XHTML namespace
     // declaration (libxml2's xhtmlNodeDumpOutput behavior).
-    const xhtml_ns = options.html_meta_charset != null and node.ns.len == 0 and
+    const xhtml_ns = options.html_meta_charset != null and doc.ns(node.ns).len == 0 and
         std.mem.eql(u8, node.local, "html") and
         !hasNamespaceDeclaration(doc, id);
 
@@ -320,17 +323,18 @@ fn writeStartTag(
             used += node.name.len;
             var direct = true;
             if (needs_synth_ns) {
-                if ((shortPlainAttribute(node.ns) or
+                const node_ns = doc.ns(node.ns);
+                if ((shortPlainAttribute(node_ns) or
                     (if (validated)
-                        try scanAttributeTrusted(node.ns, 0)
+                        try scanAttributeTrusted(node_ns, 0)
                     else
-                        try scanAttribute(node.ns, 0)) == node.ns.len) and
-                    used + " xmlns=\"".len + node.ns.len + 1 <= out.len)
+                        try scanAttribute(node_ns, 0)) == node_ns.len) and
+                    used + " xmlns=\"".len + node_ns.len + 1 <= out.len)
                 {
                     @memcpy(out[used..][0.." xmlns=\"".len], " xmlns=\"");
                     used += " xmlns=\"".len;
-                    @memcpy(out[used..][0..node.ns.len], node.ns);
-                    used += node.ns.len;
+                    @memcpy(out[used..][0..node_ns.len], node_ns);
+                    used += node_ns.len;
                     out[used] = '"';
                     used += 1;
                 } else {
@@ -343,7 +347,7 @@ fn writeStartTag(
                     const attr = &attrs[index];
                     if (skip_decls and
                         shouldSkipAttribute(doc, id, attr, default_ns)) continue;
-                    if (!attr.plain and !shortPlainAttribute(attr.value) and
+                    if (!attr.isPlain() and !shortPlainAttribute(attr.value) and
                         (if (validated)
                             try scanAttributeTrusted(attr.value, 0)
                         else
@@ -395,7 +399,7 @@ fn writeStartTag(
                     try writer.writeByte(' ');
                     try writer.writeAll(attr.name);
                     try writer.writeAll("=\"");
-                    if (attr.plain) {
+                    if (attr.isPlain()) {
                         try writer.writeAll(attr.value);
                     } else {
                         try escapeAttributeVersionChecked(
@@ -417,7 +421,7 @@ fn writeStartTag(
     try writer.writeAll(node.name);
     if (needs_synth_ns) {
         try writer.writeAll(" xmlns=\"");
-        try escapeAttributeVersionChecked(writer, node.ns, version, validated);
+        try escapeAttributeVersionChecked(writer, doc.ns(node.ns), version, validated);
         try writer.writeByte('"');
     }
     if (xhtml_ns) {
@@ -443,6 +447,7 @@ fn writeElement(
     pretty: bool,
     version: chars.Version,
     default_ns: []const u8,
+    default_ns_id: dom.NamespaceId,
     validated: bool,
 ) Error!void {
     const node = doc.node(id);
@@ -450,21 +455,30 @@ fn writeElement(
 
     const prefixed = node.local.len != node.name.len;
     var declared_default: ?[]const u8 = null;
-    if (node.has_ns_decls) {
+    if (node.hasNsDecls()) {
         for (doc.attributesOf(id)) |attr| {
             if (isXmlnsAttribute(attr.name)) declared_default = attr.value;
         }
     }
     // An unprefixed element outside the inherited default namespace needs a
-    // binding (or an undeclaration when it is in no namespace).
+    // binding (or an undeclaration when it is in no namespace). The inherited
+    // namespace is tracked by table index, so the common case is an integer
+    // compare instead of a table lookup and a string compare.
+    const same_default = if (default_ns_id != dom.null_node)
+        node.ns == default_ns_id
+    else
+        std.mem.eql(u8, doc.ns(node.ns), default_ns);
     const needs_synth_ns = !prefixed and declared_default == null and
-        !std.mem.eql(u8, node.ns, default_ns);
+        !same_default;
     var child_default = default_ns;
+    var child_default_id = default_ns_id;
     if (!prefixed) {
         if (declared_default) |value| {
             child_default = value;
+            child_default_id = doc.lookupNamespace(value) orelse dom.null_node;
         } else if (needs_synth_ns) {
-            child_default = node.ns;
+            child_default = doc.ns(node.ns);
+            child_default_id = node.ns;
         }
     }
     const empty = node.first_child == dom.null_node;
@@ -524,12 +538,12 @@ fn writeElement(
     }
     if (format) try writer.writeByte('\n');
 
-    const cdata = isCdataElement(options, node);
+    const cdata = isCdataElement(options, doc, node);
     var child = node.first_child;
     while (child != dom.null_node) : (child = doc.node(child).next_sibling) {
         const child_node = doc.node(child);
         const child_cdata = cdata and child_node.kind == .text and
-            !child_node.raw_text;
+            !child_node.isRawText();
         if (child_cdata) {
             try writeCdata(writer, child_node.value, version, validated);
         } else {
@@ -542,6 +556,7 @@ fn writeElement(
                 format,
                 version,
                 child_default,
+                child_default_id,
                 validated,
             );
         }
@@ -1142,10 +1157,10 @@ test "parsed values record serializer plainness" {
 
     const root = doc.root();
     const attrs = doc.attributesOf(root);
-    try testing.expect(attrs[0].plain);
+    try testing.expect(attrs[0].isPlain());
     // A decoded reference can introduce '&', so the value is not plain.
-    try testing.expect(!attrs[1].plain);
-    try testing.expect(!attrs[2].plain);
+    try testing.expect(!attrs[1].isPlain());
+    try testing.expect(!attrs[2].isPlain());
 
     var saw_gt_text = false;
     var child = doc.node(root).first_child;
@@ -1155,7 +1170,7 @@ test "parsed values record serializer plainness" {
             std.mem.indexOfScalar(u8, node.value, '>') != null)
         {
             saw_gt_text = true;
-            try testing.expect(!node.text_plain);
+            try testing.expect(!node.isTextPlain());
         }
     }
     try testing.expect(saw_gt_text);
