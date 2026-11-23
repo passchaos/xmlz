@@ -334,6 +334,10 @@ pub const Parser = struct {
     utf8_input: bool = true,
     options: Options,
     open_names: [max_open_elements][]const u8 = undefined,
+    /// Whether each open element pushed a namespace scope. Elements without
+    /// declarations share their parent's scope, which avoids an enter/pop
+    /// pair per element.
+    open_ns_scope: [max_open_elements]bool = @splat(false),
     attrs: [max_attributes]Attribute = undefined,
     entity_table: entities.Table = .{},
     parameter_entities: entities.Table = .{},
@@ -835,12 +839,17 @@ pub const Parser = struct {
             if (is_root and !self.fragment) {
                 self.state = .epilog;
             }
-            if (self.options.namespaces) self.ns.pop();
+            if (self.options.namespaces and has_namespace_decls) {
+                self.ns.pop();
+            }
         } else {
             if (self.depth == self.options.max_depth) {
                 return self.fail(error.DepthLimitExceeded, start);
             }
             self.open_names[self.depth] = name;
+            if (namespaces) {
+                self.open_ns_scope[self.depth] = has_namespace_decls;
+            }
             self.depth += 1;
             event_depth = self.depth;
         }
@@ -911,8 +920,6 @@ pub const Parser = struct {
                     try self.ns.pushDeclaration(attr.name, value);
                 }
             }
-        } else {
-            try self.ns.enter();
         }
 
         const resolved_element = if (self.options.trusted)
@@ -1273,7 +1280,9 @@ pub const Parser = struct {
         }
         const event_depth = self.depth;
         self.depth -= 1;
-        if (self.options.namespaces) self.ns.pop();
+        if (self.options.namespaces and self.open_ns_scope[event_depth - 1]) {
+            self.ns.pop();
+        }
         if (self.depth < self.entity_entry_depth) {
             return self.fail(error.MismatchedEndTag, name_start);
         }
