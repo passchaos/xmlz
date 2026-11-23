@@ -764,6 +764,41 @@ test "character data validation rejects control and surrogate bytes" {
     try std.testing.expect(findInvalidXmlChar("😀") == null);
 }
 
+test "literal validation covers UTF-8 boundaries" {
+    // Mixed ASCII and multi-byte runs, longer than one vector window.
+    try std.testing.expect(findInvalidXmlChar(
+        "段落文本内容示例数据0，包含中文与 ASCII 混合 text",
+    ) == null);
+    try std.testing.expect(findInvalidXmlChar("é") == null);
+    try std.testing.expect(findInvalidXmlChar("\u{10FFFF}") == null);
+    try std.testing.expect(findInvalidXmlChar("\u{10000}") == null);
+
+    // Overlong two-byte lead.
+    try std.testing.expectEqual(@as(?usize, 0), findInvalidXmlChar("\xC0\xAF"));
+    // Overlong three-byte sequence (E0 80 80).
+    try std.testing.expectEqual(@as(?usize, 0), findInvalidXmlChar("\xE0\x80\x80"));
+    // Surrogate half (ED A0 80).
+    try std.testing.expectEqual(@as(?usize, 0), findInvalidXmlChar("\xED\xA0\x80"));
+    // U+FFFF (EF BF BF).
+    try std.testing.expectEqual(@as(?usize, 0), findInvalidXmlChar("\xEF\xBF\xBF"));
+    // Overlong four-byte sequence (F0 80 80 80).
+    try std.testing.expectEqual(@as(?usize, 0), findInvalidXmlChar("\xF0\x80\x80\x80"));
+    // Code point above U+10FFFF (F4 90 80 80).
+    try std.testing.expectEqual(@as(?usize, 0), findInvalidXmlChar("\xF4\x90\x80\x80"));
+    // Lead bytes above F4 are invalid.
+    try std.testing.expectEqual(@as(?usize, 0), findInvalidXmlChar("\xF5\x80\x80\x80"));
+    // A bare continuation byte.
+    try std.testing.expectEqual(@as(?usize, 3), findInvalidXmlChar("abc\x80"));
+    // Missing continuation.
+    try std.testing.expectEqual(@as(?usize, 0), findInvalidXmlChar("\xE4\xB8" ++ "A"));
+    // Truncated sequence at end of input.
+    try std.testing.expectEqual(@as(?usize, 0), findInvalidXmlChar("\xE4\xB8"));
+    // Errors after a valid multi-byte prefix report the sequence start.
+    try std.testing.expectEqual(@as(?usize, 6), findInvalidXmlChar("中文\xED\xA0\x80"));
+    // A control byte inside a mixed run.
+    try std.testing.expectEqual(@as(?usize, 6), findInvalidXmlChar("中文\x01abc"));
+}
+
 test "character reference parsing" {
     try std.testing.expectEqual(@as(?u21, 'A'), parseDecimalCharRef("65"));
     try std.testing.expectEqual(@as(?u21, 'A'), parseHexCharRef("x41"));
