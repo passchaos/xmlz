@@ -495,6 +495,9 @@ const Builder = struct {
     nodes: std.ArrayList(Node) = .empty,
     attributes: std.ArrayList(Attribute) = .empty,
     namespaces: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// Bump slab for decoded text and attribute values; the arena owns it.
+    decode_slab: []u8 = &.{},
+    decode_slab_used: usize = 0,
     stack: [parser_mod.max_open_elements]NodeId = undefined,
     stack_len: usize = 0,
     declaration: ?parser_mod.Declaration = null,
@@ -515,6 +518,69 @@ const Builder = struct {
             .options = options,
             .parser = parser_mod.Parser.init(input, parser_options),
         };
+    }
+
+    /// Bump-allocate a decoded value from the slab. Decoding a short span
+    /// needs at most its own length, and the slab avoids one arena
+    /// allocation per value.
+    fn decodeBuffer(self: *Builder, len: usize) Error![]u8 {
+        if (len == 0) return &.{};
+        if (len > self.decode_slab.len - self.decode_slab_used) {
+            const size = @max(len, 16 * 1024);
+            self.decode_slab = try self.allocator.alloc(u8, size);
+            self.decode_slab_used = 0;
+        }
+        const start = self.decode_slab_used;
+        self.decode_slab_used = start + len;
+        return self.decode_slab[start..][0..len];
+    }
+
+    /// Decode an attribute value, preferring the slab for the short XML 1.0
+    /// spans that dominate markup.
+    fn decodeAttribute(self: *Builder, raw: []const u8) Error![]const u8 {
+        if (self.parser.xmlVersion() == .xml_1_0 and
+            raw.len <= entities.simple_decode_capacity)
+        {
+            const buffer = try self.decodeBuffer(raw.len);
+            if (entities.decodeAttributeInto(raw, buffer, std.math.maxInt(usize))) |len| {
+                return if (len == 0) raw[0..0] else buffer[0..len];
+            }
+        }
+        return entities.decodeAttributeAlloc(
+            self.allocator,
+            raw,
+            self.parser.entityTable(),
+            .{},
+            .{
+                .version = self.parser.xmlVersion(),
+                .preserve_undeclared = true,
+                .preserve_external = true,
+            },
+        );
+    }
+
+    /// Decode character data, preferring the slab for short spans.
+    fn decodeText(self: *Builder, raw: []const u8) Error![]const u8 {
+        const version = self.parser.xmlVersion();
+        const normalize = version == .xml_1_1 or self.parser.text_has_cr;
+        if (version == .xml_1_0 and raw.len <= entities.simple_decode_capacity) {
+            const buffer = try self.decodeBuffer(raw.len);
+            if (entities.decodeTextInto(raw, buffer, normalize, std.math.maxInt(usize))) |len| {
+                return if (len == 0) raw[0..0] else buffer[0..len];
+            }
+        }
+        return entities.decodeTextAllocChecked(
+            self.allocator,
+            raw,
+            self.parser.entityTable(),
+            .{},
+            .{
+                .version = version,
+                .preserve_undeclared = true,
+                .preserve_external = true,
+                .normalize_line_endings = normalize,
+            },
+        );
     }
 
     /// Intern a namespace URI and return its table index. Index zero is the
@@ -667,17 +733,7 @@ const Builder = struct {
                 if (attr.needs_decode or attr.tokenized) {
                     var value = attr.value;
                     if (attr.needs_decode) {
-                        value = try entities.decodeAttributeAlloc(
-                            self.allocator,
-                            attr.value,
-                            self.parser.entityTable(),
-                            .{},
-                            .{
-                                .version = self.parser.xmlVersion(),
-                                .preserve_undeclared = true,
-                                .preserve_external = true,
-                            },
-                        );
+                        value = try self.decodeAttribute(attr.value);
                     }
                     if (attr.tokenized) {
                         const normalized = try normalizeTokenized(
@@ -744,19 +800,7 @@ const Builder = struct {
         // Entity decoding also normalizes XML line endings, so only CDATA
         // needs the separate normalization pass.
         const decoded = switch (mode) {
-            .decode => try entities.decodeTextAllocChecked(
-                self.allocator,
-                raw,
-                self.parser.entityTable(),
-                .{},
-                .{
-                    .version = self.parser.xmlVersion(),
-                    .preserve_undeclared = true,
-                    .preserve_external = true,
-                    .normalize_line_endings = self.parser.xmlVersion() == .xml_1_1 or
-                        self.parser.text_has_cr,
-                },
-            ),
+            .decode => try self.decodeText(raw),
             .normalize => try normalizeLineEndings(
                 self.allocator,
                 raw,

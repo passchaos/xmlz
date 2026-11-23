@@ -326,7 +326,32 @@ const Expansion = struct {
 };
 
 /// Stack buffer size for the short-value decode fast path.
-const simple_decode_capacity = 256;
+pub const simple_decode_capacity = 256;
+
+/// Decode a short XML 1.0 text span into a caller-provided buffer. Returns
+/// the decoded length, or null when the general decoder is required (a
+/// general entity, a longer span, or XML 1.1). The output never exceeds
+/// `raw.len` because only predefined and character references are expanded.
+pub fn decodeTextInto(
+    raw: []const u8,
+    buffer: []u8,
+    normalize_line_endings: bool,
+    max_output: usize,
+) ?usize {
+    if (raw.len > simple_decode_capacity or buffer.len < raw.len) return null;
+    return decodeSimple(raw, false, normalize_line_endings, max_output, buffer);
+}
+
+/// Decode a short XML 1.0 attribute value into a caller-provided buffer.
+/// Returns null when the general decoder is required.
+pub fn decodeAttributeInto(
+    raw: []const u8,
+    buffer: []u8,
+    max_output: usize,
+) ?usize {
+    if (raw.len > simple_decode_capacity or buffer.len < raw.len) return null;
+    return decodeSimple(raw, true, true, max_output, buffer);
+}
 
 /// Decode a short XML 1.0 span that contains only predefined entity
 /// references, character references, and line ends. Returns the decoded
