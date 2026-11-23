@@ -2123,7 +2123,46 @@ const Runtime = struct {
             const check_namespace = name_test.prefix != null or
                 name_test.local != null;
             const attributes = self.source.attributesOf(element_id);
+            // Attribute names are unique, so a match is almost always a single
+            // node. Collect a few matches on the stack and allocate exactly
+            // instead of scanning the attribute list twice.
+            var matches: [4]u32 = undefined;
             var count: usize = 0;
+            var overflow = false;
+            for (attributes, 0..) |attribute, index| {
+                if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+                    continue;
+                }
+                if (check_namespace and
+                    !std.mem.eql(u8, attribute.ns, uri))
+                {
+                    continue;
+                }
+                if (name_test.local) |local| {
+                    if (!name_match.equal(attribute.localName(), local)) {
+                        continue;
+                    }
+                }
+                if (count == matches.len) {
+                    overflow = true;
+                    break;
+                }
+                matches[count] = @intCast(index);
+                count += 1;
+            }
+            if (!overflow) {
+                if (count == 0) return &.{};
+                const out = try self.allocator.alloc(xpath.NodeRef, count);
+                for (matches[0..count], 0..) |index, position| {
+                    out[position] = .{ .attribute = .{
+                        .element = element_id,
+                        .index = index,
+                    } };
+                }
+                return out;
+            }
+            // Rare: more matches than the stack buffer; rescan exactly.
+            count = 0;
             for (attributes) |attribute| {
                 if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
                     continue;
@@ -2134,7 +2173,7 @@ const Runtime = struct {
                     continue;
                 }
                 if (name_test.local) |local| {
-                    if (!std.mem.eql(u8, attribute.localName(), local)) {
+                    if (!name_match.equal(attribute.localName(), local)) {
                         continue;
                     }
                 }
@@ -2151,7 +2190,7 @@ const Runtime = struct {
                     continue;
                 }
                 if (name_test.local) |local| {
-                    if (!std.mem.eql(u8, attribute.localName(), local)) {
+                    if (!name_match.equal(attribute.localName(), local)) {
                         continue;
                     }
                 }
@@ -2172,14 +2211,42 @@ const Runtime = struct {
         if (parent.kind != .element and parent.kind != .document) return &.{};
         const check_namespace = name_test.prefix != null or
             name_test.local != null;
+        // Most child name selections match a single node; collect a few on
+        // the stack and allocate exactly instead of scanning the children
+        // twice.
+        var matches: [4]xpath.NodeRef = undefined;
         var count: usize = 0;
+        var overflow = false;
         var child = parent.first_child;
         while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
             const value = self.source.node(child);
             if (value.kind != .element) continue;
             if (check_namespace and !std.mem.eql(u8, value.ns, uri)) continue;
             if (name_test.local) |local| {
-                if (!std.mem.eql(u8, value.local, local)) continue;
+                if (!name_match.equal(value.local, local)) continue;
+            }
+            if (count == matches.len) {
+                overflow = true;
+                break;
+            }
+            matches[count] = .{ .node = child };
+            count += 1;
+        }
+        if (!overflow) {
+            if (count == 0) return &.{};
+            const out = try self.allocator.alloc(xpath.NodeRef, count);
+            @memcpy(out, matches[0..count]);
+            return out;
+        }
+        // Rare: more matches than the stack buffer; rescan exactly.
+        count = 0;
+        child = parent.first_child;
+        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+            const value = self.source.node(child);
+            if (value.kind != .element) continue;
+            if (check_namespace and !std.mem.eql(u8, value.ns, uri)) continue;
+            if (name_test.local) |local| {
+                if (!name_match.equal(value.local, local)) continue;
             }
             count += 1;
         }
@@ -2192,7 +2259,7 @@ const Runtime = struct {
             if (value.kind != .element) continue;
             if (check_namespace and !std.mem.eql(u8, value.ns, uri)) continue;
             if (name_test.local) |local| {
-                if (!std.mem.eql(u8, value.local, local)) continue;
+                if (!name_match.equal(value.local, local)) continue;
             }
             out[write] = .{ .node = child };
             write += 1;
