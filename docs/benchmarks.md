@@ -61,6 +61,10 @@ the best row kept, because the host was shared during measurement.
   across a start tag and checks the common `name="value"` and single-space
   separator shapes directly; and the DOM copies attributes in a branch-free
   pass before handling the rare decode/normalization cases.
+- The text scanner also records whether a span contains a reference or a
+  carriage return, so the DOM builder borrows plain spans instead of rescanning
+  them for entity decoding. On a 16 MB single-text-node document that lifts DOM
+  parsing from 1.5-2.0 GB/s to 6.3-9.7 GB/s (pugixml: 1.6-1.7 GB/s).
 - Large node and attribute arrays request transparent huge pages on Linux
   (`MADV_HUGEPAGE`, best-effort) to cut first-touch page-fault overhead.
 - xmlz's peak RSS includes the input buffer, the tree, decoded text, and
