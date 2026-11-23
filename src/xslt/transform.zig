@@ -5200,9 +5200,30 @@ fn lookupId(
         error.OutOfMemory => return error.OutOfMemory,
         else => return &.{},
     };
-    var out: std.ArrayList(xpath.NodeRef) = .empty;
     var tokens = std.mem.tokenizeAny(u8, text, " \t\r\n");
-    while (tokens.next()) |token| {
+    const first_token = tokens.next() orelse return &.{};
+    if (tokens.next() == null) {
+        // A single id token normally selects a single element; allocate the
+        // result exactly instead of sorting and deduplicating.
+        const list = runtime.id_index.get(first_token) orelse return &.{};
+        var found: ?dom.NodeId = null;
+        var count: usize = 0;
+        for (list.items) |id| {
+            if (id < range.start or id >= range.end) continue;
+            found = id;
+            count += 1;
+            if (count > 1) break;
+        }
+        if (count == 1) {
+            const nodes = try allocator.alloc(xpath.NodeRef, 1);
+            nodes[0] = .{ .node = found.? };
+            return nodes;
+        }
+        if (count == 0) return &.{};
+    }
+    var out: std.ArrayList(xpath.NodeRef) = .empty;
+    var all_tokens = std.mem.tokenizeAny(u8, text, " \t\r\n");
+    while (all_tokens.next()) |token| {
         const list = runtime.id_index.get(token) orelse continue;
         for (list.items) |id| {
             if (id < range.start or id >= range.end) continue;
