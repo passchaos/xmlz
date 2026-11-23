@@ -213,6 +213,75 @@ pub const FragmentFactory = struct {
     ) anyerror![]const NodeRef,
 };
 
+/// Caches absolute descendant name selections. Their results depend only on
+/// the document and the expanded name, so they can be reused across the
+/// expression evaluations of one transformation.
+pub const DescendantCache = struct {
+    map: std.HashMapUnmanaged(Key, []const NodeRef, KeyContext, 80) = .empty,
+
+    pub const empty: DescendantCache = .{};
+
+    const Key = struct {
+        document: *const dom.Document,
+        /// Root of the document range the selection starts from; merged
+        /// fragment views share `document` but have distinct roots.
+        root: dom.NodeId,
+        uri: []const u8,
+        local: []const u8,
+    };
+
+    const KeyContext = struct {
+        pub fn hash(_: KeyContext, key: Key) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            hasher.update(std.mem.asBytes(&@intFromPtr(key.document)));
+            hasher.update(std.mem.asBytes(&key.root));
+            hasher.update(key.uri);
+            hasher.update(&.{0});
+            hasher.update(key.local);
+            return hasher.final();
+        }
+
+        pub fn eql(_: KeyContext, a: Key, b: Key) bool {
+            return a.document == b.document and
+                a.root == b.root and
+                std.mem.eql(u8, a.uri, b.uri) and
+                std.mem.eql(u8, a.local, b.local);
+        }
+    };
+
+    pub fn get(
+        self: *const DescendantCache,
+        document: *const dom.Document,
+        root: dom.NodeId,
+        uri: []const u8,
+        local: []const u8,
+    ) ?[]const NodeRef {
+        return self.map.get(.{
+            .document = document,
+            .root = root,
+            .uri = uri,
+            .local = local,
+        });
+    }
+
+    pub fn put(
+        self: *DescendantCache,
+        allocator: std.mem.Allocator,
+        document: *const dom.Document,
+        root: dom.NodeId,
+        uri: []const u8,
+        local: []const u8,
+        nodes: []const NodeRef,
+    ) !void {
+        try self.map.put(allocator, .{
+            .document = document,
+            .root = root,
+            .uri = uri,
+            .local = local,
+        }, nodes);
+    }
+};
+
 pub const Context = struct {
     document: *const dom.Document,
     node: NodeRef,
@@ -239,6 +308,8 @@ pub const Context = struct {
     variable_resolver: ?VariableResolver = null,
     /// Builder for node-set results of EXSLT functions.
     fragment_factory: ?FragmentFactory = null,
+    /// Cache for absolute `//name` selections, owned by the caller.
+    descendant_cache: ?*DescendantCache = null,
     /// Current date/time in xs:dateTime form, used by EXSLT date functions
     /// that default to "now".
     current_date_time: ?[]const u8 = null,
@@ -303,6 +374,7 @@ pub const Context = struct {
             .extension_functions = self.extension_functions,
             .variable_resolver = self.variable_resolver,
             .fragment_factory = self.fragment_factory,
+            .descendant_cache = self.descendant_cache,
             .current_date_time = self.current_date_time,
             .document_base = self.document_base,
             .xslt_functions = self.xslt_functions,

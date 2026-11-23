@@ -232,6 +232,52 @@ const Evaluator = struct {
                 context,
                 step.node_test,
             );
+            // `//name` depends only on the document, so cache the result
+            // across evaluations when the caller provides a cache.
+            if (step.predicates.len == 0 and step.node_test == .name) {
+                const name_test = step.node_test.name;
+                if (name_test.local) |local| {
+                    const uri = if (name_test.prefix != null)
+                        prefix_uri orelse ""
+                    else
+                        "";
+                    const root = documentRootOf(context, context.node);
+                    const cache = context.descendant_cache;
+                    if (cache) |entries| {
+                        if (entries.get(
+                            context.document,
+                            root.node,
+                            uri,
+                            local,
+                        )) |nodes| {
+                            return .{ .node_set = nodes };
+                        }
+                    }
+                    var cached: std.ArrayList(value.NodeRef) = .empty;
+                    try self.appendDescendantMatches(
+                        context,
+                        root,
+                        step,
+                        prefix_uri,
+                        &cached,
+                    );
+                    const nodes: []const value.NodeRef = if (cached.items.len == 0)
+                        &.{}
+                    else
+                        try cached.toOwnedSlice(self.allocator);
+                    if (cache) |entries| {
+                        try entries.put(
+                            self.allocator,
+                            context.document,
+                            root.node,
+                            uri,
+                            local,
+                            nodes,
+                        );
+                    }
+                    return .{ .node_set = nodes };
+                }
+            }
             var out: std.ArrayList(value.NodeRef) = .empty;
             try self.appendDescendantMatches(
                 context,

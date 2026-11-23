@@ -16,6 +16,7 @@ pub const NodeRef = value.NodeRef;
 pub const AttributeRef = value.AttributeRef;
 pub const NamespaceRef = value.NamespaceRef;
 pub const Result = value.Result;
+pub const DescendantCache = value.DescendantCache;
 pub const parseNumber = value.parseNumber;
 pub const formatNumber = value.formatNumber;
 

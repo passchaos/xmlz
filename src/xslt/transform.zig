@@ -929,6 +929,9 @@ const Runtime = struct {
     ),
     last_matcher_expr: ?*const xpath_ast.Expr = null,
     last_matcher: ?PatternMatcher = null,
+    /// Results of absolute `//name` selections, which depend only on the
+    /// document and the expanded name.
+    descendant_cache: xpath.DescendantCache = .empty,
     /// Documents whose template matches have been indexed, keyed by the
     /// merged document-root node id.
     built_match_roots: std.AutoHashMapUnmanaged(usize, void) = .empty,
@@ -1324,6 +1327,7 @@ const Runtime = struct {
                 .lookup = lookupId,
             },
             .xslt_functions = true,
+            .descendant_cache = &self.descendant_cache,
             .current_date_time = self.now,
             .document_base = self.base_uri,
         };
@@ -1651,6 +1655,7 @@ const Runtime = struct {
                 .lookup = lookupId,
             },
             .xslt_functions = true,
+            .descendant_cache = &self.descendant_cache,
             .current_date_time = self.now,
             .node_id_generator = .{
                 .context = self,
@@ -1821,6 +1826,7 @@ const Runtime = struct {
                 .lookup = lookupId,
             },
             .xslt_functions = true,
+            .descendant_cache = &self.descendant_cache,
             .current_date_time = self.now,
             .node_id_generator = .{
                 .context = self,
@@ -1980,6 +1986,7 @@ const Runtime = struct {
                 .format = formatNumberCallback,
             },
             .xslt_functions = true,
+            .descendant_cache = &self.descendant_cache,
             .current_date_time = self.now,
             .node_id_generator = .{
                 .context = self,
@@ -3776,6 +3783,7 @@ const Runtime = struct {
                 .lookup = lookupId,
             },
             .xslt_functions = true,
+            .descendant_cache = &self.descendant_cache,
             .current_date_time = self.now,
             .node_id_generator = .{
                 .context = self,
