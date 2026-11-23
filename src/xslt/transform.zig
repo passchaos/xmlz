@@ -2551,7 +2551,12 @@ const Runtime = struct {
                     position,
                     size,
                 );
-                try self.messages.append(self.allocator, text);
+                // Fast capture paths may return stylesheet- or source-owned
+                // text; messages must live in the result arena.
+                try self.messages.append(
+                    self.allocator,
+                    try self.allocator.dupe(u8, text),
+                );
                 if (message.terminate) return error.Terminated;
             },
             .apply_imports => |apply_imports| try self.executeApplyImports(
@@ -4157,6 +4162,16 @@ const Runtime = struct {
         size: usize,
     ) Error![]const u8 {
         if (avt.len == 0) return "";
+        // Most attribute value templates are a single literal or a single
+        // expression; return those without building and copying a buffer.
+        if (avt.len == 1) {
+            switch (avt[0]) {
+                .literal => |text| return text,
+                .expr => |expression| return self.toString(
+                    try self.evalOwned(expression, node, position, size),
+                ),
+            }
+        }
         var out: std.ArrayList(u8) = .empty;
         for (avt) |part| {
             switch (part) {
@@ -4228,6 +4243,17 @@ const Runtime = struct {
         position: usize,
         size: usize,
     ) Error![]const u8 {
+        // A body that is just character data or a single value-of has the
+        // same text content without materializing a temporary result tree.
+        if (body.len == 1) {
+            switch (body[0]) {
+                .literal_text, .text, .raw_text => |text| return text,
+                .value_of => |value_of| return self.toString(
+                    try self.evalOwned(value_of.select, node, position, size),
+                ),
+                else => {},
+            }
+        }
         var temp = dom_builder.Builder.init(self.allocator) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidStylesheet,
