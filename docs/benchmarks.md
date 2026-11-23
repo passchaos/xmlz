@@ -78,6 +78,45 @@ attributes, text with entity references, and self-closing elements. The
 generator is `bench/gen.zig`; the size target is 16 MiB and the output is
 deterministic.
 
+## Non-ASCII input
+
+Reproduce with:
+
+```sh
+zig build bench-cjk
+```
+
+The generator's `cjk` shape emits a deterministic 16 MiB document with ASCII
+element and attribute names and CJK attribute values and character data (plus
+one `&amp;` per element), which exercises UTF-8 validation and the decoded
+text path. The step runs the same engine binaries as `zig build bench` on that
+input; the numbers below were measured sequentially, pinned, best of four.
+
+| Engine | Mode | MB/s |
+| --- | --- | ---: |
+| xmlz | pull, trusted fast mode | 2361.67 |
+| pugixml | DOM | 1185.42 |
+| xmlz | pull, no namespaces | 948.96 |
+| xmlz | pull, namespaces | 891.18 |
+| xmlz | DOM, trusted fast mode | 665.42 |
+| xmlz | DOM, reusable arena | 573.16 |
+| xmlz | DOM, namespaces | 471.84 |
+| expat | SAX | 307.93 |
+| libxml2 | reader | 137.61 |
+| libxml2 | DOM | 105.23 |
+
+Serialization on the same input: xmlz **2367.39 MB/s**, pugixml 1998.71,
+libxml2 450.67.
+
+- The pull parser is **7.7x faster than expat** and **6.5x faster than
+  libxml2's reader** with namespaces enabled (17x in trusted mode) while
+  validating UTF-8.
+- Serialization is **1.18x faster than pugixml** and **5.25x faster than
+  libxml2**; parsed trees skip writer-side UTF-8 revalidation.
+- pugixml's non-validating DOM is faster than xmlz's validating one on this
+  shape because it neither checks UTF-8 nor copies attribute values out of the
+  in-situ buffer. xmlz's validating DOM still beats libxml2's by **4.5x**.
+
 ## Serialization
 
 Reproduce with:
