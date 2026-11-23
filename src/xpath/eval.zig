@@ -306,18 +306,22 @@ const Evaluator = struct {
                         {
                             const child_value = context.document.node(child);
                             if (child_value.kind != .element) continue;
-                            if (check_namespace and
-                                !std.mem.eql(
+                            if (check_namespace) {
+                                if (expected_uri.len == 0) {
+                                    if (child_value.ns.len != 0) continue;
+                                } else if (!std.mem.eql(
                                     u8,
                                     child_value.ns,
                                     expected_uri,
                                 )) continue;
+                            }
                             if (name_test.local) |local| {
-                                if (!std.mem.eql(
-                                    u8,
-                                    child_value.local,
-                                    local,
-                                )) continue;
+                                if (child_value.local.len != local.len or
+                                    !std.mem.eql(
+                                        u8,
+                                        child_value.local,
+                                        local,
+                                    )) continue;
                             }
                             try out.append(self.allocator, .{ .node = child });
                         }
@@ -355,17 +359,23 @@ const Evaluator = struct {
                         if (namespace.Resolver.isNamespaceDeclaration(
                             attribute.name,
                         )) continue;
-                        if (check_namespace and
-                            !std.mem.eql(u8, attribute.ns, expected_uri))
-                        {
-                            continue;
+                        if (check_namespace) {
+                            if (expected_uri.len == 0) {
+                                if (attribute.ns.len != 0) continue;
+                            } else if (!std.mem.eql(
+                                u8,
+                                attribute.ns,
+                                expected_uri,
+                            )) continue;
                         }
                         if (name_test.local) |local| {
-                            if (!std.mem.eql(
-                                u8,
-                                attribute.localName(),
-                                local,
-                            )) continue;
+                            const attribute_local = attribute.localName();
+                            if (attribute_local.len != local.len or
+                                !std.mem.eql(
+                                    u8,
+                                    attribute_local,
+                                    local,
+                                )) continue;
                         }
                         try out.append(self.allocator, .{ .attribute = .{
                             .element = id,
