@@ -22,7 +22,9 @@ pub const Error = error{
 pub const Builder = struct {
     arena: std.heap.ArenaAllocator,
     nodes: std.ArrayList(dom.Node) = .empty,
-    attr_lists: std.ArrayList(std.ArrayList(dom.Attribute)) = .empty,
+    /// Attributes for every node, stored flat; each element records its
+    /// range so `finish` does not need a second pass over the tree.
+    attributes: std.ArrayList(dom.Attribute) = .empty,
     declaration: ?parser_mod.Declaration = null,
     doctype: ?parser_mod.Doctype = null,
     finished: bool = false,
@@ -47,7 +49,6 @@ pub const Builder = struct {
     pub fn reserveNodes(self: *Builder, count: usize) Error!void {
         const allocator = self.arena.allocator();
         try self.nodes.ensureTotalCapacity(allocator, count);
-        try self.attr_lists.ensureTotalCapacity(allocator, count);
     }
 
     pub fn deinit(self: *Builder) void {
@@ -96,8 +97,9 @@ pub const Builder = struct {
     }
 
     pub fn attributesOf(self: *const Builder, id: dom.NodeId) []const dom.Attribute {
-        if (id >= self.attr_lists.items.len) return &.{};
-        return self.attr_lists.items[id].items;
+        if (id >= self.nodes.items.len) return &.{};
+        const node = self.nodes.items[id];
+        return self.attributes.items[node.attr_start..][0..node.attr_count];
     }
 
     pub fn createElement(self: *Builder, name: []const u8) Error!dom.NodeId {
@@ -356,14 +358,16 @@ pub const Builder = struct {
         }
         const owned_name = try self.internName(name);
         const qname = namespace.splitQName(owned_name) catch return error.InvalidName;
-        const list = &self.attr_lists.items[element];
-        for (list.items) |*attribute| {
+        const node = &self.nodes.items[element];
+        const start = node.attr_start;
+        const count = node.attr_count;
+        for (self.attributes.items[start..][0..count]) |*attribute| {
             if (std.mem.eql(u8, attribute.name, owned_name)) {
                 attribute.value = try self.dupe(value);
                 return;
             }
         }
-        try list.append(self.arena.allocator(), .{
+        try self.appendAttribute(element, .{
             .name = owned_name,
             .colon = if (qname.prefix.len == 0)
                 0xFFFF
@@ -402,15 +406,17 @@ pub const Builder = struct {
                 "{s}:{s}",
                 .{ prefix, local },
             );
-        const list = &self.attr_lists.items[element];
-        for (list.items) |*attribute| {
+        const node = &self.nodes.items[element];
+        const start = node.attr_start;
+        const count = node.attr_count;
+        for (self.attributes.items[start..][0..count]) |*attribute| {
             if (std.mem.eql(u8, attribute.name, raw)) {
                 attribute.value = try self.dupe(value);
                 attribute.ns = try self.dupe(uri);
                 return;
             }
         }
-        try list.append(self.arena.allocator(), .{
+        try self.appendAttribute(element, .{
             .name = raw,
             .colon = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
             .ns = try self.dupe(uri),
@@ -424,32 +430,61 @@ pub const Builder = struct {
         name: []const u8,
     ) Error!void {
         if (element >= self.nodes.items.len) return error.InvalidTree;
-        const list = &self.attr_lists.items[element];
-        for (list.items, 0..) |attribute, index| {
+        const node = &self.nodes.items[element];
+        const start = node.attr_start;
+        const count = node.attr_count;
+        for (self.attributes.items[start..][0..count], 0..) |attribute, index| {
             if (std.mem.eql(u8, attribute.name, name)) {
-                _ = list.orderedRemove(index);
+                const absolute = start + index;
+                const end = start + count;
+                if (absolute + 1 < end) {
+                    std.mem.copyForwards(
+                        dom.Attribute,
+                        self.attributes.items[absolute..end],
+                        self.attributes.items[absolute + 1 .. end + 1],
+                    );
+                }
+                node.attr_count -= 1;
+                if (end == self.attributes.items.len) {
+                    self.attributes.items.len -= 1;
+                }
                 return;
             }
         }
     }
 
+    /// Append an attribute to an element, moving the element's range to the
+    /// end of the flat array when another element's attributes follow it.
+    fn appendAttribute(
+        self: *Builder,
+        element: dom.NodeId,
+        attribute: dom.Attribute,
+    ) Error!void {
+        const node = &self.nodes.items[element];
+        if (node.attr_start + node.attr_count != self.attributes.items.len) {
+            const start = node.attr_start;
+            const count = node.attr_count;
+            const allocator = self.arena.allocator();
+            try self.attributes.ensureUnusedCapacity(allocator, count + 1);
+            const destination = self.attributes.items.len;
+            @memcpy(
+                self.attributes.items.ptr[destination..][0..count],
+                self.attributes.items[start..][0..count],
+            );
+            self.attributes.items.len = destination + count;
+            node.attr_start = @intCast(destination);
+        }
+        try self.attributes.append(self.arena.allocator(), attribute);
+        self.nodes.items[element].attr_count += 1;
+    }
+
     pub fn finish(self: *Builder) Error!dom.Document {
         if (self.finished) return error.AlreadyFinished;
-        const allocator = self.arena.allocator();
-        var flat: std.ArrayList(dom.Attribute) = .empty;
-        for (self.nodes.items, 0..) |*node, index| {
-            const list = self.attr_lists.items[index];
-            node.attr_start = @intCast(flat.items.len);
-            node.attr_count = @intCast(list.items.len);
-            if (list.items.len != 0) {
-                try flat.appendSlice(allocator, list.items);
-            }
-        }
         self.finished = true;
         return .{
             .arena = self.arena,
             .nodes = self.nodes.items,
-            .attributes = flat.items,
+            .attributes = self.attributes.items,
             .declaration = self.declaration,
             .doctype = self.doctype,
         };
@@ -461,14 +496,15 @@ pub const Builder = struct {
             return error.OutOfMemory;
         }
         const id: dom.NodeId = @intCast(self.nodes.items.len);
-        if (self.nodes.items.len < self.nodes.capacity and
-            self.attr_lists.items.len < self.attr_lists.capacity)
-        {
-            self.nodes.appendAssumeCapacity(node);
-            self.attr_lists.appendAssumeCapacity(.empty);
+        var value = node;
+        if (value.kind == .element) {
+            value.attr_start = @intCast(self.attributes.items.len);
+            value.attr_count = 0;
+        }
+        if (self.nodes.items.len < self.nodes.capacity) {
+            self.nodes.appendAssumeCapacity(value);
         } else {
-            try self.nodes.append(allocator, node);
-            try self.attr_lists.append(allocator, .empty);
+            try self.nodes.append(allocator, value);
         }
         return id;
     }
