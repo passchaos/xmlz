@@ -570,7 +570,7 @@ pub inline fn findInvalidLiteralCharVersion(
             }
             return index;
         }
-        // Fast path: four 3-byte sequences with leads E1..EC, whose code
+        // Fast path: five 3-byte sequences with leads E1..EC, whose code
         // points are always valid XML characters once the continuation bytes
         // check out. (ED covers the surrogate range and EF covers U+FFFE and
         // U+FFFF, so both stay on the scalar path.) Any deviation falls back
@@ -586,10 +586,10 @@ pub inline fn findInvalidLiteralCharVersion(
                 (chunk >= @as(Wide, @splat(0xE1))) &
                     (chunk <= @as(Wide, @splat(0xEC))),
             );
-            if ((cont & 0x0DB6) == 0x0DB6 and
-                (leads & 0x0249) == 0x0249)
+            if ((cont & 0x6DB6) == 0x6DB6 and
+                (leads & 0x1249) == 0x1249)
             {
-                index += 12;
+                index += 15;
                 continue;
             }
         }
