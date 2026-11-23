@@ -118,6 +118,33 @@ const ascii_name_table: [256]bool = blk: {
     break :blk table;
 };
 
+/// Byte classes for the hot name scanners.
+const NameClass = struct {
+    /// Not a name character: the name ends here.
+    const stop: u8 = 0;
+    /// Ordinary name character.
+    const name: u8 = 1;
+    /// The namespace separator.
+    const colon: u8 = 2;
+    /// A byte at or above 0x80: a UTF-8 lead or continuation byte.
+    const high: u8 = 3;
+};
+
+/// Validating `NameChar` classes, including high bytes so the scanner needs
+/// no separate range test.
+const name_class_table: [256]u8 = blk: {
+    var table: [256]u8 = @splat(NameClass.stop);
+    for ('A'..'Z' + 1) |byte| table[byte] = NameClass.name;
+    for ('a'..'z' + 1) |byte| table[byte] = NameClass.name;
+    for ('0'..'9' + 1) |byte| table[byte] = NameClass.name;
+    table['_'] = NameClass.name;
+    table['-'] = NameClass.name;
+    table['.'] = NameClass.name;
+    table[':'] = NameClass.colon;
+    for (0x80..0x100) |byte| table[byte] = NameClass.high;
+    break :blk table;
+};
+
 /// ASCII subset of `NameStartChar`. Colon is included: namespace processing is
 /// a separate layer that may reject or split it.
 pub inline fn isAsciiNameStartChar(byte: u8) bool {
@@ -258,41 +285,64 @@ pub inline fn scanNameInfo(bytes: []const u8) NameInfo {
         index = first_len;
     }
 
-    // ASCII names dominate markup, so classify sixteen bytes at a time and
-    // fall back to the scalar UTF-8 loop at the first high byte. The first
-    // colon is tracked from the same masks instead of a second pass.
-    const Vec = @Vector(16, u8);
-    const lower_a: Vec = @splat('a');
-    const lower_z: Vec = @splat('z');
-    const digit_0: Vec = @splat('0');
-    const digit_9: Vec = @splat('9');
-    const underscore: Vec = @splat('_');
-    const dash: Vec = @splat('-');
-    const dot: Vec = @splat('.');
-    const colon_char: Vec = @splat(':');
-    while (index + 16 <= bytes.len) {
-        const chunk: Vec = bytes[index..][0..16].*;
-        const folded = chunk | @as(Vec, @splat(0x20));
-        const alpha = (folded >= lower_a) & (folded <= lower_z);
-        const digit = (chunk >= digit_0) & (chunk <= digit_9);
-        const valid = alpha | digit | (chunk == underscore) |
-            (chunk == dash) | (chunk == dot) | (chunk == colon_char);
-        const invalid: u16 = ~@as(u16, @bitCast(valid));
-        const stop: usize = @ctz(invalid);
-        if (info.colon == 0xFFFF) {
-            const colons: u16 = @bitCast(chunk == colon_char);
-            if (colons != 0) {
-                const offset = @ctz(colons);
-                if (offset < stop and index + offset < 0xFFFF) {
-                    info.colon = @intCast(index + offset);
+    // Markup names are short: a table lookup per byte beats the sixteen-byte
+    // vector classifier, whose constant setup and mask chain cost more than
+    // the handful of scalar iterations they replace. Only names longer than
+    // the scalar prefix, which are rare, reach the vector loop.
+    const prefix_end = @min(bytes.len, index + 16);
+    while (index < prefix_end) : (index += 1) {
+        const class = name_class_table[bytes[index]];
+        if (class == NameClass.name) continue;
+        if (class == NameClass.colon) {
+            if (info.colon == 0xFFFF and index < 0xFFFF) {
+                info.colon = @intCast(index);
+            }
+            continue;
+        }
+        if (class == NameClass.stop) {
+            info.len = index;
+            return info;
+        }
+        break;
+    }
+
+    // Classify sixteen bytes at a time for long ASCII names, falling back to
+    // the scalar UTF-8 loop at the first high byte. The first colon is
+    // tracked from the same masks instead of a second pass.
+    if (index == prefix_end and prefix_end < bytes.len) {
+        const Vec = @Vector(16, u8);
+        const lower_a: Vec = @splat('a');
+        const lower_z: Vec = @splat('z');
+        const digit_0: Vec = @splat('0');
+        const digit_9: Vec = @splat('9');
+        const underscore: Vec = @splat('_');
+        const dash: Vec = @splat('-');
+        const dot: Vec = @splat('.');
+        const colon_char: Vec = @splat(':');
+        while (index + 16 <= bytes.len) {
+            const chunk: Vec = bytes[index..][0..16].*;
+            const folded = chunk | @as(Vec, @splat(0x20));
+            const alpha = (folded >= lower_a) & (folded <= lower_z);
+            const digit = (chunk >= digit_0) & (chunk <= digit_9);
+            const valid = alpha | digit | (chunk == underscore) |
+                (chunk == dash) | (chunk == dot) | (chunk == colon_char);
+            const invalid: u16 = ~@as(u16, @bitCast(valid));
+            const stop: usize = @ctz(invalid);
+            if (info.colon == 0xFFFF) {
+                const colons: u16 = @bitCast(chunk == colon_char);
+                if (colons != 0) {
+                    const offset = @ctz(colons);
+                    if (offset < stop and index + offset < 0xFFFF) {
+                        info.colon = @intCast(index + offset);
+                    }
                 }
             }
+            if (invalid != 0) {
+                index += stop;
+                break;
+            }
+            index += 16;
         }
-        if (invalid != 0) {
-            index += stop;
-            break;
-        }
-        index += 16;
     }
 
     while (index < bytes.len) {
@@ -656,6 +706,37 @@ test "name scanner stops at the first invalid byte" {
     try std.testing.expectEqual(@as(usize, 6), scanName("a:b-c."));
     try std.testing.expectEqual(@as(usize, 3), scanName("é1"));
     try std.testing.expectEqual(@as(usize, 6), scanName("日本"));
+}
+
+test "name info scanner handles short, long, and non-ASCII names" {
+    const short = scanNameInfo("id=value");
+    try std.testing.expectEqual(@as(usize, 2), short.len);
+    try std.testing.expectEqual(@as(u16, 0xFFFF), short.colon);
+
+    const prefixed = scanNameInfo("xlink:href>");
+    try std.testing.expectEqual(@as(usize, 10), prefixed.len);
+    try std.testing.expectEqual(@as(u16, 5), prefixed.colon);
+
+    // Longer than the scalar prefix, so the vector classifier finishes it.
+    const long = scanNameInfo("very-long-element-name/");
+    try std.testing.expectEqual(@as(usize, 22), long.len);
+    try std.testing.expectEqual(@as(u16, 0xFFFF), long.colon);
+
+    const long_prefixed = scanNameInfo("a-very-long-prefix:local-name ");
+    try std.testing.expectEqual(@as(usize, 29), long_prefixed.len);
+    try std.testing.expectEqual(@as(u16, 18), long_prefixed.colon);
+
+    // A colon after the vector classifier has started.
+    const late_colon = scanNameInfo("sixteen-bytes-ab:cd ");
+    try std.testing.expectEqual(@as(usize, 19), late_colon.len);
+    try std.testing.expectEqual(@as(u16, 16), late_colon.colon);
+
+    const utf8 = scanNameInfo("日本:語");
+    try std.testing.expectEqual(@as(usize, 10), utf8.len);
+    try std.testing.expectEqual(@as(u16, 6), utf8.colon);
+
+    try std.testing.expectEqual(@as(usize, 0), scanNameInfo("").len);
+    try std.testing.expectEqual(@as(usize, 0), scanNameInfo("9abc").len);
 }
 
 test "XML 1.1 literal and reference character rules differ" {
