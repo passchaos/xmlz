@@ -487,6 +487,18 @@ pub fn decodeTextAlloc(
     options: Options,
 ) DecodeError![]const u8 {
     if (!needsTextDecode(raw, options.version)) return raw;
+    return decodeTextAllocChecked(allocator, raw, table, limits, options);
+}
+
+/// Decode text that the caller already knows contains a reference or a line
+/// end, skipping the detection scan.
+pub fn decodeTextAllocChecked(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+    table: *const Table,
+    limits: Limits,
+    options: Options,
+) DecodeError![]const u8 {
     if (raw.len <= simple_decode_capacity and options.version == .xml_1_0) {
         var buffer: [simple_decode_capacity]u8 = undefined;
         if (decodeSimple(

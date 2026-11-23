@@ -575,7 +575,7 @@ const Builder = struct {
         // Entity decoding also normalizes XML line endings, so only CDATA
         // needs the separate normalization pass.
         const decoded = switch (mode) {
-            .decode => try entities.decodeTextAlloc(
+            .decode => try entities.decodeTextAllocChecked(
                 self.allocator,
                 raw,
                 self.parser.entityTable(),
