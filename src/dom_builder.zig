@@ -31,11 +31,11 @@ pub const Builder = struct {
     /// Allow more than one element child at the document node. XSLT result
     /// trees are fragments and may contain several top-level elements.
     allow_multiple_roots: bool = false,
-    /// Interned element/attribute names and namespace URIs. Result trees
-    /// repeat a small set of names, so sharing them avoids one allocation
-    /// per copied node.
-    name_cache: ?std.StringHashMap([]const u8) = null,
-    uri_cache: ?std.StringHashMap([]const u8) = null,
+    /// Bump slab for short strings. Result trees copy many small text and
+    /// attribute values; packing them into slabs avoids one arena
+    /// allocation per value.
+    slab: []u8 = &.{},
+    slab_index: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) Error!Builder {
         var builder: Builder = .{ .arena = std.heap.ArenaAllocator.init(allocator) };
@@ -103,7 +103,7 @@ pub const Builder = struct {
     }
 
     pub fn createElement(self: *Builder, name: []const u8) Error!dom.NodeId {
-        const owned = try self.internName(name);
+        const owned = try self.copyString(name);
         const qname = namespace.splitQName(owned) catch return error.InvalidName;
         return self.addNode(.{
             .kind = .element,
@@ -124,7 +124,7 @@ pub const Builder = struct {
         chars.validateNCName(local) catch return error.InvalidName;
         var raw: []const u8 = undefined;
         if (prefix.len == 0) {
-            raw = try self.internName(local);
+            raw = try self.copyString(local);
         } else {
             var buffer: [128]u8 = undefined;
             const combined = std.fmt.bufPrint(
@@ -136,14 +136,14 @@ pub const Builder = struct {
                 "{s}:{s}",
                 .{ prefix, local },
             );
-            raw = try self.internName(combined);
+            raw = try self.copyString(combined);
         }
         const owned_local = if (prefix.len == 0) raw else raw[prefix.len + 1 ..];
         return self.addNode(.{
             .kind = .element,
             .name = raw,
             .local = owned_local,
-            .ns = try self.internUri(uri),
+            .ns = try self.copyString(uri),
         });
     }
 
@@ -157,7 +157,7 @@ pub const Builder = struct {
     ) Error!dom.NodeId {
         var raw: []const u8 = undefined;
         if (prefix.len == 0) {
-            raw = try self.internName(local);
+            raw = try self.copyString(local);
         } else {
             var buffer: [128]u8 = undefined;
             const combined = std.fmt.bufPrint(
@@ -169,14 +169,14 @@ pub const Builder = struct {
                 "{s}:{s}",
                 .{ prefix, local },
             );
-            raw = try self.internName(combined);
+            raw = try self.copyString(combined);
         }
         const owned_local = if (prefix.len == 0) raw else raw[prefix.len + 1 ..];
         return self.addNode(.{
             .kind = .element,
             .name = raw,
             .local = owned_local,
-            .ns = try self.internUri(uri),
+            .ns = try self.copyString(uri),
         });
     }
 
@@ -212,13 +212,23 @@ pub const Builder = struct {
         const node = &self.nodes.items[id];
         if (node.kind != .text) return error.InvalidTree;
         if (value.len == 0) return;
-        const combined = try self.arena.allocator().alloc(
-            u8,
-            node.value.len + value.len,
-        );
-        @memcpy(combined[0..node.value.len], node.value);
-        @memcpy(combined[node.value.len..], value);
-        node.value = combined;
+        const total = node.value.len + value.len;
+        if (total > self.slab.len - self.slab_index) {
+            if (total >= slab_size / 4) {
+                const combined = try self.arena.allocator().alloc(u8, total);
+                @memcpy(combined[0..node.value.len], node.value);
+                @memcpy(combined[node.value.len..], value);
+                node.value = combined;
+                return;
+            }
+            self.slab = try self.arena.allocator().alloc(u8, slab_size);
+            self.slab_index = 0;
+        }
+        const start = self.slab_index;
+        @memcpy(self.slab[start..][0..node.value.len], node.value);
+        @memcpy(self.slab[start + node.value.len ..][0..value.len], value);
+        self.slab_index = start + total;
+        node.value = self.slab[start..][0..total];
     }
 
     pub fn createComment(self: *Builder, value: []const u8) Error!dom.NodeId {
@@ -356,7 +366,7 @@ pub const Builder = struct {
         {
             return error.InvalidTree;
         }
-        const owned_name = try self.internName(name);
+        const owned_name = try self.copyString(name);
         const qname = namespace.splitQName(owned_name) catch return error.InvalidName;
         const node = &self.nodes.items[element];
         const start = node.attr_start;
@@ -509,36 +519,27 @@ pub const Builder = struct {
         return id;
     }
 
+    const slab_size = 4096;
+
+    /// Copy short strings into a bump slab; large values get their own
+    /// allocation. The slab itself is arena-owned.
+    fn copyString(self: *Builder, bytes: []const u8) Error![]const u8 {
+        if (bytes.len == 0) return "";
+        if (bytes.len > self.slab.len - self.slab_index) {
+            if (bytes.len >= slab_size / 4) {
+                return self.arena.allocator().dupe(u8, bytes);
+            }
+            self.slab = try self.arena.allocator().alloc(u8, slab_size);
+            self.slab_index = 0;
+        }
+        const start = self.slab_index;
+        @memcpy(self.slab[start..][0..bytes.len], bytes);
+        self.slab_index = start + bytes.len;
+        return self.slab[start..][0..bytes.len];
+    }
+
     fn dupe(self: *Builder, bytes: []const u8) Error![]const u8 {
-        return self.arena.allocator().dupe(u8, bytes);
-    }
-
-    fn internName(self: *Builder, name: []const u8) Error![]const u8 {
-        if (name.len == 0) return "";
-        if (self.name_cache == null) {
-            self.name_cache = std.StringHashMap([]const u8).init(
-                self.arena.allocator(),
-            );
-        }
-        const cache = &self.name_cache.?;
-        if (cache.get(name)) |existing| return existing;
-        const owned = try self.dupe(name);
-        try cache.put(owned, owned);
-        return owned;
-    }
-
-    fn internUri(self: *Builder, uri: []const u8) Error![]const u8 {
-        if (uri.len == 0) return "";
-        if (self.uri_cache == null) {
-            self.uri_cache = std.StringHashMap([]const u8).init(
-                self.arena.allocator(),
-            );
-        }
-        const cache = &self.uri_cache.?;
-        if (cache.get(uri)) |existing| return existing;
-        const owned = try self.dupe(uri);
-        try cache.put(owned, owned);
-        return owned;
+        return self.copyString(bytes);
     }
 
     fn isAncestor(
