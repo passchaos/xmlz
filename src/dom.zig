@@ -696,10 +696,17 @@ const Builder = struct {
         var has_ns_decls = element.has_namespace_decls;
 
         const attr_start: u32 = @intCast(self.attributes.items.len);
-        try self.attributes.ensureUnusedCapacity(
-            self.allocator,
-            element.attrs.len,
-        );
+        // The array is pre-reserved from the input scan, so the capacity call
+        // is only needed when this element would actually exceed it.
+        if (element.attrs.len != 0 and
+            self.attributes.items.len + element.attrs.len >
+                self.attributes.capacity)
+        {
+            try self.attributes.ensureUnusedCapacity(
+                self.allocator,
+                element.attrs.len,
+            );
+        }
         // Copy the borrowed names and values in one branch-free pass. Entity
         // decoding and tokenized normalization are rare, so they are handled
         // afterwards instead of branching on every attribute here.
