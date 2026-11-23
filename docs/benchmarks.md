@@ -258,15 +258,15 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.148 | 7.42 |
-| identity | libxslt (lxml) | 1.024 | 51.21 |
-| sorted report | xmlz | 0.123 | 6.17 |
-| sorted report | libxslt (lxml) | 0.875 | 43.73 |
+| identity | xmlz | 0.149 | 7.47 |
+| identity | libxslt (lxml) | 1.045 | 52.26 |
+| sorted report | xmlz | 0.108 | 5.39 |
+| sorted report | libxslt (lxml) | 0.891 | 44.56 |
 
 ## Interpretation
 
-- The identity transform is **6.9x faster than libxslt** and the sorted
-  report is **7.1x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **7.0x faster than libxslt** and the sorted
+  report is **8.3x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -276,7 +276,9 @@ column amortizes parsing and serialization over the 20 applications.
   Result node and attribute arrays append through an inline capacity check
   instead of the out-of-line `ArrayList.addOne` capacity call. Simple child
   selects in `xsl:value-of` and attribute value templates read the text
-  directly instead of building node sets.
+  directly instead of building node sets, comparing child names through a
+  small short-name comparator, and literal attribute names use a setter that
+  skips re-parsing the NCName productions.
   Absolute times move with host load, so the ratio is the meaningful
   comparison.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested

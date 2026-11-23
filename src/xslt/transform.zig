@@ -3569,7 +3569,8 @@ const Runtime = struct {
                 size,
             );
             if (attr.ns.len == 0) {
-                self.builder.setAttribute(id, attr.name, value) catch |err|
+                // Literal attribute names were validated with the stylesheet.
+                self.builder.setAttributeValidated(id, attr.name, value) catch |err|
                     return mapBuilderError(err);
             } else {
                 self.builder.setAttributeNs(

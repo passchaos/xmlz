@@ -396,13 +396,39 @@ pub const Builder = struct {
         name: []const u8,
         value: []const u8,
     ) Error!void {
+        return self.setAttributeImpl(element, name, value, false);
+    }
+
+    /// Variant for callers whose attribute names were already validated as
+    /// XML names, such as stylesheet literals and parsed source nodes.
+    pub fn setAttributeValidated(
+        self: *Builder,
+        element: dom.NodeId,
+        name: []const u8,
+        value: []const u8,
+    ) Error!void {
+        return self.setAttributeImpl(element, name, value, true);
+    }
+
+    inline fn setAttributeImpl(
+        self: *Builder,
+        element: dom.NodeId,
+        name: []const u8,
+        value: []const u8,
+        comptime validated: bool,
+    ) Error!void {
         if (element >= self.nodes.items.len or
             self.nodes.items[element].kind != .element)
         {
             return error.InvalidTree;
         }
         const owned_name = try self.copyString(name);
-        const qname = namespace.splitQName(owned_name) catch return error.InvalidName;
+        const qname = if (validated)
+            namespace.splitQNameValidated(owned_name) catch
+                return error.InvalidName
+        else
+            namespace.splitQName(owned_name) catch
+                return error.InvalidName;
         const is_ns_decl = namespace.Resolver.isNamespaceDeclaration(owned_name);
         const node = &self.nodes.items[element];
         const start = node.attr_start;
