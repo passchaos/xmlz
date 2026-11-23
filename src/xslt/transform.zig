@@ -482,7 +482,7 @@ const ModeBucket = struct {
         }
     }
 
-    fn candidates(self: *const ModeBucket, mode: ?[]const u8) []const u32 {
+    inline fn candidates(self: *const ModeBucket, mode: ?[]const u8) []const u32 {
         if (mode) |name| {
             const list = self.by_mode.get(name) orelse return &.{};
             return list.items;
@@ -2267,7 +2267,7 @@ const Runtime = struct {
         return out;
     }
 
-    fn simpleMatches(
+    inline fn simpleMatches(
         self: *Runtime,
         pattern: SimplePattern,
         node: xpath.NodeRef,
