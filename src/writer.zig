@@ -267,7 +267,7 @@ inline fn xmlnsPrefix(name: []const u8) ?[]const u8 {
 inline fn shouldSkipAttribute(
     doc: *const dom.Document,
     id: dom.NodeId,
-    attr: dom.Attribute,
+    attr: *const dom.Attribute,
     default_ns: []const u8,
 ) bool {
     if (isXmlnsAttribute(attr.name)) {
@@ -340,7 +340,7 @@ fn writeStartTag(
             if (direct) {
                 var index: usize = 0;
                 while (index < attrs.len) : (index += 1) {
-                    const attr = attrs[index];
+                    const attr = &attrs[index];
                     if (skip_decls and
                         shouldSkipAttribute(doc, id, attr, default_ns)) continue;
                     if (!attr.plain and !shortPlainAttribute(attr.value) and
@@ -389,7 +389,7 @@ fn writeStartTag(
                 // Finish the tag through the generic writer starting at the
                 // attribute that could not be written directly.
                 while (index < attrs.len) : (index += 1) {
-                    const attr = attrs[index];
+                    const attr = &attrs[index];
                     if (skip_decls and
                         shouldSkipAttribute(doc, id, attr, default_ns)) continue;
                     try writer.writeByte(' ');
@@ -423,7 +423,7 @@ fn writeStartTag(
     if (xhtml_ns) {
         try writer.writeAll(" xmlns=\"http://www.w3.org/1999/xhtml\"");
     }
-    for (attrs) |attr| {
+    for (attrs) |*attr| {
         if (skip_decls and shouldSkipAttribute(doc, id, attr, default_ns)) continue;
         try writer.writeByte(' ');
         try writer.writeAll(attr.name);
