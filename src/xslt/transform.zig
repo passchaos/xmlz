@@ -4716,7 +4716,7 @@ const Runtime = struct {
         return out.toOwnedSlice(allocator);
     }
 
-    fn evaluateParams(
+    inline fn evaluateParams(
         self: *Runtime,
         params: []const compile.ParamBinding,
         node: xpath.NodeRef,
@@ -4724,6 +4724,16 @@ const Runtime = struct {
         size: usize,
     ) Error![]const xpath.Variable {
         if (params.len == 0) return &.{};
+        return self.evaluateParamsSlow(params, node, position, size);
+    }
+
+    fn evaluateParamsSlow(
+        self: *Runtime,
+        params: []const compile.ParamBinding,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+    ) Error![]const xpath.Variable {
         const out = try self.allocator.alloc(xpath.Variable, params.len);
         for (params, 0..) |param, index| {
             out[index] = .{
