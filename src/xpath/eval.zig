@@ -150,6 +150,56 @@ const Evaluator = struct {
                     context,
                     step.node_test,
                 );
+                // Attribute expanded names are unique, so `@name` selects at
+                // most one node; allocate it directly.
+                if (step.axis == .attribute and step.node_test == .name) {
+                    const name_test = step.node_test.name;
+                    if (name_test.local) |local| {
+                        const expected_uri = if (name_test.prefix != null)
+                            prefix_uri orelse ""
+                        else
+                            "";
+                        switch (context.node) {
+                            .node => |node_id| {
+                                const document = context.document;
+                                if (document.node(node_id).kind != .element) {
+                                    return .{ .node_set = &.{} };
+                                }
+                                var found: ?usize = null;
+                                var duplicate = false;
+                                for (
+                                    document.attributesOf(node_id),
+                                    0..,
+                                ) |attribute, index| {
+                                    if (!attributeNameMatches(
+                                        attribute,
+                                        expected_uri,
+                                        local,
+                                    )) continue;
+                                    if (found != null) {
+                                        duplicate = true;
+                                        break;
+                                    }
+                                    found = index;
+                                }
+                                if (!duplicate) {
+                                    const index = found orelse
+                                        return .{ .node_set = &.{} };
+                                    const out = try self.allocator.alloc(
+                                        value.NodeRef,
+                                        1,
+                                    );
+                                    out[0] = .{ .attribute = .{
+                                        .element = node_id,
+                                        .index = @intCast(index),
+                                    } };
+                                    return .{ .node_set = out };
+                                }
+                            },
+                            else => return .{ .node_set = &.{} },
+                        }
+                    }
+                }
                 var out: std.ArrayList(value.NodeRef) = .empty;
                 if (try self.appendSingleAxis(
                     context,
@@ -345,6 +395,20 @@ const Evaluator = struct {
                         prefix_uri orelse ""
                     else
                         "";
+                    if (name_test.local) |local| {
+                        for (attributes, 0..) |attribute, index| {
+                            if (!attributeNameMatches(
+                                attribute,
+                                expected_uri,
+                                local,
+                            )) continue;
+                            try out.append(self.allocator, .{ .attribute = .{
+                                .element = id,
+                                .index = @intCast(index),
+                            } });
+                        }
+                        return true;
+                    }
                     for (attributes, 0..) |attribute, index| {
                         if (namespace.Resolver.isNamespaceDeclaration(
                             attribute.name,
@@ -357,15 +421,6 @@ const Evaluator = struct {
                                 attribute.ns,
                                 expected_uri,
                             )) continue;
-                        }
-                        if (name_test.local) |local| {
-                            const attribute_local = attribute.localName();
-                            if (attribute_local.len != local.len or
-                                !std.mem.eql(
-                                    u8,
-                                    attribute_local,
-                                    local,
-                                )) continue;
                         }
                         try out.append(self.allocator, .{ .attribute = .{
                             .element = id,
@@ -1071,15 +1126,11 @@ const Evaluator = struct {
         const document = context.document;
         if (document.node(id).kind != .element) return false;
         for (document.attributesOf(id)) |candidate| {
-            if (namespace.Resolver.isNamespaceDeclaration(
-                candidate.name,
-            )) continue;
-            if (attribute.uri.len == 0) {
-                if (candidate.ns.len != 0) continue;
-            } else if (!std.mem.eql(u8, candidate.ns, attribute.uri)) continue;
-            const candidate_local = candidate.localName();
-            if (candidate_local.len == attribute.local.len and
-                std.mem.eql(u8, candidate_local, attribute.local)) return true;
+            if (attributeNameMatches(
+                candidate,
+                attribute.uri,
+                attribute.local,
+            )) return true;
         }
         return false;
     }
@@ -1101,15 +1152,11 @@ const Evaluator = struct {
         const document = context.document;
         if (document.node(id).kind != .element) return false;
         for (document.attributesOf(id)) |candidate| {
-            if (namespace.Resolver.isNamespaceDeclaration(
-                candidate.name,
+            if (!attributeNameMatches(
+                candidate,
+                attribute.uri,
+                attribute.local,
             )) continue;
-            if (attribute.uri.len == 0) {
-                if (candidate.ns.len != 0) continue;
-            } else if (!std.mem.eql(u8, candidate.ns, attribute.uri)) continue;
-            const candidate_local = candidate.localName();
-            if (candidate_local.len != attribute.local.len or
-                !std.mem.eql(u8, candidate_local, attribute.local)) continue;
             if (std.mem.eql(u8, candidate.value, expected) == equal) {
                 return true;
             }
@@ -2776,6 +2823,21 @@ const Evaluator = struct {
 /// Root of the document that owns `node`. Absolute location paths start
 /// here, even when the context node belongs to a document loaded through
 /// `document()` rather than the principal source document.
+/// Match an attribute against an expanded name test.
+fn attributeNameMatches(
+    attribute: dom.Attribute,
+    expected_uri: []const u8,
+    local: []const u8,
+) bool {
+    if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) return false;
+    if (expected_uri.len == 0) {
+        if (attribute.ns.len != 0) return false;
+    } else if (!std.mem.eql(u8, attribute.ns, expected_uri)) return false;
+    const attribute_local = attribute.localName();
+    return attribute_local.len == local.len and
+        std.mem.eql(u8, attribute_local, local);
+}
+
 fn resolveVariable(
     context: *const value.Context,
     name: []const u8,
