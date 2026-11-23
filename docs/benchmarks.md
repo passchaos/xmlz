@@ -186,21 +186,23 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.310 | 15.52 |
-| identity | libxslt (lxml) | 1.011 | 50.53 |
-| sorted report | xmlz | 0.252 | 12.62 |
-| sorted report | libxslt (lxml) | 0.882 | 44.08 |
+| identity | xmlz | 0.297 | 14.83 |
+| identity | libxslt (lxml) | 1.023 | 51.17 |
+| sorted report | xmlz | 0.207 | 10.36 |
+| sorted report | libxslt (lxml) | 0.881 | 44.03 |
 
 ## Interpretation
 
-- The identity transform is **3.3x faster than libxslt** and the sorted
-  report is **3.5x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **3.5x faster than libxslt** and the sorted
+  report is **4.3x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
-  and short result strings pack into arena-owned slabs instead of paying one
-  allocation each. Absolute times move with host load, so the ratio is the
-  meaningful comparison.
+  short result strings pack into arena-owned slabs instead of paying one
+  allocation each, and simple child selects in `xsl:value-of` and attribute
+  value templates read the text directly instead of building node sets.
+  Absolute times move with host load, so the ratio is the meaningful
+  comparison.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
   directly against each node instead of precomputing a match set, and child
   iteration no longer materializes node-sets for `apply-templates` without
