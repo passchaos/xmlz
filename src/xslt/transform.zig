@@ -3750,6 +3750,10 @@ const Runtime = struct {
         for (element.attribute_sets) |set_name| {
             try self.executeAttributeSet(set_name, node, position, size);
         }
+        // Attribute sets run first and may create an attribute with the same
+        // name as a literal one, so the duplicate scan can only be skipped
+        // when there are none.
+        const literal_unique = element.attribute_sets.len == 0;
         for (element.attributes) |attr| {
             const value = try self.evaluateAvt(
                 attr.value,
@@ -3757,6 +3761,25 @@ const Runtime = struct {
                 position,
                 size,
             );
+            if (literal_unique) {
+                if (attr.ns.len == 0) {
+                    self.builder.setAttributeLiteral(id, attr.name, value) catch |err|
+                        return mapBuilderError(err);
+                } else {
+                    const colon: u16 = if (attr.prefix.len == 0)
+                        0xFFFF
+                    else
+                        @intCast(attr.prefix.len);
+                    self.builder.setAttributeLiteralNs(
+                        id,
+                        attr.name,
+                        colon,
+                        attr.ns,
+                        value,
+                    ) catch |err| return mapBuilderError(err);
+                }
+                continue;
+            }
             if (attr.ns.len == 0) {
                 // Literal attribute names were validated with the stylesheet.
                 self.builder.setAttributeValidated(id, attr.name, value) catch |err|
@@ -5689,10 +5712,13 @@ const Runtime = struct {
             else => return null,
         };
         const local = name_test.local orelse return null;
-        var uri: []const u8 = "";
-        if (name_test.prefix) |prefix| {
-            uri = resolvePrefix(select.namespaces, prefix) orelse return null;
-        }
+        // Namespace URIs are interned in the document table, so resolve the
+        // expected URI to a table index once instead of comparing strings for
+        // every child.
+        const expected_ns: dom.NamespaceId = if (name_test.prefix) |prefix| blk: {
+            const uri = resolvePrefix(select.namespaces, prefix) orelse return null;
+            break :blk self.source.lookupNamespace(uri) orelse return null;
+        } else 0;
         const id = switch (node) {
             .node => |value| value,
             else => return null,
@@ -5707,7 +5733,7 @@ const Runtime = struct {
             const value = self.source.node(current);
             child = value.next_sibling;
             if (value.kind != .element) continue;
-            if (!namesEqual(self.source.ns(value.ns), uri)) continue;
+            if (value.ns != expected_ns) continue;
             if (!namesEqual(value.localName(), local)) continue;
             // Inline `stringValue`'s single-text-child case: it covers the
             // common leaf lookup without another call.

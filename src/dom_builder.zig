@@ -507,6 +507,50 @@ pub const Builder = struct {
         if (is_ns_decl) node.setNsDecls(true);
     }
 
+    /// Add a literal result element attribute. The expanded name was resolved
+    /// at stylesheet compile time and literal attributes are unique, so this
+    /// skips QName splitting and the duplicate scan.
+    pub fn setAttributeLiteral(
+        self: *Builder,
+        element: dom.NodeId,
+        name: []const u8,
+        value: []const u8,
+    ) Error!void {
+        if (element >= self.nodes.items.len or
+            self.nodes.items[element].kind != .element)
+        {
+            return error.InvalidTree;
+        }
+        try self.appendAttribute(element, .{
+            .name = try self.copyString(name),
+            .value = try self.dupe(value),
+            .flags = 0xFFFF,
+        });
+    }
+
+    /// Namespace-aware variant of `setAttributeLiteral`; `colon` is the
+    /// qualified name's prefix length.
+    pub fn setAttributeLiteralNs(
+        self: *Builder,
+        element: dom.NodeId,
+        name: []const u8,
+        colon: u16,
+        uri: []const u8,
+        value: []const u8,
+    ) Error!void {
+        if (element >= self.nodes.items.len or
+            self.nodes.items[element].kind != .element)
+        {
+            return error.InvalidTree;
+        }
+        try self.appendAttribute(element, .{
+            .name = try self.copyString(name),
+            .ns = try self.internNamespace(uri),
+            .value = try self.dupe(value),
+            .flags = colon,
+        });
+    }
+
     /// Set an attribute whose qualified name, colon offset, and namespace
     /// were validated when the source document was parsed.
     pub fn setAttributeRaw(

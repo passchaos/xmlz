@@ -263,18 +263,18 @@ once; the per-transform column amortizes parsing and serialization over the
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.131 | 6.56 |
-| identity | libxslt (lxml) | 1.008 | 50.38 |
-| identity (attributes) | xmlz | 0.131 | 6.56 |
-| identity (attributes) | libxslt (lxml) | 1.635 | 81.77 |
-| sorted report | xmlz | 0.104 | 5.18 |
-| sorted report | libxslt (lxml) | 0.871 | 43.53 |
+| identity | xmlz | 0.129 | 6.47 |
+| identity | libxslt (lxml) | 1.009 | 50.46 |
+| identity (attributes) | xmlz | 0.123 | 6.15 |
+| identity (attributes) | libxslt (lxml) | 1.939 | 96.97 |
+| sorted report | xmlz | 0.102 | 5.09 |
+| sorted report | libxslt (lxml) | 0.919 | 45.94 |
 
 ## Interpretation
 
-- The identity transform is **7.7x faster than libxslt**, the standard
-  identity transform (attributes copied) is **12.5x faster**, and the sorted
-  report is **8.4x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **7.8x faster than libxslt**, the standard
+  identity transform (attributes copied) is **15.8x faster**, and the sorted
+  report is **9.0x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -286,7 +286,12 @@ once; the per-transform column amortizes parsing and serialization over the
   selects in `xsl:value-of` and attribute value templates read the text
   directly instead of building node sets, comparing child names through a
   small short-name comparator, and literal attribute names use a setter that
-  skips re-parsing the NCName productions.
+  skips re-parsing the NCName productions. A child select's namespace is
+  resolved to its interned table index once, so each candidate child is
+  rejected with an integer compare instead of a URI string compare. Literal
+  result element attributes are appended without a duplicate scan when the
+  element has no attribute sets, since their names were validated and
+  deduplicated when the stylesheet was parsed.
   Absolute times move with host load, so the ratio is the meaningful
   comparison.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
