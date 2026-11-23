@@ -2526,15 +2526,19 @@ const Runtime = struct {
         defer self.current_mode = saved_mode;
         var position: usize = 0;
         var child = value.first_child;
-        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+        while (child != dom.null_node) {
+            // Fetch the node once and advance first: the loop body would
+            // otherwise reload it through `source.node` to find the sibling.
+            const current = child;
+            const child_value = self.source.node(current);
+            child = child_value.next_sibling;
             position += 1;
             if (dispatch.active) {
-                const child_value = self.source.node(child);
                 switch (child_value.kind) {
                     .element => if (dispatch.element) |template| {
                         try self.executeTemplate(
                             template,
-                            .{ .node = child },
+                            .{ .node = current },
                             position,
                             size,
                             params,
@@ -2552,7 +2556,7 @@ const Runtime = struct {
                 }
             }
             try self.applyTemplateNode(
-                .{ .node = child },
+                .{ .node = current },
                 mode,
                 params,
                 position,
