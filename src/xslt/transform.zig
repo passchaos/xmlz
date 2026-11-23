@@ -427,6 +427,9 @@ const StructuralPattern = struct {
 
 const PatternMatcher = union(enum) {
     simple: SimplePattern,
+    /// A union of simple patterns such as `@*|node()`, tested per kind
+    /// instead of falling back to the structural matcher.
+    simple_union: []const SimplePattern,
     structural: StructuralPattern,
 };
 
@@ -559,6 +562,9 @@ const TemplateIndex = struct {
         self.version +%= 1;
         switch (matcher) {
             .simple => |pattern| try self.addSimple(index, pattern, mode),
+            .simple_union => |patterns| for (patterns) |pattern| {
+                try self.addSimple(index, pattern, mode);
+            },
             .structural => |pattern| try self.addStructural(
                 index,
                 pattern,
@@ -1843,6 +1849,12 @@ const Runtime = struct {
                 template.namespaces,
             )) |pattern|
                 .{ .simple = pattern }
+            else if (try simpleUnionExpr(
+                self.allocator,
+                template.selector.?,
+                template.namespaces,
+            )) |patterns|
+                .{ .simple_union = patterns }
             else if (try structuralPatternExpr(
                 self.allocator,
                 template.selector.?,
@@ -2391,6 +2403,17 @@ const Runtime = struct {
         };
     }
 
+    fn simpleUnionMatches(
+        self: *Runtime,
+        patterns: []const SimplePattern,
+        node: xpath.NodeRef,
+    ) bool {
+        for (patterns) |pattern| {
+            if (self.simpleMatches(pattern, node)) return true;
+        }
+        return false;
+    }
+
     fn findTemplate(
         self: *Runtime,
         node: xpath.NodeRef,
@@ -2478,6 +2501,7 @@ const Runtime = struct {
                         .element_any => dispatch.element = state.template,
                         else => {},
                     },
+                    .simple_union => {},
                     .structural => {},
                 }
             }
@@ -2973,6 +2997,7 @@ const Runtime = struct {
                                         },
                                         else => {},
                                     },
+                                    .simple_union => {},
                                     .structural => {},
                                 }
                             }
@@ -3156,6 +3181,10 @@ const Runtime = struct {
             if (template.precedence >= maximum_precedence) continue;
             const matched = switch (state.matcher.?) {
                 .simple => |pattern| self.simpleMatches(pattern, node),
+                .simple_union => |patterns| self.simpleUnionMatches(
+                    patterns,
+                    node,
+                ),
                 .structural => |pattern| try self.structuralMatches(
                     pattern,
                     node,
@@ -4471,6 +4500,13 @@ const Runtime = struct {
             if (simplePatternExpr(selector.node, selector.namespaces)) |pattern| {
                 break :blk .{ .simple = pattern };
             }
+            if (try simpleUnionExpr(
+                self.allocator,
+                selector.node,
+                selector.namespaces,
+            )) |patterns| {
+                break :blk .{ .simple_union = patterns };
+            }
             if (try structuralPatternExpr(
                 self.allocator,
                 selector.node,
@@ -4494,6 +4530,10 @@ const Runtime = struct {
         if (try self.selectorMatcher(selector)) |matcher| {
             return switch (matcher) {
                 .simple => |pattern| self.simpleMatches(pattern, node),
+                .simple_union => |patterns| self.simpleUnionMatches(
+                    patterns,
+                    node,
+                ),
                 .structural => |pattern| try self.structuralMatches(pattern, node),
             };
         }
@@ -5870,6 +5910,45 @@ fn generateNodeId(
         return out.toOwnedSlice(allocator);
     }
     return std.fmt.allocPrint(allocator, "id{d}", .{entry.value_ptr.*});
+}
+
+/// Compile a union of simple match patterns such as `@*|node()` into the
+/// list of per-kind tests. Returns null when any branch needs the structural
+/// or selector matcher.
+fn simpleUnionExpr(
+    allocator: std.mem.Allocator,
+    expression: *const xpath_ast.Expr,
+    namespaces: []const namespace.Binding,
+) Error!?[]const SimplePattern {
+    const binary = switch (expression.*) {
+        .binary => |value| value,
+        else => return null,
+    };
+    if (binary.op != .union_) return null;
+    var branches: std.ArrayListUnmanaged(*const xpath_ast.Expr) = .empty;
+    try collectUnionBranches(allocator, &branches, expression);
+    const patterns = try allocator.alloc(SimplePattern, branches.items.len);
+    for (branches.items, 0..) |branch, index| {
+        patterns[index] = simplePatternExpr(branch, namespaces) orelse
+            return null;
+    }
+    return patterns;
+}
+
+fn collectUnionBranches(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayListUnmanaged(*const xpath_ast.Expr),
+    expression: *const xpath_ast.Expr,
+) Error!void {
+    switch (expression.*) {
+        .binary => |binary| if (binary.op == .union_) {
+            try collectUnionBranches(allocator, out, binary.lhs);
+            try collectUnionBranches(allocator, out, binary.rhs);
+            return;
+        },
+        else => {},
+    }
+    try out.append(allocator, expression);
 }
 
 fn simplePatternExpr(
