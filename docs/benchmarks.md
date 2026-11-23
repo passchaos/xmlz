@@ -251,25 +251,30 @@ zig build -Doptimize=ReleaseFast xslt-bench
 ```
 
 The benchmark generates a deterministic 3 MiB table document (20,000 rows)
-and runs two workloads 20 times each: an identity transform (`xsl:copy` plus
-`xsl:apply-templates` for every node) and a sorted report (`xsl:for-each`,
-two `xsl:sort` keys, attribute value templates, and `xsl:value-of`). Both
-engines parse the source and compile the stylesheet once; the per-transform
-column amortizes parsing and serialization over the 20 applications.
+and runs three workloads 20 times each: an identity transform (`xsl:copy`
+plus `xsl:apply-templates` for every node), the standard identity transform
+(`match="@*|node()"`, which also copies attributes), and a sorted report
+(`xsl:for-each`, two `xsl:sort` keys, attribute value templates, and
+`xsl:value-of`). Both engines parse the source and compile the stylesheet
+once; the per-transform column amortizes parsing and serialization over the
+20 applications.
 
 ## Results (2026-11-23)
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.128 | 6.41 |
-| identity | libxslt (lxml) | 1.036 | 51.81 |
-| sorted report | xmlz | 0.103 | 5.14 |
-| sorted report | libxslt (lxml) | 0.906 | 45.31 |
+| identity | xmlz | 0.127 | 6.36 |
+| identity | libxslt (lxml) | 1.016 | 50.81 |
+| identity (attributes) | xmlz | 0.148 | 7.41 |
+| identity (attributes) | libxslt (lxml) | 1.632 | 81.58 |
+| sorted report | xmlz | 0.102 | 5.10 |
+| sorted report | libxslt (lxml) | 0.876 | 43.78 |
 
 ## Interpretation
 
-- The identity transform is **8.1x faster than libxslt** and the sorted
-  report is **8.8x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **8.0x faster than libxslt**, the standard
+  identity transform (attributes copied) is **11.0x faster**, and the sorted
+  report is **8.6x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -293,7 +298,10 @@ column amortizes parsing and serialization over the 20 applications.
   cached once per parent so a child dispatch is a node-kind switch.
   Parameterless templates whose body is a single `xsl:copy`, and copies whose
   body is a single `xsl:apply-templates`, skip the interpreter layers for
-  parameter binding and body-level variable scopes.
+  parameter binding and body-level variable scopes. The standard identity
+  pattern's `@*|node()` select is recognized at compile time and applied by
+  walking attributes and children directly, and its lone rule resolves
+  through a cached per-kind check instead of the candidate index.
 - The merged source view aliases the parsed arrays until `document()` loads
   another document, copies skip in-scope namespace collection for
   namespace-free inputs, and result node storage is preallocated from the

@@ -49,6 +49,16 @@ REPORT_STYLESHEET = """<?xml version="1.0"?>
 </xsl:stylesheet>
 """
 
+IDENTITY_ATTRS_STYLESHEET = """<?xml version="1.0"?>
+<xsl:stylesheet version="1.0"
+  xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+  <xsl:output encoding="utf-8"/>
+  <xsl:template match="@*|node()">
+    <xsl:copy><xsl:apply-templates select="@*|node()"/></xsl:copy>
+  </xsl:template>
+</xsl:stylesheet>
+"""
+
 
 def write_input(path, rows):
     with open(path, "w", encoding="utf-8") as handle:
@@ -105,6 +115,7 @@ def main():
         results = []
         for name, text in (
             ("identity", IDENTITY_STYLESHEET),
+            ("identity (attributes)", IDENTITY_ATTRS_STYLESHEET),
             ("sorted report", REPORT_STYLESHEET),
         ):
             stylesheet = os.path.join(directory, name.replace(" ", "-") + ".xsl")
