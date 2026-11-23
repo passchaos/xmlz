@@ -87,16 +87,17 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.589 | 29.45 |
-| identity | libxslt (lxml) | 1.021 | 51.06 |
-| sorted report | xmlz | 0.606 | 30.32 |
-| sorted report | libxslt (lxml) | 0.930 | 46.49 |
+| identity | xmlz | 0.689 | 34.43 |
+| identity | libxslt (lxml) | 1.146 | 57.32 |
+| sorted report | xmlz | 0.538 | 26.88 |
+| sorted report | libxslt (lxml) | 1.041 | 52.07 |
 
 ## Interpretation
 
-- The identity transform is **1.9x faster than libxslt** and the sorted
-  report is **1.4x faster**; libxslt is measured through lxml in-process so
-  Python call overhead is included.
+- The identity transform is **1.7x faster than libxslt** and the sorted
+  report is **1.9x faster**; libxslt is measured through lxml in-process so
+  Python call overhead is included. Absolute times move with host load, so
+  the ratio is the meaningful comparison.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
   directly against each node instead of precomputing a match set, and child
   iteration no longer materializes node-sets for `apply-templates` without
@@ -105,6 +106,10 @@ column amortizes parsing and serialization over the 20 applications.
   another document, copies skip in-scope namespace collection for
   namespace-free inputs, and result node storage is preallocated from the
   source size.
+- The source document's non-simple match patterns are indexed once and later
+  lookups use a flag instead of a hash-map probe; result children skip the
+  ancestor walk when they are freshly created; and string values borrow a
+  single text child instead of building a temporary buffer.
 - Expression evaluation allocates directly in the transform arena instead
   of creating a per-evaluation arena, and single-step child/attribute name
   tests and simple `xsl:sort` keys use specialized paths.
