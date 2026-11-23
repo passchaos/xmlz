@@ -118,13 +118,13 @@ input; the numbers below were measured sequentially, pinned, best of four.
 | libxml2 | reader | 141.05 |
 | libxml2 | DOM | 103.89 |
 
-Serialization on the same input: xmlz **3740.85 MB/s**, pugixml 2024.34,
-libxml2 453.26.
+Serialization on the same input: xmlz **3755.61 MB/s**, pugixml 1983.02,
+libxml2 452.05.
 
 - The pull parser is **3.4x faster than expat** and **7.4x faster than
   libxml2's reader** with namespaces enabled while validating UTF-8; trusted
   mode is **7.8x** and **16.8x** faster.
-- Serialization is **1.85x faster than pugixml** and **8.3x faster than
+- Serialization is **1.89x faster than pugixml** and **8.3x faster than
   libxml2**; parsed trees skip writer-side UTF-8 revalidation.
 - pugixml's non-validating DOM is faster than xmlz's validating one on this
   shape because it neither checks UTF-8 nor copies attribute values out of the
@@ -153,15 +153,19 @@ because the host was shared during measurement.
 
 | Serializer | MB/s | Peak RSS |
 | --- | ---: | ---: |
-| xmlz | 2204.26 | 97 MiB |
-| pugixml | 1100.45 | 115 MiB |
-| libxml2 | 266.38 | 356 MiB |
+| xmlz | 2599.81 | 100 MiB |
+| pugixml | 1095.98 | 115 MiB |
+| libxml2 | 268.55 | 356 MiB |
 
 ## Interpretation
 
-- xmlz's writer is **2.0x faster than pugixml** and **8.3x faster than
+- xmlz's writer is **2.4x faster than pugixml** and **9.7x faster than
   libxml2** while still validating XML 1.0 characters and escaping carriage
   returns, which neither comparison engine does.
+- Attributes written as `name="value"` with no decoding are already in their
+  output form in the source buffer. The parser marks those spans and the
+  writer copies each one once instead of assembling the pieces, which lifted
+  serialization by about 22%.
 - Elements record whether they carry any `xmlns` declaration, so the writer
   skips the redundant-binding checks and the default-namespace scan for the
   common declaration-free element. The prefixed-element test reuses the
@@ -208,15 +212,15 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.275 | 13.77 |
-| identity | libxslt (lxml) | 1.026 | 51.28 |
-| sorted report | xmlz | 0.162 | 8.11 |
-| sorted report | libxslt (lxml) | 0.886 | 44.28 |
+| identity | xmlz | 0.277 | 13.83 |
+| identity | libxslt (lxml) | 1.030 | 51.48 |
+| sorted report | xmlz | 0.157 | 7.85 |
+| sorted report | libxslt (lxml) | 0.924 | 46.22 |
 
 ## Interpretation
 
 - The identity transform is **3.7x faster than libxslt** and the sorted
-  report is **5.5x faster**; libxslt is measured through lxml in-process so
+  report is **5.9x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
