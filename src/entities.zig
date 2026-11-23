@@ -161,6 +161,9 @@ pub const Options = struct {
     /// Preserve `&name;` literally for declared external entities whose
     /// replacement text is not available to this process.
     preserve_external: bool = true,
+    /// Normalize CR (and, for XML 1.1, NEL/LS) while appending literal runs.
+    /// Callers that already know the source has none can skip the scan.
+    normalize_line_endings: bool = true,
 };
 
 pub const DecodeError = error{
@@ -206,6 +209,10 @@ const Expansion = struct {
     /// attribute context, literal whitespace.
     fn appendLiteral(self: *Expansion, bytes: []const u8) DecodeError!void {
         const attribute = self.context == .attribute;
+        if (!attribute and !self.options.normalize_line_endings) {
+            try self.append(bytes);
+            return;
+        }
         var index: usize = 0;
         var chunk_start: usize = 0;
         while (index < bytes.len) {
@@ -252,12 +259,12 @@ const Expansion = struct {
         if (depth > self.limits.max_depth) return error.EntityRecursion;
         var cursor: usize = 0;
         while (cursor < raw.len) {
-            const amp = std.mem.indexOfScalarPos(u8, raw, cursor, '&') orelse {
+            const amp = chars.findByteSoon(raw, cursor, '&') orelse {
                 try self.appendLiteral(raw[cursor..]);
                 return;
             };
             if (amp > cursor) try self.appendLiteral(raw[cursor..amp]);
-            const semicolon = std.mem.indexOfScalarPos(u8, raw, amp + 1, ';') orelse
+            const semicolon = chars.findByteSoon(raw, amp + 1, ';') orelse
                 return error.InvalidEntityReference;
             const body = raw[amp + 1 .. semicolon];
             try self.decodeReference(body, depth);
@@ -381,6 +388,12 @@ pub fn decodeTextAlloc(
         .context = .text,
     };
     errdefer expansion.out.deinit(allocator);
+    // Decoded text is usually no longer than its source, so size the output
+    // once instead of growing it chunk by chunk.
+    try expansion.out.ensureTotalCapacity(
+        allocator,
+        @min(raw.len, limits.max_output_bytes),
+    );
     try expansion.decodeInto(raw, 0);
     return expansion.finish(raw);
 }

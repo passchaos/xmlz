@@ -579,6 +579,8 @@ const Builder = struct {
                     .version = self.parser.xmlVersion(),
                     .preserve_undeclared = true,
                     .preserve_external = true,
+                    .normalize_line_endings = self.parser.xmlVersion() == .xml_1_1 or
+                        self.parser.text_has_cr,
                 },
             ),
             .normalize => try normalizeLineEndings(

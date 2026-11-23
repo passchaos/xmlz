@@ -619,3 +619,18 @@ test "character reference parsing" {
     try std.testing.expect(parseHexCharRef("x110000") == null);
     try std.testing.expect(parseHexCharRef("xD800") == null);
 }
+
+/// Find `needle` in `bytes` starting at `start`. Entity references and text
+/// spans are usually short, so scan the first 32 bytes inline before falling
+/// back to the vectorized search.
+pub inline fn findByteSoon(bytes: []const u8, start: usize, needle: u8) ?usize {
+    var index = start;
+    const limit = @min(bytes.len, start + 32);
+    while (index < limit) : (index += 1) {
+        if (bytes[index] == needle) return index;
+    }
+    if (index < bytes.len) {
+        return std.mem.indexOfScalarPos(u8, bytes, index, needle);
+    }
+    return null;
+}

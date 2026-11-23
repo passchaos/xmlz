@@ -352,6 +352,8 @@ pub const Parser = struct {
     /// True when the current text event contains a reference or a carriage
     /// return, so consumers must decode or normalize it.
     text_needs_decode: bool = true,
+    /// True when the current text event contains a carriage return.
+    text_has_cr: bool = false,
     tokenized_attrs: [128]struct {
         element: []const u8,
         name: []const u8,
@@ -1288,6 +1290,7 @@ pub const Parser = struct {
         var span_has_high = false;
         var span_has_cr = false;
         var saw_reference = false;
+        self.text_has_cr = false;
         var index = start;
         while (true) {
             const special = findTextSpecial(
@@ -1358,6 +1361,7 @@ pub const Parser = struct {
                             self.text_needs_decode =
                                 self.xml_version == .xml_1_1 or
                                 saw_reference or span_has_cr;
+                            self.text_has_cr = span_has_cr;
                             return span;
                         }
                         self.pos = reference.end;
@@ -1405,6 +1409,7 @@ pub const Parser = struct {
         }
         self.text_needs_decode = self.xml_version == .xml_1_1 or
             saw_reference or span_has_cr;
+        self.text_has_cr = span_has_cr;
         return span;
     }
 
@@ -1416,7 +1421,7 @@ pub const Parser = struct {
     };
 
     fn classifyReference(self: *Parser, amp: usize) Error!Reference {
-        const semicolon = std.mem.indexOfScalarPos(u8, self.input, amp + 1, ';') orelse {
+        const semicolon = chars.findByteSoon(self.input, amp + 1, ';') orelse {
             return self.fail(error.InvalidEntityReference, amp);
         };
         const body = self.input[amp + 1 .. semicolon];
