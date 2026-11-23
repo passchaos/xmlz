@@ -1704,6 +1704,17 @@ const Evaluator = struct {
 
     fn sortDedup(self: *Evaluator, nodes: []const value.NodeRef) Error![]const value.NodeRef {
         if (nodes.len <= 1) return nodes;
+        // Axis results and `@*|node()` unions are usually already in document
+        // order with no duplicates; keep the input slice instead of copying,
+        // sorting, and rebuilding it.
+        var ordered = true;
+        for (nodes[1..], nodes[0 .. nodes.len - 1]) |current, previous| {
+            if (!value.orderLessThan({}, previous, current)) {
+                ordered = false;
+                break;
+            }
+        }
+        if (ordered) return nodes;
         var copy: std.ArrayList(value.NodeRef) = .empty;
         try copy.appendSlice(self.allocator, nodes);
         std.mem.sort(value.NodeRef, copy.items, {}, value.orderLessThan);
