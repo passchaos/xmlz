@@ -377,6 +377,8 @@ const StructuralTest = union(enum) {
 const StructuralStep = struct {
     axis: xpath_ast.Axis,
     node_test: StructuralTest,
+    /// Single predicate evaluated against the node matched by this step.
+    predicate: ?*const xpath_ast.Expr = null,
 };
 
 /// A match pattern compiled into chains of child/attribute steps, one per
@@ -384,6 +386,8 @@ const StructuralStep = struct {
 /// are kept as steps so patterns like `a//b` match any ancestor chain.
 const StructuralPattern = struct {
     alternatives: []const []const StructuralStep,
+    /// Namespace bindings of the template, used by step predicates.
+    namespaces: []const namespace.Binding = &.{},
 };
 
 const PatternMatcher = union(enum) {
@@ -2666,7 +2670,7 @@ const Runtime = struct {
                 best = betterTemplate(best, template);
             }
         }
-        self.collectCandidates(
+        try self.collectCandidates(
             node,
             mode,
             maximum_precedence,
@@ -2681,14 +2685,14 @@ const Runtime = struct {
         mode: ?[]const u8,
         maximum_precedence: usize,
         best: *?*const compile.Template,
-    ) void {
+    ) Error!void {
         const index = &self.template_index;
         switch (node) {
             .node => |id| {
                 const value = self.source.node(id);
                 switch (value.kind) {
                     .element => {
-                        self.addCandidates(
+                        try self.addCandidates(
                             index.element_any.candidates(mode),
                             node,
                             maximum_precedence,
@@ -2698,7 +2702,7 @@ const Runtime = struct {
                             .uri = value.ns,
                             .local = value.local,
                         })) |bucket| {
-                            self.addCandidates(
+                            try self.addCandidates(
                                 bucket.candidates(mode),
                                 node,
                                 maximum_precedence,
@@ -2706,14 +2710,14 @@ const Runtime = struct {
                             );
                         }
                         if (index.elements_by_uri.get(value.ns)) |bucket| {
-                            self.addCandidates(
+                            try self.addCandidates(
                                 bucket.candidates(mode),
                                 node,
                                 maximum_precedence,
                                 best,
                             );
                         }
-                        self.addCandidates(
+                        try self.addCandidates(
                             index.child_node.candidates(mode),
                             node,
                             maximum_precedence,
@@ -2721,13 +2725,13 @@ const Runtime = struct {
                         );
                     },
                     .text => {
-                        self.addCandidates(
+                        try self.addCandidates(
                             index.text.candidates(mode),
                             node,
                             maximum_precedence,
                             best,
                         );
-                        self.addCandidates(
+                        try self.addCandidates(
                             index.child_node.candidates(mode),
                             node,
                             maximum_precedence,
@@ -2735,13 +2739,13 @@ const Runtime = struct {
                         );
                     },
                     .comment => {
-                        self.addCandidates(
+                        try self.addCandidates(
                             index.comment.candidates(mode),
                             node,
                             maximum_precedence,
                             best,
                         );
-                        self.addCandidates(
+                        try self.addCandidates(
                             index.child_node.candidates(mode),
                             node,
                             maximum_precedence,
@@ -2749,13 +2753,13 @@ const Runtime = struct {
                         );
                     },
                     .processing_instruction => {
-                        self.addCandidates(
+                        try self.addCandidates(
                             index.processing_instruction.candidates(mode),
                             node,
                             maximum_precedence,
                             best,
                         );
-                        self.addCandidates(
+                        try self.addCandidates(
                             index.child_node.candidates(mode),
                             node,
                             maximum_precedence,
@@ -2763,7 +2767,7 @@ const Runtime = struct {
                         );
                     },
                     .document => {
-                        self.addCandidates(
+                        try self.addCandidates(
                             index.document_node.candidates(mode),
                             node,
                             maximum_precedence,
@@ -2776,7 +2780,7 @@ const Runtime = struct {
                 const name = self.source.attributesOf(
                     attribute.element,
                 )[attribute.index];
-                self.addCandidates(
+                try self.addCandidates(
                     index.attribute_any.candidates(mode),
                     node,
                     maximum_precedence,
@@ -2786,7 +2790,7 @@ const Runtime = struct {
                     .uri = name.ns,
                     .local = name.localName(),
                 })) |bucket| {
-                    self.addCandidates(
+                    try self.addCandidates(
                         bucket.candidates(mode),
                         node,
                         maximum_precedence,
@@ -2794,7 +2798,7 @@ const Runtime = struct {
                     );
                 }
                 if (index.attributes_by_uri.get(name.ns)) |bucket| {
-                    self.addCandidates(
+                    try self.addCandidates(
                         bucket.candidates(mode),
                         node,
                         maximum_precedence,
@@ -2812,14 +2816,17 @@ const Runtime = struct {
         node: xpath.NodeRef,
         maximum_precedence: usize,
         best: *?*const compile.Template,
-    ) void {
+    ) Error!void {
         for (candidates) |index| {
             const state = &self.template_states[index];
             const template = state.template;
             if (template.precedence >= maximum_precedence) continue;
             const matched = switch (state.matcher.?) {
                 .simple => |pattern| self.simpleMatches(pattern, node),
-                .structural => |pattern| self.structuralMatches(pattern, node),
+                .structural => |pattern| try self.structuralMatches(
+                    pattern,
+                    node,
+                ),
             };
             if (!matched) continue;
             best.* = betterTemplate(best.*, template);
@@ -2831,7 +2838,7 @@ const Runtime = struct {
         self: *Runtime,
         pattern: StructuralPattern,
         node: xpath.NodeRef,
-    ) bool {
+    ) Error!bool {
         for (pattern.alternatives) |steps| {
             if (steps.len == 0) {
                 switch (node) {
@@ -2842,7 +2849,12 @@ const Runtime = struct {
                 }
                 continue;
             }
-            if (self.matchStructuralStep(steps, steps.len - 1, node)) {
+            if (try self.matchStructuralStep(
+                pattern,
+                steps,
+                steps.len - 1,
+                node,
+            )) {
                 return true;
             }
         }
@@ -2853,10 +2865,11 @@ const Runtime = struct {
     /// `steps[0..index]` selected its context.
     fn matchStructuralStep(
         self: *Runtime,
+        pattern: StructuralPattern,
         steps: []const StructuralStep,
         index: usize,
         node: xpath.NodeRef,
-    ) bool {
+    ) Error!bool {
         const step = steps[index];
         switch (step.axis) {
             .child => switch (node) {
@@ -2873,23 +2886,44 @@ const Runtime = struct {
         if (step.axis == .attribute) {
             const element = node.attribute.element;
             return self.matchStructuralContext(
+                pattern,
                 steps,
                 index,
                 .{ .node = element },
             );
         }
         const parent = self.parentRef(node) orelse return false;
-        return self.matchStructuralContext(steps, index, parent);
+        if (!try self.matchStructuralContext(pattern, steps, index, parent)) {
+            return false;
+        }
+        // The context chain is checked before the predicate so patterns like
+        // `footnote/para[1]` only evaluate the predicate on real candidates.
+        if (step.predicate) |predicate| {
+            const bounds = self.childStepBounds(
+                parent,
+                step.node_test,
+                node.node,
+            );
+            if (!try self.patternPredicateMatches(
+                pattern,
+                predicate,
+                node,
+                bounds.position,
+                bounds.size,
+            )) return false;
+        }
+        return true;
     }
 
     /// Whether `node` is selected by `steps[0..index]`. Index zero requires
     /// the initial context of an absolute path: the document root.
     fn matchStructuralContext(
         self: *Runtime,
+        pattern: StructuralPattern,
         steps: []const StructuralStep,
         index: usize,
         node: xpath.NodeRef,
-    ) bool {
+    ) Error!bool {
         if (index == 0) {
             return switch (node) {
                 .node => |id| self.source.node(id).kind == .document,
@@ -2902,7 +2936,8 @@ const Runtime = struct {
             if (index == 1) return true;
             var current: ?xpath.NodeRef = node;
             while (current) |candidate| {
-                if (self.matchStructuralContext(
+                if (try self.matchStructuralContext(
+                    pattern,
                     steps,
                     index - 1,
                     candidate,
@@ -2913,7 +2948,105 @@ const Runtime = struct {
             }
             return false;
         }
-        return self.matchStructuralStep(steps, index - 1, node);
+        return self.matchStructuralStep(pattern, steps, index - 1, node);
+    }
+
+    const StepBounds = struct {
+        position: usize,
+        size: usize,
+    };
+
+    /// Position of `node` and total node count among the children of
+    /// `parent` selected by `node_test`, matching XPath step semantics.
+    fn childStepBounds(
+        self: *Runtime,
+        parent: xpath.NodeRef,
+        node_test: StructuralTest,
+        node: dom.NodeId,
+    ) StepBounds {
+        const parent_id = switch (parent) {
+            .node => |id| id,
+            else => return .{ .position = 1, .size = 1 },
+        };
+        var bounds: StepBounds = .{ .position = 1, .size = 1 };
+        var position: usize = 0;
+        var size: usize = 0;
+        var child = self.source.node(parent_id).first_child;
+        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+            if (!self.structuralTestMatches(node_test, .{ .node = child })) {
+                continue;
+            }
+            size += 1;
+            if (child == node) position = size;
+        }
+        if (position != 0) bounds = .{ .position = position, .size = size };
+        return bounds;
+    }
+
+    /// Evaluate a step predicate against `node`, converted to a boolean with
+    /// the XPath predicate rules (a numeric result compares to the position).
+    fn patternPredicateMatches(
+        self: *Runtime,
+        pattern: StructuralPattern,
+        predicate: *const xpath_ast.Expr,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+    ) Error!bool {
+        var context: xpath.Context = .{
+            .document = self.source,
+            .node = node,
+            .position = position,
+            .size = size,
+            .namespaces = pattern.namespaces,
+            .document_range = self.documentRange(node),
+            .key_resolver = if (self.keys_ready) .{
+                .context = self,
+                .lookup = lookupKey,
+            } else null,
+            .id_resolver = .{
+                .context = self,
+                .lookup = lookupId,
+            },
+            .xslt_functions = true,
+            .descendant_cache = &self.descendant_cache,
+            .current_date_time = self.now,
+            .node_id_generator = .{
+                .context = self,
+                .generate = generateNodeId,
+            },
+            .document_resolver = .{
+                .context = self,
+                .resolve = resolveDocument,
+            },
+            .tree_converter = .{
+                .context = self,
+                .convert = convertTree,
+            },
+            .extension_functions = .{
+                .context = self,
+                .available = extensionFunctionAvailable,
+                .call = callExtensionFunction,
+            },
+            .variable_resolver = .{
+                .context = self,
+                .resolve = resolveGlobalVariable,
+            },
+            .fragment_factory = .{
+                .context = self,
+                .build = buildFragmentNodes,
+            },
+            .document_base = self.base_uri,
+        };
+        const result = xpath_eval.evaluateDirect(
+            self.allocator,
+            predicate,
+            &context,
+        ) catch |err| return mapEvalError(err);
+        return switch (result) {
+            .number => |value| value == @as(f64, @floatFromInt(position)),
+            else => result.toBoolean(),
+        };
     }
 
     fn structuralTestMatches(
@@ -3898,7 +4031,7 @@ const Runtime = struct {
         if (try self.selectorMatcher(selector)) |matcher| {
             return switch (matcher) {
                 .simple => |pattern| self.simpleMatches(pattern, node),
-                .structural => |pattern| self.structuralMatches(pattern, node),
+                .structural => |pattern| try self.structuralMatches(pattern, node),
             };
         }
         const entry = try self.selectorEntry(selector);
@@ -5278,7 +5411,10 @@ fn structuralPatternExpr(
         expression,
         &alternatives,
     )) return null;
-    return .{ .alternatives = try alternatives.toOwnedSlice(allocator) };
+    return .{
+        .alternatives = try alternatives.toOwnedSlice(allocator),
+        .namespaces = namespaces,
+    };
 }
 
 fn appendStructuralAlternative(
@@ -5307,11 +5443,23 @@ fn appendStructuralAlternative(
             if (!path.absolute or path.start != null) return false;
             const steps = try allocator.alloc(StructuralStep, path.steps.len);
             for (path.steps, 0..) |step, index| {
-                if (step.predicates.len != 0) return false;
+                // Positional and other predicates are evaluated per candidate
+                // node; only a single predicate per step is supported.
+                if (step.predicates.len > 1) return false;
+                const predicate: ?*const xpath_ast.Expr = if (step.predicates.len == 1)
+                    step.predicates[0]
+                else
+                    null;
                 switch (step.axis) {
-                    .child, .attribute => {},
+                    .child => {},
+                    .attribute => {
+                        // Attribute axes only select a single node per name.
+                        if (predicate != null) return false;
+                    },
                     .descendant_or_self => switch (step.node_test) {
-                        .node => {},
+                        .node => {
+                            if (predicate != null) return false;
+                        },
                         else => return false,
                     },
                     else => return false,
@@ -5337,7 +5485,20 @@ fn appendStructuralAlternative(
                         .processing_instruction = target,
                     },
                 };
-                steps[index] = .{ .axis = step.axis, .node_test = structural_test };
+                if (predicate != null) {
+                    // Predicates are only checked for concrete name tests;
+                    // wildcard-anchored predicates would be evaluated for
+                    // every element of the document and stay eager.
+                    switch (structural_test) {
+                        .name => |name| if (name.local == null) return false,
+                        else => return false,
+                    }
+                }
+                steps[index] = .{
+                    .axis = step.axis,
+                    .node_test = structural_test,
+                    .predicate = predicate,
+                };
             }
             if (steps.len != 0) {
                 const last = steps[steps.len - 1];
