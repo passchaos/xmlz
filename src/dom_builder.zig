@@ -42,7 +42,8 @@ pub const Builder = struct {
     pub fn init(allocator: std.mem.Allocator) Error!Builder {
         var builder: Builder = .{ .arena = std.heap.ArenaAllocator.init(allocator) };
         errdefer builder.arena.deinit();
-        _ = try builder.addNode(.{ .kind = .document });
+        const node = try builder.addNodeSlot();
+        node.slot.* = .{ .kind = .document };
         try builder.namespaces.append(builder.arena.allocator(), "");
         return builder;
     }
@@ -118,14 +119,18 @@ pub const Builder = struct {
     pub fn createElement(self: *Builder, name: []const u8) Error!dom.NodeId {
         const owned = try self.copyString(name);
         const qname = namespace.splitQName(owned) catch return error.InvalidName;
-        return self.addNode(.{
+        const node = try self.addNodeSlot();
+        node.slot.* = .{
             .kind = .element,
             .name = owned,
             .colon = if (qname.prefix.len == 0)
                 0xFFFF
             else
                 @intCast(qname.prefix.len),
-        });
+            .attr_start = @intCast(self.attributes.items.len),
+            .attr_count = 0,
+        };
+        return node.id;
     }
 
     pub fn createElementNs(
@@ -154,12 +159,16 @@ pub const Builder = struct {
             );
             raw = try self.copyString(combined);
         }
-        return self.addNode(.{
+        const node = try self.addNodeSlot();
+        node.slot.* = .{
             .kind = .element,
             .name = raw,
             .colon = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
             .ns = try self.internNamespace(uri),
-        });
+            .attr_start = @intCast(self.attributes.items.len),
+            .attr_count = 0,
+        };
+        return node.id;
     }
 
     /// Create a namespaced element whose names are already validated, such
@@ -186,12 +195,16 @@ pub const Builder = struct {
             );
             raw = try self.copyString(combined);
         }
-        return self.addNode(.{
+        const node = try self.addNodeSlot();
+        node.slot.* = .{
             .kind = .element,
             .name = raw,
             .colon = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
             .ns = try self.internNamespace(uri),
-        });
+            .attr_start = @intCast(self.attributes.items.len),
+            .attr_count = 0,
+        };
+        return node.id;
     }
 
     pub fn createText(self: *Builder, value: []const u8) Error!dom.NodeId {
@@ -208,12 +221,11 @@ pub const Builder = struct {
         value: []const u8,
         raw: bool,
     ) Error!dom.NodeId {
-        const id = try self.addNode(.{
-            .kind = .text,
-            .value = try self.dupe(value),
-        });
-        if (raw) self.nodes.items[id].setRawText(true);
-        return id;
+        const owned = try self.dupe(value);
+        const node = try self.addNodeSlot();
+        node.slot.* = .{ .kind = .text, .value = owned };
+        if (raw) node.slot.setRawText(true);
+        return node.id;
     }
 
     /// Append character data to an existing text node, merging adjacent text
@@ -255,10 +267,10 @@ pub const Builder = struct {
         {
             return error.InvalidComment;
         }
-        return self.addNode(.{
-            .kind = .comment,
-            .value = try self.dupe(value),
-        });
+        const owned = try self.dupe(value);
+        const node = try self.addNodeSlot();
+        node.slot.* = .{ .kind = .comment, .value = owned };
+        return node.id;
     }
 
     pub fn createProcessingInstruction(
@@ -273,11 +285,15 @@ pub const Builder = struct {
         if (std.mem.indexOf(u8, data, "?>") != null) {
             return error.InvalidProcessingInstruction;
         }
-        return self.addNode(.{
+        const owned_target = try self.dupe(target);
+        const owned_data = try self.dupe(data);
+        const node = try self.addNodeSlot();
+        node.slot.* = .{
             .kind = .processing_instruction,
-            .name = try self.dupe(target),
-            .value = try self.dupe(data),
-        });
+            .name = owned_target,
+            .value = owned_data,
+        };
+        return node.id;
     }
 
     pub fn appendChild(
@@ -525,23 +541,16 @@ pub const Builder = struct {
         };
     }
 
-    fn addNode(self: *Builder, node: dom.Node) Error!dom.NodeId {
-        const allocator = self.arena.allocator();
+    /// Reserve the next node slot and return it so callers can fill the
+    /// record in place. Building the node directly in the array avoids a
+    /// stack temporary and the store-to-load forwarding stall of copying it.
+    fn addNodeSlot(self: *Builder) Error!struct { id: dom.NodeId, slot: *dom.Node } {
         if (self.nodes.items.len >= std.math.maxInt(u32)) {
             return error.OutOfMemory;
         }
         const id: dom.NodeId = @intCast(self.nodes.items.len);
-        var value = node;
-        if (value.kind == .element) {
-            value.attr_start = @intCast(self.attributes.items.len);
-            value.attr_count = 0;
-        }
-        if (self.nodes.items.len < self.nodes.capacity) {
-            self.nodes.appendAssumeCapacity(value);
-        } else {
-            try self.nodes.append(allocator, value);
-        }
-        return id;
+        const slot = try self.nodes.addOne(self.arena.allocator());
+        return .{ .id = id, .slot = slot };
     }
 
     const slab_size = 4096;
