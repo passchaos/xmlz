@@ -374,11 +374,39 @@ const StructuralTest = union(enum) {
     processing_instruction: ?[]const u8,
 };
 
+/// A step predicate compiled into a cheap node test when possible.
+const StepPredicate = union(enum) {
+    /// General XPath expression evaluated with the node as context.
+    expression: *const xpath_ast.Expr,
+    attribute_exists: NamePattern,
+    attribute_absent: NamePattern,
+    attribute_equals: AttributeValueTest,
+    attribute_not_equals: AttributeValueTest,
+    child_exists: NamePattern,
+    child_absent: NamePattern,
+    position_compare: PositionCompare,
+};
+
+const AttributeValueTest = struct {
+    name: NamePattern,
+    value: []const u8,
+};
+
+const PositionCompare = struct {
+    op: xpath_ast.Op,
+    operand: PositionOperand,
+};
+
+const PositionOperand = union(enum) {
+    number: f64,
+    last,
+};
+
 const StructuralStep = struct {
     axis: xpath_ast.Axis,
     node_test: StructuralTest,
     /// Single predicate evaluated against the node matched by this step.
-    predicate: ?*const xpath_ast.Expr = null,
+    predicate: ?StepPredicate = null,
 };
 
 /// A match pattern compiled into chains of child/attribute steps, one per
@@ -2899,12 +2927,11 @@ const Runtime = struct {
         // The context chain is checked before the predicate so patterns like
         // `footnote/para[1]` only evaluate the predicate on real candidates.
         if (step.predicate) |predicate| {
-            const bounds = self.childStepBounds(
-                parent,
-                step.node_test,
-                node.node,
-            );
-            if (!try self.patternPredicateMatches(
+            const bounds: StepBounds = if (predicateUsesPosition(predicate))
+                self.childStepBounds(parent, step.node_test, node.node)
+            else
+                .{ .position = 1, .size = 1 };
+            if (!try self.stepPredicateMatches(
                 pattern,
                 predicate,
                 node,
@@ -2981,6 +3008,122 @@ const Runtime = struct {
         }
         if (position != 0) bounds = .{ .position = position, .size = size };
         return bounds;
+    }
+
+    /// Whether a predicate needs the step position, which is only computed
+    /// for the predicates that can observe it.
+    fn predicateUsesPosition(predicate: StepPredicate) bool {
+        return switch (predicate) {
+            .position_compare, .expression => true,
+            else => false,
+        };
+    }
+
+    /// Match a compiled step predicate against a candidate node.
+    fn stepPredicateMatches(
+        self: *Runtime,
+        pattern: StructuralPattern,
+        predicate: StepPredicate,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+    ) Error!bool {
+        switch (predicate) {
+            .attribute_exists => |name| {
+                return self.predicateAttribute(node, name) != null;
+            },
+            .attribute_absent => |name| {
+                return self.predicateAttribute(node, name) == null;
+            },
+            .attribute_equals => |check| {
+                const value = self.predicateAttribute(node, check.name) orelse
+                    return false;
+                return std.mem.eql(u8, value, check.value);
+            },
+            .attribute_not_equals => |check| {
+                const value = self.predicateAttribute(node, check.name) orelse
+                    return false;
+                return !std.mem.eql(u8, value, check.value);
+            },
+            .child_exists => |name| return self.predicateChild(node, name),
+            .child_absent => |name| return !self.predicateChild(node, name),
+            .position_compare => |compare| {
+                const lhs: f64 = @floatFromInt(position);
+                const rhs: f64 = switch (compare.operand) {
+                    .number => |value| value,
+                    .last => @floatFromInt(size),
+                };
+                return switch (compare.op) {
+                    .eq => lhs == rhs,
+                    .ne => lhs != rhs,
+                    .lt => lhs < rhs,
+                    .le => lhs <= rhs,
+                    .gt => lhs > rhs,
+                    .ge => lhs >= rhs,
+                    else => false,
+                };
+            },
+            .expression => |expression| {
+                return self.patternPredicateMatches(
+                    pattern,
+                    expression,
+                    node,
+                    position,
+                    size,
+                );
+            },
+        }
+    }
+
+    /// Value of the first attribute selected by `name` on an element node.
+    fn predicateAttribute(
+        self: *Runtime,
+        node: xpath.NodeRef,
+        name: NamePattern,
+    ) ?[]const u8 {
+        const id = switch (node) {
+            .node => |value| value,
+            else => return null,
+        };
+        if (self.source.node(id).kind != .element) return null;
+        for (self.source.attributesOf(id)) |attribute| {
+            if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+                continue;
+            }
+            if (name.check_namespace and
+                !std.mem.eql(u8, attribute.ns, name.uri)) continue;
+            if (name.local) |local| {
+                if (!std.mem.eql(u8, attribute.localName(), local)) continue;
+            }
+            return attribute.value;
+        }
+        return null;
+    }
+
+    /// Whether an element node has a child selected by `name`.
+    fn predicateChild(
+        self: *Runtime,
+        node: xpath.NodeRef,
+        name: NamePattern,
+    ) bool {
+        const id = switch (node) {
+            .node => |value| value,
+            else => return false,
+        };
+        const value = self.source.node(id);
+        if (value.kind != .element) return false;
+        var child = value.first_child;
+        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+            const child_value = self.source.node(child);
+            if (child_value.kind != .element) continue;
+            if (name.check_namespace and
+                !std.mem.eql(u8, child_value.ns, name.uri)) continue;
+            if (name.local) |local| {
+                if (!std.mem.eql(u8, child_value.local, local)) continue;
+            }
+            return true;
+        }
+        return false;
     }
 
     /// Evaluate a step predicate against `node`, converted to a boolean with
@@ -5446,8 +5589,8 @@ fn appendStructuralAlternative(
                 // Positional and other predicates are evaluated per candidate
                 // node; only a single predicate per step is supported.
                 if (step.predicates.len > 1) return false;
-                const predicate: ?*const xpath_ast.Expr = if (step.predicates.len == 1)
-                    step.predicates[0]
+                const predicate: ?StepPredicate = if (step.predicates.len == 1)
+                    compileStepPredicate(step.predicates[0], namespaces)
                 else
                     null;
                 switch (step.axis) {
@@ -5485,13 +5628,16 @@ fn appendStructuralAlternative(
                         .processing_instruction = target,
                     },
                 };
-                if (predicate != null) {
-                    // Predicates are only checked for concrete name tests;
-                    // wildcard-anchored predicates would be evaluated for
-                    // every element of the document and stay eager.
-                    switch (structural_test) {
-                        .name => |name| if (name.local == null) return false,
-                        else => return false,
+                if (predicate) |value| {
+                    // A general expression would run for every element of the
+                    // document when the anchor is a wildcard, so those stay on
+                    // the eager path. Compiled predicates are cheap enough.
+                    switch (value) {
+                        .expression => switch (structural_test) {
+                            .name => |name| if (name.local == null) return false,
+                            else => return false,
+                        },
+                        else => {},
                     }
                 }
                 steps[index] = .{
@@ -5515,6 +5661,173 @@ fn appendStructuralAlternative(
         },
         else => return false,
     }
+}
+
+/// Compile a step predicate into a cheap node test when its shape is known;
+/// anything else keeps the general expression evaluator.
+fn compileStepPredicate(
+    expression: *const xpath_ast.Expr,
+    namespaces: []const namespace.Binding,
+) StepPredicate {
+    switch (expression.*) {
+        .number => |value| {
+            if (value >= 1 and value <= 1_000_000_000 and
+                value == @trunc(value))
+            {
+                return .{ .position_compare = .{
+                    .op = .eq,
+                    .operand = .{ .number = value },
+                } };
+            }
+        },
+        .path => |path| {
+            if (!path.absolute and path.start == null and
+                path.steps.len == 1 and path.steps[0].predicates.len == 0)
+            {
+                const step = path.steps[0];
+                if (predicateNamePattern(step, namespaces)) |name| {
+                    switch (step.axis) {
+                        .attribute => return .{ .attribute_exists = name },
+                        .child => return .{ .child_exists = name },
+                        else => {},
+                    }
+                }
+            }
+        },
+        .binary => |binary| {
+            switch (binary.op) {
+                .eq, .ne => {
+                    if (attributeValueTest(binary, namespaces)) |check| {
+                        return if (binary.op == .eq)
+                            .{ .attribute_equals = check }
+                        else
+                            .{ .attribute_not_equals = check };
+                    }
+                    if (positionCompare(binary)) |compare| {
+                        return .{ .position_compare = compare };
+                    }
+                },
+                .lt, .le, .gt, .ge => {
+                    if (positionCompare(binary)) |compare| {
+                        return .{ .position_compare = compare };
+                    }
+                },
+                else => {},
+            }
+        },
+        .function_call => |call| {
+            if (std.mem.eql(u8, call.name, "not") and call.args.len == 1) {
+                return switch (compileStepPredicate(
+                    call.args[0],
+                    namespaces,
+                )) {
+                    .attribute_exists => |name| .{ .attribute_absent = name },
+                    .child_exists => |name| .{ .child_absent = name },
+                    else => .{ .expression = expression },
+                };
+            }
+        },
+        else => {},
+    }
+    return .{ .expression = expression };
+}
+
+/// Name test of a single child or attribute step, if it is a plain name.
+fn predicateNamePattern(
+    step: xpath_ast.Step,
+    namespaces: []const namespace.Binding,
+) ?NamePattern {
+    const name_test = switch (step.node_test) {
+        .name => |value| value,
+        else => return null,
+    };
+    var uri: []const u8 = "";
+    if (name_test.prefix) |prefix| {
+        uri = resolvePrefix(namespaces, prefix) orelse return null;
+    }
+    return .{
+        .uri = uri,
+        .local = name_test.local,
+        .check_namespace = name_test.prefix != null or name_test.local != null,
+    };
+}
+
+/// `@name` operand of a predicate, if the expression is exactly that.
+fn predicateAttributeOperand(
+    expression: *const xpath_ast.Expr,
+    namespaces: []const namespace.Binding,
+) ?NamePattern {
+    const path = switch (expression.*) {
+        .path => |value| value,
+        else => return null,
+    };
+    if (path.absolute or path.start != null or path.steps.len != 1) return null;
+    const step = path.steps[0];
+    if (step.axis != .attribute or step.predicates.len != 0) return null;
+    return predicateNamePattern(step, namespaces);
+}
+
+/// `@name = 'value'` / `@name != 'value'`, in either operand order.
+fn attributeValueTest(
+    binary: xpath_ast.Binary,
+    namespaces: []const namespace.Binding,
+) ?AttributeValueTest {
+    if (predicateAttributeOperand(binary.lhs, namespaces)) |name| {
+        if (name.local != null and binary.rhs.* == .literal) {
+            return .{ .name = name, .value = binary.rhs.literal };
+        }
+    }
+    if (predicateAttributeOperand(binary.rhs, namespaces)) |name| {
+        if (name.local != null and binary.lhs.* == .literal) {
+            return .{ .name = name, .value = binary.lhs.literal };
+        }
+    }
+    return null;
+}
+
+/// `position()` compared with a number or `last()`.
+fn positionCompare(binary: xpath_ast.Binary) ?PositionCompare {
+    if (isPositionCall(binary.lhs)) {
+        if (isPositionCall(binary.rhs)) return null;
+        const operand = positionOperand(binary.rhs) orelse return null;
+        return .{ .op = binary.op, .operand = operand };
+    }
+    if (isPositionCall(binary.rhs)) {
+        const operand = positionOperand(binary.lhs) orelse return null;
+        return .{ .op = flipCompare(binary.op), .operand = operand };
+    }
+    return null;
+}
+
+fn isPositionCall(expression: *const xpath_ast.Expr) bool {
+    const call = switch (expression.*) {
+        .function_call => |value| value,
+        else => return false,
+    };
+    return call.args.len == 0 and std.mem.eql(u8, call.name, "position");
+}
+
+fn positionOperand(expression: *const xpath_ast.Expr) ?PositionOperand {
+    switch (expression.*) {
+        .number => |value| return .{ .number = value },
+        .function_call => |call| {
+            if (call.args.len == 0 and std.mem.eql(u8, call.name, "last")) {
+                return .last;
+            }
+        },
+        else => {},
+    }
+    return null;
+}
+
+fn flipCompare(op: xpath_ast.Op) xpath_ast.Op {
+    return switch (op) {
+        .lt => .gt,
+        .le => .ge,
+        .gt => .lt,
+        .ge => .le,
+        else => op,
+    };
 }
 
 /// Rule precedence: later imports lose, lower priority loses, and the later
