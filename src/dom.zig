@@ -837,11 +837,18 @@ const Builder = struct {
         // vector scanner's setup.
         var plain = mode == .verbatim and !self.parser.options.trusted;
         if (plain) {
-            for (decoded) |byte| {
-                if (byte == '>') {
-                    plain = false;
-                    break;
+            // Short spans dominate in markup, where the scalar test beats
+            // the vector scanner's setup; long text runs (prose, CJK) use
+            // the vectorized search.
+            if (decoded.len < 32) {
+                for (decoded) |byte| {
+                    if (byte == '>') {
+                        plain = false;
+                        break;
+                    }
                 }
+            } else {
+                plain = std.mem.indexOfScalar(u8, decoded, '>') == null;
             }
         }
         _ = try self.addChildNode(parent, .{
