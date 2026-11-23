@@ -236,7 +236,7 @@ pub const Builder = struct {
     /// Create an element from an already-validated qualified name and its
     /// colon offset, such as when copying a parsed tree. The name is copied
     /// once instead of assembling prefix and local parts.
-    pub fn createElementRaw(
+    pub inline fn createElementRaw(
         self: *Builder,
         raw_name: []const u8,
         colon: u16,
@@ -264,7 +264,7 @@ pub const Builder = struct {
         return self.createTextNode(value, true);
     }
 
-    fn createTextNode(
+    inline fn createTextNode(
         self: *Builder,
         value: []const u8,
         raw: bool,
