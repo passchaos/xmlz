@@ -115,6 +115,7 @@ pub fn writeDocument(
             options.indent != null,
             version,
             "",
+            doc.chars_validated,
         );
         // libxslt separates top-level comments that have a following node
         // when indenting; elements are not separated.
@@ -179,12 +180,15 @@ fn writeCdata(
     writer: *std.Io.Writer,
     text: []const u8,
     version: chars.Version,
+    validated: bool,
 ) Error!void {
-    if (chars.findInvalidLiteralCharVersion(text, version)) |_| {
-        if (version == .xml_1_0) return error.InvalidCharacter;
-        // Restricted characters cannot appear literally inside a CDATA
-        // section, so fall back to escaped character data.
-        return escapeTextVersion(writer, text, true, version);
+    if (!(validated and version == .xml_1_0)) {
+        if (chars.findInvalidLiteralCharVersion(text, version)) |_| {
+            if (version == .xml_1_0) return error.InvalidCharacter;
+            // Restricted characters cannot appear literally inside a CDATA
+            // section, so fall back to escaped character data.
+            return escapeTextVersion(writer, text, true, version);
+        }
     }
     try writer.writeAll("<![CDATA[");
     var index: usize = 0;
@@ -206,6 +210,7 @@ fn writeNode(
     pretty: bool,
     version: chars.Version,
     default_ns: []const u8,
+    validated: bool,
 ) Error!void {
     const node = doc.node(id);
     switch (node.kind) {
@@ -218,26 +223,28 @@ fn writeNode(
             pretty,
             version,
             default_ns,
+            validated,
         ),
         .text => {
             if (node.raw_text) {
                 try writer.writeAll(node.value);
             } else {
-                try escapeTextVersion(
+                try escapeTextVersionChecked(
                     writer,
                     node.value,
                     options.escape_gt,
                     version,
+                    validated,
                 );
             }
         },
         .comment => {
             if (pretty) try writeIndent(writer, depth, options.indent.?);
-            try writeComment(writer, node.value);
+            try writeComment(writer, node.value, validated);
         },
         .processing_instruction => {
             if (pretty) try writeIndent(writer, depth, options.indent.?);
-            try writePi(writer, node.name, node.value);
+            try writePi(writer, node.name, node.value, validated);
         },
         .document => unreachable,
     }
@@ -298,6 +305,7 @@ fn writeStartTag(
     default_ns: []const u8,
     needs_synth_ns: bool,
     empty: bool,
+    validated: bool,
 ) Error!void {
     const attrs = doc.attributesOf(id);
     // XHTML serialization gives a plain <html> root the XHTML namespace
@@ -317,7 +325,10 @@ fn writeStartTag(
             var direct = true;
             if (needs_synth_ns) {
                 if ((shortPlainAttribute(node.ns) or
-                    try scanAttribute(node.ns, 0) == node.ns.len) and
+                    (if (validated)
+                        try scanAttributeTrusted(node.ns, 0)
+                    else
+                        try scanAttribute(node.ns, 0)) == node.ns.len) and
                     used + " xmlns=\"".len + node.ns.len + 1 <= out.len)
                 {
                     @memcpy(out[used..][0.." xmlns=\"".len], " xmlns=\"");
@@ -336,7 +347,11 @@ fn writeStartTag(
                     const attr = attrs[index];
                     if (shouldSkipAttribute(doc, id, attr, default_ns)) continue;
                     if (!shortPlainAttribute(attr.value) and
-                        try scanAttribute(attr.value, 0) != attr.value.len) break;
+                        (if (validated)
+                            try scanAttributeTrusted(attr.value, 0)
+                        else
+                            try scanAttribute(attr.value, 0)) !=
+                            attr.value.len) break;
                     const needed = 4 + attr.name.len + attr.value.len;
                     if (used + needed > out.len) {
                         writer.advance(used);
@@ -395,7 +410,7 @@ fn writeStartTag(
     try writer.writeAll(node.name);
     if (needs_synth_ns) {
         try writer.writeAll(" xmlns=\"");
-        try escapeAttributeVersion(writer, node.ns, version);
+        try escapeAttributeVersionChecked(writer, node.ns, version, validated);
         try writer.writeByte('"');
     }
     if (xhtml_ns) {
@@ -406,7 +421,7 @@ fn writeStartTag(
         try writer.writeByte(' ');
         try writer.writeAll(attr.name);
         try writer.writeAll("=\"");
-        try escapeAttributeVersion(writer, attr.value, version);
+        try escapeAttributeVersionChecked(writer, attr.value, version, validated);
         try writer.writeByte('"');
     }
     try writer.writeAll(if (empty) "/>" else ">");
@@ -421,6 +436,7 @@ fn writeElement(
     pretty: bool,
     version: chars.Version,
     default_ns: []const u8,
+    validated: bool,
 ) Error!void {
     const node = doc.node(id);
     if (pretty) try writeIndent(writer, depth, options.indent.?);
@@ -453,6 +469,7 @@ fn writeElement(
         default_ns,
         needs_synth_ns,
         empty,
+        validated,
     );
     if (empty) return;
 
@@ -505,7 +522,7 @@ fn writeElement(
         const child_cdata = cdata and child_node.kind == .text and
             !child_node.raw_text;
         if (child_cdata) {
-            try writeCdata(writer, child_node.value, version);
+            try writeCdata(writer, child_node.value, version, validated);
         } else {
             try writeNode(
                 writer,
@@ -516,6 +533,7 @@ fn writeElement(
                 format,
                 version,
                 child_default,
+                validated,
             );
         }
         if (format) try writer.writeByte('\n');
@@ -591,9 +609,14 @@ fn writeIndent(writer: *std.Io.Writer, depth: usize, unit: []const u8) Error!voi
     for (0..depth) |_| try writer.writeAll(unit);
 }
 
-fn writeComment(writer: *std.Io.Writer, value: []const u8) Error!void {
-    if (std.mem.indexOf(u8, value, "--") != null or
-        (value.len != 0 and value[value.len - 1] == '-'))
+fn writeComment(
+    writer: *std.Io.Writer,
+    value: []const u8,
+    validated: bool,
+) Error!void {
+    if (!validated and
+        (std.mem.indexOf(u8, value, "--") != null or
+            (value.len != 0 and value[value.len - 1] == '-')))
     {
         return error.InvalidComment;
     }
@@ -602,13 +625,20 @@ fn writeComment(writer: *std.Io.Writer, value: []const u8) Error!void {
     try writer.writeAll("-->");
 }
 
-fn writePi(writer: *std.Io.Writer, target: []const u8, data: []const u8) Error!void {
-    chars.validateName(target) catch return error.InvalidName;
-    if (std.ascii.eqlIgnoreCase(target, "xml")) {
-        return error.InvalidProcessingInstruction;
-    }
-    if (std.mem.indexOf(u8, data, "?>") != null) {
-        return error.InvalidProcessingInstruction;
+fn writePi(
+    writer: *std.Io.Writer,
+    target: []const u8,
+    data: []const u8,
+    validated: bool,
+) Error!void {
+    if (!validated) {
+        chars.validateName(target) catch return error.InvalidName;
+        if (std.ascii.eqlIgnoreCase(target, "xml")) {
+            return error.InvalidProcessingInstruction;
+        }
+        if (std.mem.indexOf(u8, data, "?>") != null) {
+            return error.InvalidProcessingInstruction;
+        }
     }
     try writer.writeAll("<?");
     try writer.writeAll(target);
@@ -765,6 +795,55 @@ fn scanAttribute(value: []const u8, start: usize) Error!usize {
     return value.len;
 }
 
+/// Character-data scan for trees whose characters were already validated:
+/// bytes at or above 0x80 are plain.
+fn scanTextTrusted(text: []const u8, start: usize, escape_gt: bool) Error!usize {
+    const Vec = @Vector(32, u8);
+    const ctrl: Vec = @splat(0x20);
+    const tab: Vec = @splat('\t');
+    const lf: Vec = @splat('\n');
+    const amp: Vec = @splat('&');
+    const lt: Vec = @splat('<');
+    const gt: Vec = @splat('>');
+    var index = start;
+    while (index + 32 <= text.len) : (index += 32) {
+        const chunk: Vec = text[index..][0..32].*;
+        var mask: u32 = @bitCast(chunk < ctrl);
+        mask &= ~@as(u32, @bitCast((chunk == tab) | (chunk == lf)));
+        mask |= @bitCast((chunk == amp) | (chunk == lt));
+        if (escape_gt) mask |= @bitCast(chunk == gt);
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < text.len) : (index += 1) {
+        const byte = text[index];
+        if (text_special_table[byte]) {
+            if (byte == '>' and !escape_gt) continue;
+            return index;
+        }
+    }
+    return text.len;
+}
+
+/// Attribute-value scan for trees whose characters were already validated.
+fn scanAttributeTrusted(value: []const u8, start: usize) Error!usize {
+    const Vec = @Vector(32, u8);
+    const ctrl: Vec = @splat(0x20);
+    const amp: Vec = @splat('&');
+    const lt: Vec = @splat('<');
+    const quote: Vec = @splat('"');
+    var index = start;
+    while (index + 32 <= value.len) : (index += 32) {
+        const chunk: Vec = value[index..][0..32].*;
+        var mask: u32 = @bitCast(chunk < ctrl);
+        mask |= @bitCast((chunk == amp) | (chunk == lt) | (chunk == quote));
+        if (mask != 0) return index + @ctz(mask);
+    }
+    while (index < value.len) : (index += 1) {
+        if (attribute_special_table[value[index]]) return index;
+    }
+    return value.len;
+}
+
 /// Escape XML 1.0 character data.
 pub fn escapeText(
     writer: *std.Io.Writer,
@@ -781,6 +860,19 @@ pub fn escapeTextVersion(
     escape_gt: bool,
     version: chars.Version,
 ) Error!void {
+    return escapeTextVersionChecked(writer, text, escape_gt, version, false);
+}
+
+/// Escape character data. When `validated` is set the caller guarantees that
+/// every byte was already checked against the XML character rules, so
+/// non-ASCII runs are copied instead of validated.
+fn escapeTextVersionChecked(
+    writer: *std.Io.Writer,
+    text: []const u8,
+    escape_gt: bool,
+    version: chars.Version,
+    validated: bool,
+) Error!void {
     if (version == .xml_1_0) {
         if (shortPlainText(text, escape_gt)) {
             try writer.writeAll(text);
@@ -788,7 +880,10 @@ pub fn escapeTextVersion(
         }
         var fast: usize = 0;
         while (fast < text.len) {
-            const special = try scanText(text, fast, escape_gt);
+            const special = if (validated)
+                try scanTextTrusted(text, fast, escape_gt)
+            else
+                try scanText(text, fast, escape_gt);
             if (special > fast) try writer.writeAll(text[fast..special]);
             if (special >= text.len) break;
             switch (text[special]) {
@@ -872,6 +967,17 @@ pub fn escapeAttributeVersion(
     value: []const u8,
     version: chars.Version,
 ) Error!void {
+    return escapeAttributeVersionChecked(writer, value, version, false);
+}
+
+/// Escape an attribute value. When `validated` is set the caller guarantees
+/// that every byte was already checked against the XML character rules.
+fn escapeAttributeVersionChecked(
+    writer: *std.Io.Writer,
+    value: []const u8,
+    version: chars.Version,
+    validated: bool,
+) Error!void {
     if (version == .xml_1_0) {
         if (shortPlainAttribute(value)) {
             try writer.writeAll(value);
@@ -879,7 +985,10 @@ pub fn escapeAttributeVersion(
         }
         var fast: usize = 0;
         while (fast < value.len) {
-            const special = try scanAttribute(value, fast);
+            const special = if (validated)
+                try scanAttributeTrusted(value, fast)
+            else
+                try scanAttribute(value, fast);
             if (special > fast) try writer.writeAll(value[fast..special]);
             if (special >= value.len) break;
             switch (value[special]) {
@@ -1041,15 +1150,15 @@ test "writer rejects invalid comment and PI payloads" {
     defer allocating.deinit();
     try testing.expectError(
         error.InvalidComment,
-        writeComment(&allocating.writer, "bad -- comment"),
+        writeComment(&allocating.writer, "bad -- comment", false),
     );
     try testing.expectError(
         error.InvalidProcessingInstruction,
-        writePi(&allocating.writer, "pi", "bad ?> data"),
+        writePi(&allocating.writer, "pi", "bad ?> data", false),
     );
     try testing.expectError(
         error.InvalidProcessingInstruction,
-        writePi(&allocating.writer, "xml", "data"),
+        writePi(&allocating.writer, "xml", "data", false),
     );
 }
 

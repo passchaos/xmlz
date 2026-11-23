@@ -96,6 +96,9 @@ pub const Document = struct {
     /// DTD view from the parser. Slices borrow the parser's input/scratch
     /// storage, which the DOM keeps alive for the document lifetime.
     dtd: ?parser_mod.Dtd = null,
+    /// True when every character in the tree was validated while parsing, so
+    /// serializers can skip their own character checks.
+    chars_validated: bool = false,
 
     pub fn parse(
         allocator: std.mem.Allocator,
@@ -120,6 +123,7 @@ pub const Document = struct {
             .declaration = builder.declaration,
             .doctype = builder.doctype,
             .dtd = builder.parser.dtd(),
+            .chars_validated = !effective.parser.trusted,
         };
     }
 
@@ -150,6 +154,7 @@ pub const Document = struct {
             .declaration = builder.declaration,
             .doctype = builder.doctype,
             .dtd = builder.parser.dtd(),
+            .chars_validated = !effective.parser.trusted,
         };
     }
 
