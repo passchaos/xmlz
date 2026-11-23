@@ -966,6 +966,18 @@ fn escapeTextVersionChecked(
             try writer.writeAll(text);
             return;
         }
+        // Entity expansion often leaves a one-byte text node (the decoded
+        // `&`), which would otherwise run the full scan loop.
+        if (text.len == 1) {
+            switch (text[0]) {
+                '&' => try writer.writeAll("&amp;"),
+                '<' => try writer.writeAll("&lt;"),
+                '>' => try writer.writeAll(if (escape_gt) "&gt;" else ">"),
+                '\r' => try writer.writeAll("&#13;"),
+                else => try writer.writeAll(text),
+            }
+            return;
+        }
         var fast: usize = 0;
         while (fast < text.len) {
             const special = if (validated)
