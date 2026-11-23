@@ -7,6 +7,7 @@ const std = @import("std");
 const small_bytes = @import("bytes.zig");
 const chars = @import("chars.zig");
 const dom = @import("dom.zig");
+const name_match = @import("names.zig");
 const namespace = @import("namespace.zig");
 const parser_mod = @import("parser.zig");
 
@@ -19,6 +20,12 @@ pub const Error = error{
     InvalidProcessingInstruction,
     AlreadyFinished,
 };
+
+/// Compare attribute names through the short-name comparator without growing
+/// the duplicate scan in the attribute setters.
+noinline fn attributeNameEqual(a: []const u8, b: []const u8) bool {
+    return name_match.equal(a, b);
+}
 
 pub const Builder = struct {
     arena: std.heap.ArenaAllocator,
@@ -479,7 +486,7 @@ pub const Builder = struct {
         const start = node.attr_start;
         const count = node.attr_count;
         for (self.attributes.items[start..][0..count]) |*attribute| {
-            if (std.mem.eql(u8, attribute.name, owned_name)) {
+            if (attributeNameEqual(attribute.name, owned_name)) {
                 attribute.value = try self.dupe(value);
                 if (is_ns_decl) node.setNsDecls(true);
                 return;
@@ -543,7 +550,7 @@ pub const Builder = struct {
         const start = node.attr_start;
         const count = node.attr_count;
         for (self.attributes.items[start..][0..count]) |*attribute| {
-            if (std.mem.eql(u8, attribute.name, owned_name)) {
+            if (attributeNameEqual(attribute.name, owned_name)) {
                 attribute.value = try self.dupe(value);
                 if (is_ns_decl) node.setNsDecls(true);
                 return;
