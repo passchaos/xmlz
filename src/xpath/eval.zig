@@ -397,23 +397,33 @@ const Evaluator = struct {
         var axis_buffer: std.ArrayList(value.NodeRef) = .empty;
         var matched: std.ArrayList(value.NodeRef) = .empty;
         for (input) |node| {
-            axis_buffer.clearRetainingCapacity();
-            try self.appendAxisNodes(
+            matched.clearRetainingCapacity();
+            // Child, attribute, and self steps are tested while walking the
+            // axis, so no intermediate axis list is needed.
+            if (!try self.appendSingleAxis(
                 context,
                 node,
-                step.axis,
-                &axis_buffer,
-            );
-            matched.clearRetainingCapacity();
-            for (axis_buffer.items) |candidate| {
-                if (try self.matchesTest(
+                step,
+                prefix_uri,
+                &matched,
+            )) {
+                axis_buffer.clearRetainingCapacity();
+                try self.appendAxisNodes(
                     context,
-                    candidate,
-                    step.node_test,
+                    node,
                     step.axis,
-                    prefix_uri,
-                )) {
-                    try matched.append(self.allocator, candidate);
+                    &axis_buffer,
+                );
+                for (axis_buffer.items) |candidate| {
+                    if (try self.matchesTest(
+                        context,
+                        candidate,
+                        step.node_test,
+                        step.axis,
+                        prefix_uri,
+                    )) {
+                        try matched.append(self.allocator, candidate);
+                    }
                 }
             }
             const filtered = try self.applyPredicates(
