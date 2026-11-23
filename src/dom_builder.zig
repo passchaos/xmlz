@@ -261,7 +261,15 @@ pub const Builder = struct {
             return error.InvalidTree;
         }
         if (parent == child) return error.InvalidTree;
-        if (self.isAncestor(child, parent)) return error.InvalidTree;
+        // A freshly created child cannot be an ancestor of anything, which is
+        // the common case when building a tree bottom-up.
+        const child_node = self.nodes.items[child];
+        if ((child_node.parent != dom.null_node or
+            child_node.first_child != dom.null_node) and
+            self.isAncestor(child, parent))
+        {
+            return error.InvalidTree;
+        }
         if (!self.allow_multiple_roots and parent == 0 and
             self.nodes.items[child].kind == .element)
         {
@@ -433,7 +441,9 @@ pub const Builder = struct {
             const list = self.attr_lists.items[index];
             node.attr_start = @intCast(flat.items.len);
             node.attr_count = @intCast(list.items.len);
-            try flat.appendSlice(allocator, list.items);
+            if (list.items.len != 0) {
+                try flat.appendSlice(allocator, list.items);
+            }
         }
         self.finished = true;
         return .{
@@ -451,8 +461,15 @@ pub const Builder = struct {
             return error.OutOfMemory;
         }
         const id: dom.NodeId = @intCast(self.nodes.items.len);
-        try self.nodes.append(allocator, node);
-        try self.attr_lists.append(allocator, .empty);
+        if (self.nodes.items.len < self.nodes.capacity and
+            self.attr_lists.items.len < self.attr_lists.capacity)
+        {
+            self.nodes.appendAssumeCapacity(node);
+            self.attr_lists.appendAssumeCapacity(.empty);
+        } else {
+            try self.nodes.append(allocator, node);
+            try self.attr_lists.append(allocator, .empty);
+        }
         return id;
     }
 

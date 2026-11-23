@@ -932,6 +932,9 @@ const Runtime = struct {
     /// Documents whose template matches have been indexed, keyed by the
     /// merged document-root node id.
     built_match_roots: std.AutoHashMapUnmanaged(usize, void) = .empty,
+    /// True once the main source document's non-simple match patterns have
+    /// been indexed. Loaded documents use `built_match_roots`.
+    source_matches_built: bool = false,
     /// Documents whose keys have been indexed, keyed by root node id.
     built_key_roots: std.AutoHashMapUnmanaged(usize, void) = .empty,
     /// Indexed `id()` values per document: token -> element node ids.
@@ -1777,8 +1780,13 @@ const Runtime = struct {
     /// stylesheet, and only for documents that are actually transformed.
     fn ensureDocumentMatches(self: *Runtime, node: xpath.NodeRef) Error!void {
         const root: usize = @intCast(self.documentRange(node).start);
-        if (self.built_match_roots.contains(root)) return;
-        try self.built_match_roots.put(self.allocator, root, {});
+        if (root == 0) {
+            if (self.source_matches_built) return;
+            self.source_matches_built = true;
+        } else {
+            if (self.built_match_roots.contains(root)) return;
+            try self.built_match_roots.put(self.allocator, root, {});
+        }
         const root_ref: xpath.NodeRef = .{ .node = @intCast(root) };
         for (self.template_states, 0..) |state, index| {
             if (state.matcher != null) continue;
@@ -2631,7 +2639,13 @@ const Runtime = struct {
         mode: ?[]const u8,
         maximum_precedence: usize,
     ) Error!?*const compile.Template {
-        try self.ensureDocumentMatches(node);
+        // The source document is indexed before the first template lookup;
+        // only nodes from lazily loaded documents need the range check.
+        if (!self.source_matches_built or
+            refNodeId(node) >= self.source_node_count)
+        {
+            try self.ensureDocumentMatches(node);
+        }
         var best: ?*const compile.Template = null;
         if (self.template_index.nodes.get(nodeKey(node))) |candidates| {
             for (candidates.items) |index| {
@@ -4800,6 +4814,17 @@ const Runtime = struct {
                 break :blk switch (node_value.kind) {
                     .text, .comment, .processing_instruction => node_value.value,
                     .element, .document => {
+                        // The string value of an element with no children is
+                        // empty, and with a single text child it is exactly
+                        // that child's value, which the source already owns.
+                        const first = node_value.first_child;
+                        if (first == dom.null_node) break :blk "";
+                        const first_node = self.source.node(first);
+                        if (first_node.kind == .text and
+                            first_node.next_sibling == dom.null_node)
+                        {
+                            break :blk first_node.value;
+                        }
                         var out: std.ArrayList(u8) = .empty;
                         try self.appendDescendantText(id, &out);
                         break :blk try out.toOwnedSlice(self.allocator);
