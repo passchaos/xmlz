@@ -405,7 +405,7 @@ pub fn scanNmtoken(bytes: []const u8) usize {
 /// Validate a run of literal character data. For XML 1.1 this rejects
 /// restricted characters, which are only permitted through character
 /// references.
-pub fn findInvalidLiteralCharVersion(
+pub inline fn findInvalidLiteralCharVersion(
     bytes: []const u8,
     version: Version,
 ) ?usize {

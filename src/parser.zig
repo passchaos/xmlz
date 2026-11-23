@@ -435,7 +435,7 @@ pub const Parser = struct {
         return self.xml_version;
     }
 
-    fn findInvalidLiteral(self: *const Parser, bytes: []const u8) ?usize {
+    inline fn findInvalidLiteral(self: *const Parser, bytes: []const u8) ?usize {
         return chars.findInvalidLiteralCharVersion(bytes, self.xml_version);
     }
 
@@ -682,9 +682,19 @@ pub const Parser = struct {
         var attr_count: usize = 0;
         var self_closing = false;
         var has_namespace_decls = false;
+        var has_prefixed = false;
         while (true) {
             const before_whitespace = pos;
-            pos = skipWhitespaceAt(input, pos);
+            // A single space separates attributes in normal markup; only fall
+            // back to the general loop when another whitespace byte follows.
+            if (pos < input.len and input[pos] == ' ') {
+                pos += 1;
+                if (pos < input.len and chars.isWhitespace(input[pos])) {
+                    pos = skipWhitespaceAt(input, pos);
+                }
+            } else {
+                pos = skipWhitespaceAt(input, pos);
+            }
             if (pos >= input.len) {
                 self.pos = pos;
                 return self.fail(error.UnexpectedEndOfInput, pos);
@@ -724,11 +734,13 @@ pub const Parser = struct {
                 pos = try self.scanAttributeInto(&self.attrs[attr_count], pos);
             }
             const attr = &self.attrs[attr_count];
-            if (self.options.namespaces and
-                namespace.Resolver.isNamespaceDeclaration(attr.name))
-            {
-                has_namespace_decls = true;
-                attr.namespace_uri = namespace.xmlns_uri;
+            if (self.options.namespaces) {
+                if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                    has_namespace_decls = true;
+                    attr.namespace_uri = namespace.xmlns_uri;
+                } else if (attr.colon != 0xFFFF) {
+                    has_prefixed = true;
+                }
             }
             if (!self.options.trusted) {
                 for (self.attrs[0..attr_count]) |existing| {
@@ -748,16 +760,25 @@ pub const Parser = struct {
         self.pos = pos;
 
         const scanned_attr_count = attr_count;
-        try self.applyAttributeDefaults(name, &attr_count);
+        if (self.attribute_defaults != null or
+            self.fixed_attribute_count != 0)
+        {
+            try self.applyAttributeDefaults(name, &attr_count);
+        }
         if (self.tokenized_attr_count != 0) {
             for (self.attrs[0..attr_count]) |*attr| {
                 attr.tokenized = self.isTokenizedAttribute(name, attr.name);
             }
         }
-        // DTD defaults may introduce namespace declarations. Their
-        // namespace URI is resolved while the default is applied.
+        // DTD defaults may introduce namespace declarations or prefixed
+        // attributes. Their namespace URI is resolved while the default is
+        // applied.
         for (self.attrs[scanned_attr_count..attr_count]) |attr| {
-            if (attr.namespace_uri.len != 0) has_namespace_decls = true;
+            if (attr.namespace_uri.len != 0) {
+                has_namespace_decls = true;
+            } else if (attr.colon != 0xFFFF) {
+                has_prefixed = true;
+            }
         }
 
         var element_namespace: []const u8 = "";
@@ -767,6 +788,7 @@ pub const Parser = struct {
                 name_info.colon,
                 attr_count,
                 has_namespace_decls,
+                has_prefixed,
             );
         }
 
@@ -818,6 +840,7 @@ pub const Parser = struct {
         colon: u16,
         attr_count: usize,
         has_namespace_decls: bool,
+        has_prefixed: bool,
     ) Error![]const u8 {
         var element_namespace: []const u8 = "";
         if (has_namespace_decls) {
@@ -881,22 +904,24 @@ pub const Parser = struct {
         var prefixed: [small_prefixed]namespace.ResolvedName = undefined;
         var prefixed_count: usize = 0;
         var prefixed_overflow = false;
-        for (self.attrs[0..attr_count]) |*attr| {
-            if (attr.namespace_uri.len != 0) continue; // xmlns declaration
-            if (attr.colon == 0xFFFF) continue;
-            const resolved_attr = if (self.options.trusted)
-                self.ns.resolveAttributeNameUncheckedColon(
-                    attr.name,
-                    attr.colon,
-                )
-            else
-                try self.ns.resolveAttributeNameValidated(attr.name);
-            attr.namespace_uri = resolved_attr.uri;
-            if (prefixed_count < small_prefixed) {
-                prefixed[prefixed_count] = resolved_attr;
-                prefixed_count += 1;
-            } else {
-                prefixed_overflow = true;
+        if (has_prefixed) {
+            for (self.attrs[0..attr_count]) |*attr| {
+                if (attr.namespace_uri.len != 0) continue; // xmlns declaration
+                if (attr.colon == 0xFFFF) continue;
+                const resolved_attr = if (self.options.trusted)
+                    self.ns.resolveAttributeNameUncheckedColon(
+                        attr.name,
+                        attr.colon,
+                    )
+                else
+                    try self.ns.resolveAttributeNameValidated(attr.name);
+                attr.namespace_uri = resolved_attr.uri;
+                if (prefixed_count < small_prefixed) {
+                    prefixed[prefixed_count] = resolved_attr;
+                    prefixed_count += 1;
+                } else {
+                    prefixed_overflow = true;
+                }
             }
         }
         if (!self.options.trusted) {
@@ -972,11 +997,21 @@ pub const Parser = struct {
         if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
         const name = input[name_start .. name_start + name_info.len];
 
-        var pos = skipWhitespaceAt(input, name_start + name_info.len);
-        if (pos >= input.len or input[pos] != '=') {
-            return self.fail(error.InvalidStartTag, pos);
+        // Attributes are normally written as `name="value"` with no spaces
+        // around the equals sign, so check that shape before the general
+        // whitespace-skipping path.
+        var pos = name_start + name_info.len;
+        if (pos + 1 < input.len and input[pos] == '=' and
+            (input[pos + 1] == '"' or input[pos + 1] == '\''))
+        {
+            pos += 1;
+        } else {
+            pos = skipWhitespaceAt(input, pos);
+            if (pos >= input.len or input[pos] != '=') {
+                return self.fail(error.InvalidStartTag, pos);
+            }
+            pos = skipWhitespaceAt(input, pos + 1);
         }
-        pos = skipWhitespaceAt(input, pos + 1);
         if (pos >= input.len) {
             return self.fail(error.UnexpectedEndOfInput, pos);
         }
@@ -1099,11 +1134,18 @@ pub const Parser = struct {
         if (name_info.len == 0) return self.fail(error.InvalidName, name_start);
         const name = input[name_start .. name_start + name_info.len];
 
-        var pos = skipSpacesAt(input, name_start + name_info.len);
-        if (pos >= input.len or input[pos] != '=') {
-            return self.fail(error.InvalidStartTag, pos);
+        var pos = name_start + name_info.len;
+        if (pos + 1 < input.len and input[pos] == '=' and
+            (input[pos + 1] == '"' or input[pos + 1] == '\''))
+        {
+            pos += 1;
+        } else {
+            pos = skipSpacesAt(input, pos);
+            if (pos >= input.len or input[pos] != '=') {
+                return self.fail(error.InvalidStartTag, pos);
+            }
+            pos = skipSpacesAt(input, pos + 1);
         }
-        pos = skipSpacesAt(input, pos + 1);
         if (pos >= input.len) {
             return self.fail(error.UnexpectedEndOfInput, pos);
         }
