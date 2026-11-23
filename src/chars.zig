@@ -821,12 +821,13 @@ test "character reference parsing" {
     try std.testing.expect(parseHexCharRef("xD800") == null);
 }
 
-/// Find `needle` in `bytes` starting at `start`. Entity references and text
-/// spans are usually short, so scan the first 32 bytes inline before falling
-/// back to the vectorized search.
+/// Find `needle` in `bytes` starting at `start`. Entity reference names are
+/// short, so scan the first eight bytes inline before falling back to the
+/// vectorized search; longer scalar prefixes lose to the vector path when the
+/// needle sits deep in a text span.
 pub inline fn findByteSoon(bytes: []const u8, start: usize, needle: u8) ?usize {
     var index = start;
-    const limit = @min(bytes.len, start + 32);
+    const limit = @min(bytes.len, start + 8);
     while (index < limit) : (index += 1) {
         if (bytes[index] == needle) return index;
     }
