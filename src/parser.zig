@@ -4340,9 +4340,13 @@ inline fn sameName(a: []const u8, b: []const u8) bool {
 }
 
 fn attributeNameKey(name: []const u8) u32 {
-    // Length and first byte are enough to spread the bloom filter; a
-    // collision only costs one full name comparison.
-    return (@as(u32, @intCast(name.len)) << 8) ^ @as(u32, name[0]);
+    // Length, first, and second byte spread the bloom filter; the second
+    // byte separates common same-length, same-prefix pairs such as
+    // `name`/`note` that would otherwise force a full comparison on every
+    // element. A remaining collision only costs one name comparison.
+    const second: u32 = if (name.len > 1) name[1] else 0;
+    return (@as(u32, @truncate(name.len)) << 16) ^
+        (@as(u32, name[0]) << 8) ^ second;
 }
 
 fn hasWhitespace(value: []const u8) bool {
