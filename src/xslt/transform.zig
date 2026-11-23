@@ -5772,7 +5772,7 @@ const Runtime = struct {
     /// Fast path for a single child name test such as `lastname` in a sort
     /// key, `xsl:value-of`, or an attribute value template: the string value
     /// is the first matching child's text.
-    fn simpleChildString(
+    inline fn simpleChildString(
         self: *Runtime,
         select: compile.CompiledExpr,
         node: xpath.NodeRef,
