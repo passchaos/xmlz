@@ -202,6 +202,15 @@ pub const Resolver = struct {
         {
             return xml_uri;
         }
+        return self.findBinding(prefix);
+    }
+
+    /// Out-of-line binding scan: inlining it into both callers made the
+    /// trusted path twice as slow on deep namespace scopes.
+    noinline fn findBinding(
+        self: *const Resolver,
+        prefix: []const u8,
+    ) ?[]const u8 {
         var index = self.count;
         while (index > 0) {
             index -= 1;
