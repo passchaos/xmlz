@@ -250,13 +250,6 @@ fn writeNode(
     }
 }
 
-inline fn hasColon(name: []const u8) bool {
-    for (name) |byte| {
-        if (byte == ':') return true;
-    }
-    return false;
-}
-
 inline fn isXmlnsAttribute(name: []const u8) bool {
     if (name.len != 5) return false;
     return std.mem.eql(u8, name, "xmlns");
@@ -308,6 +301,9 @@ fn writeStartTag(
     validated: bool,
 ) Error!void {
     const attrs = doc.attributesOf(id);
+    // Only elements that carry namespace declarations need the redundant
+    // binding check; most elements skip it entirely.
+    const skip_decls = node.has_ns_decls;
     // XHTML serialization gives a plain <html> root the XHTML namespace
     // declaration (libxml2's xhtmlNodeDumpOutput behavior).
     const xhtml_ns = options.html_meta_charset != null and node.ns.len == 0 and
@@ -345,7 +341,8 @@ fn writeStartTag(
                 var index: usize = 0;
                 while (index < attrs.len) : (index += 1) {
                     const attr = attrs[index];
-                    if (shouldSkipAttribute(doc, id, attr, default_ns)) continue;
+                    if (skip_decls and
+                        shouldSkipAttribute(doc, id, attr, default_ns)) continue;
                     if (!shortPlainAttribute(attr.value) and
                         (if (validated)
                             try scanAttributeTrusted(attr.value, 0)
@@ -393,7 +390,8 @@ fn writeStartTag(
                 // attribute that could not be written directly.
                 while (index < attrs.len) : (index += 1) {
                     const attr = attrs[index];
-                    if (shouldSkipAttribute(doc, id, attr, default_ns)) continue;
+                    if (skip_decls and
+                        shouldSkipAttribute(doc, id, attr, default_ns)) continue;
                     try writer.writeByte(' ');
                     try writer.writeAll(attr.name);
                     try writer.writeAll("=\"");
@@ -417,7 +415,7 @@ fn writeStartTag(
         try writer.writeAll(" xmlns=\"http://www.w3.org/1999/xhtml\"");
     }
     for (attrs) |attr| {
-        if (shouldSkipAttribute(doc, id, attr, default_ns)) continue;
+        if (skip_decls and shouldSkipAttribute(doc, id, attr, default_ns)) continue;
         try writer.writeByte(' ');
         try writer.writeAll(attr.name);
         try writer.writeAll("=\"");
@@ -441,10 +439,12 @@ fn writeElement(
     const node = doc.node(id);
     if (pretty) try writeIndent(writer, depth, options.indent.?);
 
-    const prefixed = hasColon(node.name);
+    const prefixed = node.local.len != node.name.len;
     var declared_default: ?[]const u8 = null;
-    for (doc.attributesOf(id)) |attr| {
-        if (isXmlnsAttribute(attr.name)) declared_default = attr.value;
+    if (node.has_ns_decls) {
+        for (doc.attributesOf(id)) |attr| {
+            if (isXmlnsAttribute(attr.name)) declared_default = attr.value;
+        }
     }
     // An unprefixed element outside the inherited default namespace needs a
     // binding (or an undeclaration when it is in no namespace).

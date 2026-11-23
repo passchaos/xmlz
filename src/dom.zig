@@ -72,6 +72,9 @@ pub const Node = struct {
     has_whitespace_char_ref_text: bool = false,
     has_nel_ls_text: bool = false,
     has_cdata_text: bool = false,
+    /// The element carries an `xmlns` / `xmlns:prefix` declaration, so
+    /// serializers must inspect its attributes for redundant bindings.
+    has_ns_decls: bool = false,
 };
 
 pub const Options = struct {
@@ -472,6 +475,7 @@ const Builder = struct {
             element.name
         else
             element.name[element.colon + 1 ..];
+        var has_ns_decls = element.has_namespace_decls;
 
         const attr_start: u32 = @intCast(self.attributes.items.len);
         try self.attributes.ensureUnusedCapacity(
@@ -532,6 +536,7 @@ const Builder = struct {
             for (out, element.attrs) |*dst, attr| {
                 if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
                     dst.ns = namespace.xmlns_uri;
+                    has_ns_decls = true;
                 }
             }
         }
@@ -543,6 +548,7 @@ const Builder = struct {
             .ns = element.namespace_uri,
             .attr_start = attr_start,
             .attr_count = @intCast(self.attributes.items.len - attr_start),
+            .has_ns_decls = has_ns_decls,
         });
         try self.appendChild(parent, id);
 

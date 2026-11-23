@@ -368,12 +368,14 @@ pub const Builder = struct {
         }
         const owned_name = try self.copyString(name);
         const qname = namespace.splitQName(owned_name) catch return error.InvalidName;
+        const is_ns_decl = namespace.Resolver.isNamespaceDeclaration(owned_name);
         const node = &self.nodes.items[element];
         const start = node.attr_start;
         const count = node.attr_count;
         for (self.attributes.items[start..][0..count]) |*attribute| {
             if (std.mem.eql(u8, attribute.name, owned_name)) {
                 attribute.value = try self.dupe(value);
+                if (is_ns_decl) node.has_ns_decls = true;
                 return;
             }
         }
@@ -383,12 +385,10 @@ pub const Builder = struct {
                 0xFFFF
             else
                 @intCast(qname.prefix.len),
-            .ns = if (namespace.Resolver.isNamespaceDeclaration(owned_name))
-                namespace.xmlns_uri
-            else
-                "",
+            .ns = if (is_ns_decl) namespace.xmlns_uri else "",
             .value = try self.dupe(value),
         });
+        if (is_ns_decl) node.has_ns_decls = true;
     }
 
     pub fn setAttributeNs(
@@ -417,12 +417,14 @@ pub const Builder = struct {
                 .{ prefix, local },
             );
         const node = &self.nodes.items[element];
+        const is_ns_decl = namespace.Resolver.isNamespaceDeclaration(raw);
         const start = node.attr_start;
         const count = node.attr_count;
         for (self.attributes.items[start..][0..count]) |*attribute| {
             if (std.mem.eql(u8, attribute.name, raw)) {
                 attribute.value = try self.dupe(value);
                 attribute.ns = try self.dupe(uri);
+                if (is_ns_decl) node.has_ns_decls = true;
                 return;
             }
         }
@@ -432,6 +434,7 @@ pub const Builder = struct {
             .ns = try self.dupe(uri),
             .value = try self.dupe(value),
         });
+        if (is_ns_decl) node.has_ns_decls = true;
     }
 
     pub fn removeAttribute(
