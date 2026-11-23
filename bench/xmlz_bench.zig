@@ -45,7 +45,7 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, mode, "all") or std.mem.eql(u8, mode, "dom-pool")) {
         try runDomPool(init.gpa, io, source, mb, true, false);
     }
-    if (std.mem.eql(u8, mode, "dom-pool-fast")) {
+    if (std.mem.eql(u8, mode, "dom-pool-fast") or std.mem.eql(u8, mode, "all")) {
         try runDomPool(init.gpa, io, source, mb, true, true);
     }
     if (std.mem.eql(u8, mode, "all") or std.mem.eql(u8, mode, "write")) {
