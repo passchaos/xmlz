@@ -74,7 +74,9 @@ the best row kept, because the host was shared during measurement.
   qualified name instead of a local-name slice, deriving the local part on
   demand. An attribute record shrank from 56 to 40 bytes and a node from
   96 to 64, cutting DOM memory by about 25% (84 MiB versus 113 MiB in the
-  table above) and lifting the validating DOM rows by roughly 10%.
+  table above) and lifting the validating DOM rows by roughly 10%. The
+  parser enters a namespace scope only for elements that declare bindings,
+  so declaration-free elements share their parent's scope.
 - The text scanner also records whether a span contains a reference or a
   carriage return, so the DOM builder borrows plain spans instead of rescanning
   them for entity decoding. On a 16 MB single-text-node document that lifts DOM
@@ -150,28 +152,28 @@ input; the numbers below were measured sequentially, pinned, best of four.
 
 | Engine | Mode | MB/s |
 | --- | --- | ---: |
-| xmlz | pull, trusted fast mode | 2376.81 |
-| pugixml | DOM | 1170.17 |
-| xmlz | pull, no namespaces | 1203.96 |
-| xmlz | pull, namespaces | 1143.42 |
-| xmlz | DOM, trusted fast mode | 979.10 |
-| xmlz | DOM, reusable arena | 848.42 |
-| xmlz | DOM, namespaces | 673.92 |
-| expat | SAX | 310.08 |
-| libxml2 | reader | 141.01 |
-| libxml2 | DOM | 106.32 |
+| xmlz | pull, trusted fast mode | 2359.04 |
+| pugixml | DOM | 1189.18 |
+| xmlz | pull, no namespaces | 1238.44 |
+| xmlz | pull, namespaces | 1198.35 |
+| xmlz | DOM, trusted fast mode | 970.48 |
+| xmlz | DOM, reusable arena | 837.69 |
+| xmlz | DOM, namespaces | 664.98 |
+| expat | SAX | 308.80 |
+| libxml2 | reader | 140.24 |
+| libxml2 | DOM | 100.03 |
 
-Serialization on the same input: xmlz **4562.25 MB/s**, pugixml 2039.98,
-libxml2 453.04.
+Serialization on the same input: xmlz **4476.42 MB/s**, pugixml 2029.31,
+libxml2 451.95.
 
-- The pull parser is **3.7x faster than expat** and **8.1x faster than
+- The pull parser is **3.9x faster than expat** and **8.5x faster than
   libxml2's reader** with namespaces enabled while validating UTF-8; trusted
-  mode is **7.7x** and **16.9x** faster.
-- Serialization is **2.2x faster than pugixml** and **10.1x faster than
+  mode is **7.6x** and **16.8x** faster.
+- Serialization is **2.2x faster than pugixml** and **9.9x faster than
   libxml2**; parsed trees skip writer-side UTF-8 revalidation.
 - pugixml's non-validating DOM is faster than xmlz's validating one on this
   shape because it neither checks UTF-8 nor copies attribute values out of the
-  in-situ buffer. xmlz's validating DOM still beats libxml2's by **6.3x**.
+  in-situ buffer. xmlz's validating DOM still beats libxml2's by **6.6x**.
 
 ## Serialization
 
