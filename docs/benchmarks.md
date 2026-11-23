@@ -118,13 +118,13 @@ input; the numbers below were measured sequentially, pinned, best of four.
 | libxml2 | reader | 141.05 |
 | libxml2 | DOM | 103.89 |
 
-Serialization on the same input: xmlz **4220.07 MB/s**, pugixml 2041.46,
-libxml2 451.11.
+Serialization on the same input: xmlz **4814.85 MB/s**, pugixml 1992.52,
+libxml2 451.41.
 
 - The pull parser is **3.4x faster than expat** and **7.4x faster than
   libxml2's reader** with namespaces enabled while validating UTF-8; trusted
   mode is **7.8x** and **16.8x** faster.
-- Serialization is **2.07x faster than pugixml** and **9.4x faster than
+- Serialization is **2.42x faster than pugixml** and **10.7x faster than
   libxml2**; parsed trees skip writer-side UTF-8 revalidation.
 - pugixml's non-validating DOM is faster than xmlz's validating one on this
   shape because it neither checks UTF-8 nor copies attribute values out of the
@@ -153,19 +153,23 @@ because the host was shared during measurement.
 
 | Serializer | MB/s | Peak RSS |
 | --- | ---: | ---: |
-| xmlz | 2724.01 | 100 MiB |
-| pugixml | 1119.41 | 115 MiB |
-| libxml2 | 266.66 | 356 MiB |
+| xmlz | 3096.50 | 100 MiB |
+| pugixml | 1115.19 | 115 MiB |
+| libxml2 | 266.56 | 356 MiB |
 
 ## Interpretation
 
-- xmlz's writer is **2.4x faster than pugixml** and **10.2x faster than
+- xmlz's writer is **2.8x faster than pugixml** and **11.6x faster than
   libxml2** while still validating XML 1.0 characters and escaping carriage
   returns, which neither comparison engine does.
 - Attributes written as `name="value"` with no decoding are already in their
   output form in the source buffer. The parser marks those spans and the
   writer copies each one once instead of assembling the pieces, which lifted
   serialization by about 22%.
+- The writer copies short spans (raw attribute spans, tag names, and plain
+  text) with two overlapping width-appropriate loads and stores instead of
+  calling memcpy, whose size dispatch costs more than the copy for the
+  few-byte fields that dominate markup.
 - Elements record whether they carry any `xmlns` declaration, so the writer
   skips the redundant-binding checks and the default-namespace scan for the
   common declaration-free element. The prefixed-element test reuses the
