@@ -518,6 +518,9 @@ const NameListMap = std.HashMapUnmanaged(
 /// testing every rule in the stylesheet.
 const TemplateIndex = struct {
     allocator: std.mem.Allocator,
+    /// Bumped whenever entries are added; caches derived from the index
+    /// (such as the simple child dispatch) compare this value.
+    version: u32 = 0,
     nodes: std.AutoHashMapUnmanaged(NodeKey, TemplateList) = .empty,
     element_any: ModeBucket = .{},
     elements: NameBucketMap = .empty,
@@ -536,6 +539,7 @@ const TemplateIndex = struct {
     }
 
     fn addMatch(self: *TemplateIndex, key: NodeKey, index: u32) !void {
+        self.version +%= 1;
         const entry = try self.nodes.getOrPut(self.allocator, key);
         if (!entry.found_existing) entry.value_ptr.* = .empty;
         // A selector that reaches into documents loaded by `document()` can
@@ -552,6 +556,7 @@ const TemplateIndex = struct {
         matcher: PatternMatcher,
         mode: ?[]const u8,
     ) !void {
+        self.version +%= 1;
         switch (matcher) {
             .simple => |pattern| try self.addSimple(index, pattern, mode),
             .structural => |pattern| try self.addStructural(
@@ -959,6 +964,10 @@ const Runtime = struct {
     supplied_parameters: []const xpath.Variable = &.{},
     template_states: []TemplateState = &.{},
     template_index: TemplateIndex,
+    /// Cached child dispatch for the common simple-only index; invalidated
+    /// when `template_index.version` changes.
+    simple_child_dispatch: SimpleChildDispatch = .{},
+    simple_child_dispatch_version: u32 = std.math.maxInt(u32),
     /// Winning template for each `xsl:template name`, keyed by name.
     named_templates: std.StringHashMapUnmanaged(
         *const compile.Template,
@@ -2425,6 +2434,57 @@ const Runtime = struct {
         }
     }
 
+    /// Per-kind dispatch derived from a simple-only template index. With no
+    /// general-selector matches and no mode, a child can be resolved from
+    /// these fields instead of running an index lookup per node.
+    const SimpleChildDispatch = struct {
+        active: bool = false,
+        element: ?*const compile.Template = null,
+        text: bool = false,
+        comment: bool = false,
+        processing_instruction: bool = false,
+    };
+
+    fn simpleChildDispatch(self: *Runtime) SimpleChildDispatch {
+        if (self.simple_child_dispatch_version !=
+            self.template_index.version)
+        {
+            self.simple_child_dispatch = self.computeSimpleChildDispatch();
+            self.simple_child_dispatch_version = self.template_index.version;
+        }
+        return self.simple_child_dispatch;
+    }
+
+    fn computeSimpleChildDispatch(self: *Runtime) SimpleChildDispatch {
+        const index = &self.template_index;
+        if (index.nodes.count() != 0) return .{};
+        const child_free = index.child_node.default.items.len == 0;
+        var dispatch: SimpleChildDispatch = .{
+            .active = true,
+            .text = child_free and index.text.default.items.len == 0,
+            .comment = child_free and index.comment.default.items.len == 0,
+            .processing_instruction = child_free and
+                index.processing_instruction.default.items.len == 0,
+        };
+        if (child_free and
+            index.element_any.default.items.len == 1 and
+            index.elements.count() == 0 and
+            index.elements_by_uri.count() == 0)
+        {
+            const state = &self.template_states[index.element_any.default.items[0]];
+            if (state.matcher) |matcher| {
+                switch (matcher) {
+                    .simple => |pattern| switch (pattern) {
+                        .element_any => dispatch.element = state.template,
+                        else => {},
+                    },
+                    .structural => {},
+                }
+            }
+        }
+        return dispatch;
+    }
+
     /// Apply templates to an element or document's children without
     /// materializing a node-set, which is the hot path for identity-style
     /// stylesheets.
@@ -2438,8 +2498,18 @@ const Runtime = struct {
             .node => |value| value,
             .attribute, .namespace_node => return,
         };
+        // Loaded documents are indexed on first use. The dispatch below is
+        // only valid once the containing document's general-selector matches
+        // are in the index, so do that here instead of per child.
+        if (!self.source_matches_built or id >= self.source_node_count) {
+            try self.ensureDocumentMatches(node);
+        }
         const value = self.source.node(id);
         if (value.kind != .document and value.kind != .element) return;
+        const dispatch: SimpleChildDispatch = if (mode == null)
+            self.simpleChildDispatch()
+        else
+            .{};
         // Only `last()` reads the node-set size, so skip the counting walk
         // when the stylesheet never calls it.
         var size: usize = 0;
@@ -2458,6 +2528,29 @@ const Runtime = struct {
         var child = value.first_child;
         while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
             position += 1;
+            if (dispatch.active) {
+                const child_value = self.source.node(child);
+                switch (child_value.kind) {
+                    .element => if (dispatch.element) |template| {
+                        try self.executeTemplate(
+                            template,
+                            .{ .node = child },
+                            position,
+                            size,
+                            params,
+                        );
+                        continue;
+                    },
+                    .text => if (dispatch.text) {
+                        try self.appendText(child_value.value);
+                        continue;
+                    },
+                    .comment => if (dispatch.comment) continue,
+                    .processing_instruction => if (dispatch.processing_instruction)
+                        continue,
+                    .document => {},
+                }
+            }
             try self.applyTemplateNode(
                 .{ .node = child },
                 mode,

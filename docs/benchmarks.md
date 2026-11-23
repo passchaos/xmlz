@@ -258,15 +258,15 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.200 | 10.00 |
-| identity | libxslt (lxml) | 1.047 | 52.33 |
-| sorted report | xmlz | 0.165 | 8.23 |
-| sorted report | libxslt (lxml) | 0.875 | 43.76 |
+| identity | xmlz | 0.186 | 9.29 |
+| identity | libxslt (lxml) | 1.021 | 51.05 |
+| sorted report | xmlz | 0.154 | 7.70 |
+| sorted report | libxslt (lxml) | 0.874 | 43.72 |
 
 ## Interpretation
 
-- The identity transform is **5.2x faster than libxslt** and the sorted
-  report is **5.3x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **5.5x faster than libxslt** and the sorted
+  report is **5.7x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -280,7 +280,8 @@ column amortizes parsing and serialization over the 20 applications.
   iteration no longer materializes node-sets for `apply-templates` without
   `select`. When the stylesheet has no general-selector matches, text-like
   nodes with no rules and the common `match="*"`-only index resolve straight
-  from the per-kind buckets without a candidate scan.
+  from the per-kind buckets without a candidate scan; the conditions are
+  cached once per parent so a child dispatch is a node-kind switch.
 - The merged source view aliases the parsed arrays until `document()` loads
   another document, copies skip in-scope namespace collection for
   namespace-free inputs, and result node storage is preallocated from the
