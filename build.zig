@@ -409,6 +409,18 @@ pub fn build(b: *std.Build) void {
     libxml2_run.addFileArg(bench_input);
     bench_step.dependOn(&libxml2_run.step);
 
+    // Rust engines: quick-xml, roxmltree, and xml-rs. Requires cargo; the
+    // crate sources are fetched on first run.
+    const bench_rust_step = b.step(
+        "bench-rust",
+        "Run the Rust XML engine benchmark (quick-xml, roxmltree, xml-rs)",
+    );
+    const cargo_run = b.addSystemCommand(&.{ "cargo", "run", "--release", "--" });
+    cargo_run.setCwd(b.path("bench/rust-xml"));
+    cargo_run.addFileArg(bench_input);
+    bench_rust_step.dependOn(&gen_run.step);
+    bench_rust_step.dependOn(&cargo_run.step);
+
     // Non-ASCII input: CJK attribute values and character data.
     const bench_cjk_step = b.step(
         "bench-cjk",

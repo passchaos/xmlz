@@ -91,6 +91,48 @@ attributes, text with entity references, and self-closing elements. The
 generator is `bench/gen.zig`; the size target is 16 MiB and the output is
 deterministic.
 
+## Rust engines
+
+Reproduce with:
+
+```sh
+zig build bench-rust
+```
+
+The Rust harness lives in `bench/rust-xml` and runs quick-xml (both the plain
+slice reader and the namespace-aware `NsReader`), roxmltree (a read-only
+well-formedness-checking DOM), and xml-rs on the same generated input. Cargo
+must be installed; the crate sources are fetched on first run.
+
+Results (2026-11-23), interleaved with the xmlz rows on the same pinned core:
+
+| Engine | Mode | MB/s | Peak RSS |
+| --- | --- | ---: | ---: |
+| xmlz | pull, trusted fast mode | 1140.18 | 17 MiB |
+| xmlz | pull, no namespaces | 972.15 | 17 MiB |
+| quick-xml | pull, plain reader | 927.24 | 18 MiB |
+| xmlz | pull, namespaces | 913.03 | 17 MiB |
+| xmlz | DOM, reusable arena | 646.72 | 85 MiB |
+| quick-xml | pull, namespace-aware reader | 526.31 | 19 MiB |
+| xmlz | DOM, namespaces | 506.29 | 85 MiB |
+| roxmltree | DOM | 187.72 | 133 MiB |
+| xml-rs | pull | 56.07 | 133 MiB |
+
+On the CJK input the same session measured: xmlz pull 1017.15 (no namespaces)
+and 982.08 (namespaces), quick-xml 983.89 and 674.59, xmlz DOM 565.79
+(reusable arena 705.85), roxmltree 261.44, xml-rs 73.53.
+
+- quick-xml's plain reader is the closest streaming comparison, and it is
+  deliberately lenient: it does not enforce XML character productions, name
+  productions, duplicate attributes, or namespace constraints. Even so, xmlz's
+  fully validating pull parser is **3-5% faster** on both inputs.
+- With namespace resolution enabled, xmlz is **1.5-1.7x faster** than
+  quick-xml's `NsReader`.
+- roxmltree validates names, characters, and namespaces but exposes a read-only
+  DOM. xmlz's validating DOM is **2.2-2.7x faster** (3.4x with a reusable
+  arena on the SVG input) while using about **35% less peak memory**.
+- xml-rs is an order of magnitude slower than both.
+
 ## Non-ASCII input
 
 Reproduce with:

@@ -136,7 +136,9 @@ then exposes them through a pull parser and reusable lexical primitives.
   fast paths.
 - **Measured performance.** On a 16 MiB SVG-like document the pull parser
   reaches 948 MB/s (890 MB/s with namespaces) and 1151 MB/s in opt-in trusted
-  mode, 5.7x faster than expat and 6.6x faster than libxml2's reader. The
+  mode, 5.7x faster than expat, 6.6x faster than libxml2's reader, and faster
+  than quick-xml's lenient reader (1.5-1.7x faster than its namespace-aware
+  reader); see `docs/benchmarks.md`. The
   validating DOM reaches 511 MB/s one-shot, 639 MB/s with a reusable arena
   (`dom.Document.parseIn`), and 595 MB/s in trusted mode — 5.5x faster than
   libxml2's DOM and faster than pugixml; see `docs/benchmarks.md`.
