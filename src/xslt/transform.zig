@@ -978,6 +978,11 @@ const Runtime = struct {
     /// when `template_index.version` changes.
     simple_child_dispatch: SimpleChildDispatch = .{},
     simple_child_dispatch_version: u32 = std.math.maxInt(u32),
+    /// Lone rules that match every child node or every attribute, cached for
+    /// constant-time template lookup; invalidated with the index version.
+    lone_child_template: ?*const compile.Template = null,
+    lone_attribute_template: ?*const compile.Template = null,
+    lone_template_version: u32 = std.math.maxInt(u32),
     /// Winning template for each `xsl:template name`, keyed by name.
     named_templates: std.StringHashMapUnmanaged(
         *const compile.Template,
@@ -2460,6 +2465,44 @@ const Runtime = struct {
         }
     }
 
+    /// Recompute the cached lone rules when the template index changed.
+    fn refreshLoneTemplates(self: *Runtime) void {
+        if (self.lone_template_version == self.template_index.version) {
+            return;
+        }
+        self.lone_template_version = self.template_index.version;
+        self.lone_child_template = null;
+        self.lone_attribute_template = null;
+        const index = &self.template_index;
+        if (index.nodes.count() != 0) return;
+        if (index.element_any.default.items.len == 0 and
+            index.elements.count() == 0 and
+            index.elements_by_uri.count() == 0 and
+            index.text.default.items.len == 0 and
+            index.comment.default.items.len == 0 and
+            index.processing_instruction.default.items.len == 0 and
+            index.child_node.default.items.len == 1)
+        {
+            const state = &self.template_states[index.child_node.default.items[0]];
+            if (state.matcher) |matcher| {
+                if (matcherAcceptsChildNodes(matcher)) {
+                    self.lone_child_template = state.template;
+                }
+            }
+        }
+        if (index.attribute_any.default.items.len == 1 and
+            index.attributes.count() == 0 and
+            index.attributes_by_uri.count() == 0)
+        {
+            const state = &self.template_states[index.attribute_any.default.items[0]];
+            if (state.matcher) |matcher| {
+                if (matcherAcceptsAttributes(matcher)) {
+                    self.lone_attribute_template = state.template;
+                }
+            }
+        }
+    }
+
     fn findTemplate(
         self: *Runtime,
         node: xpath.NodeRef,
@@ -3003,35 +3046,28 @@ const Runtime = struct {
         // buckets. Text-like nodes without rules skip collection entirely,
         // and a lone unconditional element rule resolves in a few loads
         // instead of a full bucket scan.
+        if (mode == null) {
+            self.refreshLoneTemplates();
+            switch (node) {
+                .node => |id| if (self.source.node(id).kind != .document) {
+                    if (self.lone_child_template) |template| {
+                        if (template.precedence < maximum_precedence) {
+                            return template;
+                        }
+                        return null;
+                    }
+                },
+                .attribute => if (self.lone_attribute_template) |template| {
+                    if (template.precedence < maximum_precedence) {
+                        return template;
+                    }
+                    return null;
+                },
+                .namespace_node => {},
+            }
+        }
         if (mode == null and self.template_index.nodes.count() == 0) {
             const index = &self.template_index;
-            // A lone rule that matches every non-document node (the standard
-            // identity pattern) resolves any element, text, comment, or
-            // processing instruction directly.
-            if (index.child_node.default.items.len == 1 and
-                index.element_any.default.items.len == 0 and
-                index.elements.count() == 0 and
-                index.elements_by_uri.count() == 0 and
-                index.text.default.items.len == 0 and
-                index.comment.default.items.len == 0 and
-                index.processing_instruction.default.items.len == 0)
-            {
-                const state = &self.template_states[index.child_node.default.items[0]];
-                if (state.matcher) |matcher| {
-                    if (matcherAcceptsChildNodes(matcher)) {
-                        const template = state.template;
-                        switch (node) {
-                            .node => |id| if (self.source.node(id).kind != .document) {
-                                if (template.precedence < maximum_precedence) {
-                                    return template;
-                                }
-                                return null;
-                            },
-                            .attribute, .namespace_node => {},
-                        }
-                    }
-                }
-            }
             switch (node) {
                 .node => |id| switch (self.source.node(id).kind) {
                     .text => if (index.text.default.items.len == 0 and
@@ -3077,25 +3113,7 @@ const Runtime = struct {
                         }
                     },
                 },
-                .attribute => {
-                    // A lone unconditional attribute rule resolves every
-                    // attribute directly.
-                    if (index.attribute_any.default.items.len == 1 and
-                        index.attributes.count() == 0 and
-                        index.attributes_by_uri.count() == 0)
-                    {
-                        const state = &self.template_states[index.attribute_any.default.items[0]];
-                        if (state.matcher) |matcher| {
-                            if (matcherAcceptsAttributes(matcher)) {
-                                const template = state.template;
-                                if (template.precedence < maximum_precedence) {
-                                    return template;
-                                }
-                                return null;
-                            }
-                        }
-                    }
-                },
+                .attribute => {},
                 .namespace_node => {},
             }
         }
