@@ -1863,6 +1863,8 @@ const Evaluator = struct {
         };
         const name = call.name;
 
+        // The dispatch order follows the function mix measured on real
+        // stylesheets (DocBook, xmlspec); each check is a full name compare.
         if (std.mem.eql(u8, name, "last")) {
             if (items.len != 0) return error.InvalidArgument;
             return .{ .number = @floatFromInt(context.size) };
@@ -1871,101 +1873,14 @@ const Evaluator = struct {
             if (items.len != 0) return error.InvalidArgument;
             return .{ .number = @floatFromInt(context.position) };
         }
-        if (std.mem.eql(u8, name, "current")) {
-            if (items.len != 0) return error.InvalidArgument;
-            const nodes = try self.allocator.alloc(value.NodeRef, 1);
-            nodes[0] = context.current orelse context.node;
-            return .{ .node_set = nodes };
-        }
-        if (std.mem.eql(u8, name, "format-number")) {
-            if (items.len != 2 and items.len != 3) {
-                return error.InvalidArgument;
-            }
-            const number = try self.toNumber(items[0], context);
-            const pattern = try self.toString(items[1], context);
-            const format_name: ?value.QualifiedName = if (items.len == 3) blk: {
-                const raw = try self.toString(items[2], context);
-                const qname = namespace.splitQName(raw) catch
-                    return error.InvalidArgument;
-                var uri: []const u8 = "";
-                if (qname.prefix.len != 0) {
-                    uri = context.resolvePrefix(qname.prefix) orelse
-                        return error.InvalidArgument;
-                }
-                break :blk .{ .uri = uri, .local = qname.local };
-            } else null;
-            const formatter = context.number_formatter orelse
-                return error.UnknownFunction;
-            const text = formatter.format(
-                formatter.context,
-                self.allocator,
-                number,
-                pattern,
-                format_name,
-            ) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                error.InvalidFormat => return error.InvalidArgument,
-            };
-            return .{ .string = text };
-        }
-        if (std.mem.eql(u8, name, "key")) {
-            if (items.len != 2) return error.InvalidArgument;
-            const key_name = try self.toString(items[0], context);
-            const key_value = try self.toString(items[1], context);
-            const resolver = context.key_resolver orelse
-                return .{ .node_set = &.{} };
-            const nodes = resolver.lookup(
-                resolver.context,
-                self.allocator,
-                key_name,
-                key_value,
-                context.node,
-            ) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-            };
-            return .{ .node_set = nodes };
-        }
-        if (std.mem.eql(u8, name, "count")) {
+        if (std.mem.eql(u8, name, "id")) {
             if (items.len != 1) return error.InvalidArgument;
-            return .{ .number = @floatFromInt(
-                (try self.requireNodeSet(items[0], context)).len,
-            ) };
-        }
-        if (std.mem.eql(u8, name, "local-name")) {
-            const node = try self.functionNode(items, context);
-            return .{ .string = if (node) |n| self.localName(context, n) else "" };
-        }
-        if (std.mem.eql(u8, name, "namespace-uri")) {
-            const node = try self.functionNode(items, context);
-            return .{ .string = if (node) |n| self.namespaceUri(context, n) else "" };
+            const text = try self.toString(items[0], context);
+            return .{ .node_set = try self.idLookup(context, text) };
         }
         if (std.mem.eql(u8, name, "name")) {
             const node = try self.functionNode(items, context);
             return .{ .string = if (node) |n| self.nodeName(context, n) else "" };
-        }
-        if (std.mem.eql(u8, name, "string")) {
-            if (items.len == 0) return .{ .string = try self.toString(.{
-                .node_set = &.{context.node},
-            }, context) };
-            if (items.len != 1) return error.InvalidArgument;
-            return .{ .string = try self.toString(items[0], context) };
-        }
-        if (std.mem.eql(u8, name, "concat")) {
-            if (items.len < 2) return error.InvalidArgument;
-            var out: std.ArrayList(u8) = .empty;
-            for (items) |item| {
-                try out.appendSlice(
-                    self.allocator,
-                    try self.toString(item, context),
-                );
-            }
-            return .{ .string = try out.toOwnedSlice(self.allocator) };
-        }
-        if (std.mem.eql(u8, name, "starts-with")) {
-            if (items.len != 2) return error.InvalidArgument;
-            const a = try self.toString(items[0], context);
-            const b = try self.toString(items[1], context);
-            return .{ .boolean = std.mem.startsWith(u8, a, b) };
         }
         if (std.mem.eql(u8, name, "contains")) {
             if (items.len != 2) return error.InvalidArgument;
@@ -1982,14 +1897,21 @@ const Evaluator = struct {
             }
             return .{ .string = "" };
         }
-        if (std.mem.eql(u8, name, "substring-after")) {
+        if (std.mem.eql(u8, name, "starts-with")) {
             if (items.len != 2) return error.InvalidArgument;
             const a = try self.toString(items[0], context);
             const b = try self.toString(items[1], context);
-            if (std.mem.indexOf(u8, a, b)) |index| {
-                return .{ .string = a[index + b.len ..] };
-            }
-            return .{ .string = "" };
+            return .{ .boolean = std.mem.startsWith(u8, a, b) };
+        }
+        if (std.mem.eql(u8, name, "count")) {
+            if (items.len != 1) return error.InvalidArgument;
+            return .{ .number = @floatFromInt(
+                (try self.requireNodeSet(items[0], context)).len,
+            ) };
+        }
+        if (std.mem.eql(u8, name, "local-name")) {
+            const node = try self.functionNode(items, context);
+            return .{ .string = if (node) |n| self.localName(context, n) else "" };
         }
         if (std.mem.eql(u8, name, "substring")) {
             if (items.len != 2 and items.len != 3) return error.InvalidArgument;
@@ -2001,87 +1923,29 @@ const Evaluator = struct {
                 std.math.inf(f64);
             return .{ .string = try self.substring(text, start, length) };
         }
-        if (std.mem.eql(u8, name, "string-length")) {
-            const text = if (items.len == 0)
-                try self.toString(.{ .node_set = &.{context.node} }, context)
-            else if (items.len == 1)
-                try self.toString(items[0], context)
-            else
-                return error.InvalidArgument;
-            return .{ .number = @floatFromInt(codepointCount(text)) };
-        }
-        if (std.mem.eql(u8, name, "normalize-space")) {
-            const text = if (items.len == 0)
-                try self.toString(.{ .node_set = &.{context.node} }, context)
-            else if (items.len == 1)
-                try self.toString(items[0], context)
-            else
-                return error.InvalidArgument;
-            return .{ .string = try self.normalizeSpace(text) };
-        }
-        if (std.mem.eql(u8, name, "translate")) {
-            if (items.len != 3) return error.InvalidArgument;
-            const text = try self.toString(items[0], context);
-            const from = try self.toString(items[1], context);
-            const to = try self.toString(items[2], context);
-            return .{ .string = try self.translate(text, from, to) };
-        }
-        if (std.mem.eql(u8, name, "boolean")) {
-            if (items.len != 1) return error.InvalidArgument;
-            return .{ .boolean = items[0].toBoolean() };
-        }
         if (std.mem.eql(u8, name, "not")) {
             if (items.len != 1) return error.InvalidArgument;
             return .{ .boolean = !items[0].toBoolean() };
-        }
-        if (std.mem.eql(u8, name, "true")) {
-            if (items.len != 0) return error.InvalidArgument;
-            return .{ .boolean = true };
         }
         if (std.mem.eql(u8, name, "false")) {
             if (items.len != 0) return error.InvalidArgument;
             return .{ .boolean = false };
         }
-        if (std.mem.eql(u8, name, "lang")) {
+        if (std.mem.eql(u8, name, "string")) {
+            if (items.len == 0) return .{ .string = try self.toString(.{
+                .node_set = &.{context.node},
+            }, context) };
             if (items.len != 1) return error.InvalidArgument;
-            const requested = try self.toString(items[0], context);
-            return .{ .boolean = self.lang(context, context.node, requested) };
+            return .{ .string = try self.toString(items[0], context) };
         }
-        if (std.mem.eql(u8, name, "number")) {
-            if (items.len == 0) {
-                return .{ .number = try self.toNumber(.{
-                    .node_set = &.{context.node},
-                }, context) };
+        if (std.mem.eql(u8, name, "substring-after")) {
+            if (items.len != 2) return error.InvalidArgument;
+            const a = try self.toString(items[0], context);
+            const b = try self.toString(items[1], context);
+            if (std.mem.indexOf(u8, a, b)) |index| {
+                return .{ .string = a[index + b.len ..] };
             }
-            if (items.len != 1) return error.InvalidArgument;
-            return .{ .number = try self.toNumber(items[0], context) };
-        }
-        if (std.mem.eql(u8, name, "sum")) {
-            if (items.len != 1) return error.InvalidArgument;
-            const nodes = try self.requireNodeSet(items[0], context);
-            var total: f64 = 0;
-            for (nodes) |node| {
-                total += value.parseNumber(try self.stringValue(context, node));
-            }
-            return .{ .number = total };
-        }
-        if (std.mem.eql(u8, name, "floor")) {
-            if (items.len != 1) return error.InvalidArgument;
-            return .{ .number = std.math.floor(try self.toNumber(items[0], context)) };
-        }
-        if (std.mem.eql(u8, name, "ceiling")) {
-            if (items.len != 1) return error.InvalidArgument;
-            return .{ .number = std.math.ceil(try self.toNumber(items[0], context)) };
-        }
-        if (std.mem.eql(u8, name, "round")) {
-            if (items.len != 1) return error.InvalidArgument;
-            const number = try self.toNumber(items[0], context);
-            return .{ .number = std.math.floor(number + 0.5) };
-        }
-        if (std.mem.eql(u8, name, "id")) {
-            if (items.len != 1) return error.InvalidArgument;
-            const text = try self.toString(items[0], context);
-            return .{ .node_set = try self.idLookup(context, text) };
+            return .{ .string = "" };
         }
         if (std.mem.eql(u8, name, "generate-id")) {
             if (!context.xslt_functions) return error.UnknownFunction;
@@ -2120,6 +1984,144 @@ const Evaluator = struct {
                 return .{ .string = "https://github.com/passchaos/xmlz" };
             }
             return .{ .string = "" };
+        }
+        if (std.mem.eql(u8, name, "namespace-uri")) {
+            const node = try self.functionNode(items, context);
+            return .{ .string = if (node) |n| self.namespaceUri(context, n) else "" };
+        }
+        if (std.mem.eql(u8, name, "current")) {
+            if (items.len != 0) return error.InvalidArgument;
+            const nodes = try self.allocator.alloc(value.NodeRef, 1);
+            nodes[0] = context.current orelse context.node;
+            return .{ .node_set = nodes };
+        }
+        if (std.mem.eql(u8, name, "concat")) {
+            if (items.len < 2) return error.InvalidArgument;
+            var out: std.ArrayList(u8) = .empty;
+            for (items) |item| {
+                try out.appendSlice(
+                    self.allocator,
+                    try self.toString(item, context),
+                );
+            }
+            return .{ .string = try out.toOwnedSlice(self.allocator) };
+        }
+        if (std.mem.eql(u8, name, "string-length")) {
+            const text = if (items.len == 0)
+                try self.toString(.{ .node_set = &.{context.node} }, context)
+            else if (items.len == 1)
+                try self.toString(items[0], context)
+            else
+                return error.InvalidArgument;
+            return .{ .number = @floatFromInt(codepointCount(text)) };
+        }
+        if (std.mem.eql(u8, name, "normalize-space")) {
+            const text = if (items.len == 0)
+                try self.toString(.{ .node_set = &.{context.node} }, context)
+            else if (items.len == 1)
+                try self.toString(items[0], context)
+            else
+                return error.InvalidArgument;
+            return .{ .string = try self.normalizeSpace(text) };
+        }
+        if (std.mem.eql(u8, name, "translate")) {
+            if (items.len != 3) return error.InvalidArgument;
+            const text = try self.toString(items[0], context);
+            const from = try self.toString(items[1], context);
+            const to = try self.toString(items[2], context);
+            return .{ .string = try self.translate(text, from, to) };
+        }
+        if (std.mem.eql(u8, name, "boolean")) {
+            if (items.len != 1) return error.InvalidArgument;
+            return .{ .boolean = items[0].toBoolean() };
+        }
+        if (std.mem.eql(u8, name, "true")) {
+            if (items.len != 0) return error.InvalidArgument;
+            return .{ .boolean = true };
+        }
+        if (std.mem.eql(u8, name, "lang")) {
+            if (items.len != 1) return error.InvalidArgument;
+            const requested = try self.toString(items[0], context);
+            return .{ .boolean = self.lang(context, context.node, requested) };
+        }
+        if (std.mem.eql(u8, name, "number")) {
+            if (items.len == 0) {
+                return .{ .number = try self.toNumber(.{
+                    .node_set = &.{context.node},
+                }, context) };
+            }
+            if (items.len != 1) return error.InvalidArgument;
+            return .{ .number = try self.toNumber(items[0], context) };
+        }
+        if (std.mem.eql(u8, name, "sum")) {
+            if (items.len != 1) return error.InvalidArgument;
+            const nodes = try self.requireNodeSet(items[0], context);
+            var total: f64 = 0;
+            for (nodes) |node| {
+                total += value.parseNumber(try self.stringValue(context, node));
+            }
+            return .{ .number = total };
+        }
+        if (std.mem.eql(u8, name, "floor")) {
+            if (items.len != 1) return error.InvalidArgument;
+            return .{ .number = std.math.floor(try self.toNumber(items[0], context)) };
+        }
+        if (std.mem.eql(u8, name, "ceiling")) {
+            if (items.len != 1) return error.InvalidArgument;
+            return .{ .number = std.math.ceil(try self.toNumber(items[0], context)) };
+        }
+        if (std.mem.eql(u8, name, "round")) {
+            if (items.len != 1) return error.InvalidArgument;
+            const number = try self.toNumber(items[0], context);
+            return .{ .number = std.math.floor(number + 0.5) };
+        }
+        if (std.mem.eql(u8, name, "key")) {
+            if (items.len != 2) return error.InvalidArgument;
+            const key_name = try self.toString(items[0], context);
+            const key_value = try self.toString(items[1], context);
+            const resolver = context.key_resolver orelse
+                return .{ .node_set = &.{} };
+            const nodes = resolver.lookup(
+                resolver.context,
+                self.allocator,
+                key_name,
+                key_value,
+                context.node,
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            return .{ .node_set = nodes };
+        }
+        if (std.mem.eql(u8, name, "format-number")) {
+            if (items.len != 2 and items.len != 3) {
+                return error.InvalidArgument;
+            }
+            const number = try self.toNumber(items[0], context);
+            const pattern = try self.toString(items[1], context);
+            const format_name: ?value.QualifiedName = if (items.len == 3) blk: {
+                const raw = try self.toString(items[2], context);
+                const qname = namespace.splitQName(raw) catch
+                    return error.InvalidArgument;
+                var uri: []const u8 = "";
+                if (qname.prefix.len != 0) {
+                    uri = context.resolvePrefix(qname.prefix) orelse
+                        return error.InvalidArgument;
+                }
+                break :blk .{ .uri = uri, .local = qname.local };
+            } else null;
+            const formatter = context.number_formatter orelse
+                return error.UnknownFunction;
+            const text = formatter.format(
+                formatter.context,
+                self.allocator,
+                number,
+                pattern,
+                format_name,
+            ) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidFormat => return error.InvalidArgument,
+            };
+            return .{ .string = text };
         }
         if (std.mem.eql(u8, name, "element-available")) {
             if (!context.xslt_functions) return error.UnknownFunction;
@@ -2199,29 +2201,6 @@ const Evaluator = struct {
             if (!entity.unparsed) return .{ .string = "" };
             return .{ .string = entity.system_id };
         }
-        if (isExsltNodeSet(context, name)) {
-            if (!context.xslt_functions) return error.UnknownFunction;
-            if (items.len != 1) return error.InvalidArgument;
-            switch (items[0]) {
-                .node_set => return items[0],
-                .tree => |tree| {
-                    const converter = context.tree_converter orelse
-                        return error.InvalidArgument;
-                    const converted = try converter.convert(
-                        converter.context,
-                        self.allocator,
-                        tree,
-                    ) orelse return error.InvalidArgument;
-                    const nodes = try self.allocator.alloc(value.NodeRef, 1);
-                    nodes[0] = converted;
-                    return .{ .node_set = nodes };
-                },
-                else => return self.buildTextNodeSet(
-                    context,
-                    try self.toString(items[0], context),
-                ),
-            }
-        }
         if (std.mem.eql(u8, name, "document")) {
             if (!context.xslt_functions) return error.UnknownFunction;
             if (items.len == 0 or items.len > 2) return error.InvalidArgument;
@@ -2276,6 +2255,29 @@ const Evaluator = struct {
                 try out.appendSlice(self.allocator, roots);
             }
             return .{ .node_set = try self.sortDedup(out.items) };
+        }
+        if (isExsltNodeSet(context, name)) {
+            if (!context.xslt_functions) return error.UnknownFunction;
+            if (items.len != 1) return error.InvalidArgument;
+            switch (items[0]) {
+                .node_set => return items[0],
+                .tree => |tree| {
+                    const converter = context.tree_converter orelse
+                        return error.InvalidArgument;
+                    const converted = try converter.convert(
+                        converter.context,
+                        self.allocator,
+                        tree,
+                    ) orelse return error.InvalidArgument;
+                    const nodes = try self.allocator.alloc(value.NodeRef, 1);
+                    nodes[0] = converted;
+                    return .{ .node_set = nodes };
+                },
+                else => return self.buildTextNodeSet(
+                    context,
+                    try self.toString(items[0], context),
+                ),
+            }
         }
         if (exsltBuiltin(context, name)) |builtin| {
             switch (builtin) {
