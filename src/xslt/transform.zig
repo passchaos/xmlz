@@ -5314,12 +5314,25 @@ const Runtime = struct {
         const parent = self.source.node(id);
         if (parent.kind != .element and parent.kind != .document) return null;
         var child = parent.first_child;
-        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
-            const value = self.source.node(child);
+        while (child != dom.null_node) {
+            // Fetch each child once and advance first, like the template
+            // child loop.
+            const current = child;
+            const value = self.source.node(current);
+            child = value.next_sibling;
             if (value.kind != .element) continue;
             if (!std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
             if (!std.mem.eql(u8, value.localName(), local)) continue;
-            return try self.stringValue(.{ .node = child });
+            // Inline `stringValue`'s single-text-child case: it covers the
+            // common leaf lookup without another call.
+            const first = value.first_child;
+            if (first != dom.null_node) {
+                const text = self.source.node(first);
+                if (text.kind == .text and text.next_sibling == dom.null_node) {
+                    return text.value;
+                }
+            }
+            return try self.stringValue(.{ .node = current });
         }
         return "";
     }
