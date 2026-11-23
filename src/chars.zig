@@ -416,22 +416,26 @@ pub inline fn xmlCodepointLength(
         if (index + 2 > bytes.len) return null;
         const b1 = bytes[index + 1];
         if (b1 & 0xC0 != 0x80) return null;
-        const cp: u21 = (@as(u21, byte & 0x1F) << 6) | (b1 & 0x3F);
-        if (!isXmlCharVersion(cp, version)) return null;
-        if (version == .xml_1_1 and isRestrictedChar11(cp)) return null;
+        // Two-byte sequences are always XML characters; only XML 1.1
+        // restricts some of them.
+        if (version == .xml_1_1) {
+            const cp: u21 = (@as(u21, byte & 0x1F) << 6) | (b1 & 0x3F);
+            if (isRestrictedChar11(cp)) return null;
+        }
         return 2;
     }
     if (byte < 0xF0) {
         if (index + 3 > bytes.len) return null;
         const b1 = bytes[index + 1];
         const b2 = bytes[index + 2];
-        if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80) return null;
+        if ((b1 | b2) & 0xC0 != 0x80) return null;
+        // Leads E4..E9 cover U+4000..U+9FFF, which is always valid.
+        if (byte >= 0xE4 and byte <= 0xE9) return 3;
         const cp: u21 = (@as(u21, byte & 0x0F) << 12) |
             (@as(u21, b1 & 0x3F) << 6) | (b2 & 0x3F);
         if (cp < 0x800) return null; // overlong
         if (cp >= 0xD800 and cp <= 0xDFFF) return null; // surrogate
-        if (!isXmlCharVersion(cp, version)) return null;
-        if (version == .xml_1_1 and isRestrictedChar11(cp)) return null;
+        if (cp > 0xFFFD) return null; // U+FFFE and U+FFFF
         return 3;
     }
     if (byte < 0xF5) {
@@ -439,14 +443,13 @@ pub inline fn xmlCodepointLength(
         const b1 = bytes[index + 1];
         const b2 = bytes[index + 2];
         const b3 = bytes[index + 3];
-        if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80 or
-            b3 & 0xC0 != 0x80) return null;
+        if ((b1 | b2 | b3) & 0xC0 != 0x80) return null;
+        // Leads F0..F3 cover U+10000..U+FFFFF, which is always valid.
+        if (byte < 0xF4) return 4;
         const cp: u21 = (@as(u21, byte & 0x07) << 18) |
             (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) |
             (b3 & 0x3F);
         if (cp < 0x10000 or cp > 0x10FFFF) return null;
-        if (!isXmlCharVersion(cp, version)) return null;
-        if (version == .xml_1_1 and isRestrictedChar11(cp)) return null;
         return 4;
     }
     return null;
