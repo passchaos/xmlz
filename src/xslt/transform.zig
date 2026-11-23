@@ -2581,6 +2581,25 @@ const Runtime = struct {
         const saved_variables = self.variable_len;
         const saved_floor = self.variable_floor;
         self.variable_floor = saved_variables;
+        // A parameterless template whose whole body is one `xsl:copy` needs
+        // no parameter binding and no body-level variable scope, so dispatch
+        // straight to the copy instruction.
+        if (template.params.len == 0 and template.body.len == 1) {
+            switch (template.body[0]) {
+                .copy => |copy| {
+                    const result = self.executeCopy(
+                        copy,
+                        node,
+                        position,
+                        size,
+                    );
+                    self.variable_floor = saved_floor;
+                    self.variable_len = saved_variables;
+                    return result;
+                },
+                else => {},
+            }
+        }
         const result = self.runTemplateBody(
             template,
             node,
@@ -3811,6 +3830,22 @@ const Runtime = struct {
                         const saved_parent = self.parent;
                         self.parent = new_id;
                         defer self.parent = saved_parent;
+                        // A body that is one `xsl:apply-templates` needs no
+                        // body-level variable scope; dispatch it directly.
+                        if (instruction.body.len == 1) {
+                            switch (instruction.body[0]) {
+                                .apply_templates => |apply_instruction| {
+                                    try self.executeApplyTemplates(
+                                        apply_instruction,
+                                        node,
+                                        position,
+                                        size,
+                                    );
+                                    return;
+                                },
+                                else => {},
+                            }
+                        }
                         try self.executeInstructions(
                             instruction.body,
                             node,

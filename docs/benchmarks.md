@@ -258,15 +258,15 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.149 | 7.47 |
-| identity | libxslt (lxml) | 1.045 | 52.26 |
-| sorted report | xmlz | 0.108 | 5.39 |
-| sorted report | libxslt (lxml) | 0.891 | 44.56 |
+| identity | xmlz | 0.128 | 6.41 |
+| identity | libxslt (lxml) | 1.036 | 51.81 |
+| sorted report | xmlz | 0.109 | 5.43 |
+| sorted report | libxslt (lxml) | 0.870 | 43.50 |
 
 ## Interpretation
 
-- The identity transform is **7.0x faster than libxslt** and the sorted
-  report is **8.3x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **8.1x faster than libxslt** and the sorted
+  report is **8.0x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -288,6 +288,9 @@ column amortizes parsing and serialization over the 20 applications.
   nodes with no rules and the common `match="*"`-only index resolve straight
   from the per-kind buckets without a candidate scan; the conditions are
   cached once per parent so a child dispatch is a node-kind switch.
+  Parameterless templates whose body is a single `xsl:copy`, and copies whose
+  body is a single `xsl:apply-templates`, skip the interpreter layers for
+  parameter binding and body-level variable scopes.
 - The merged source view aliases the parsed arrays until `document()` loads
   another document, copies skip in-scope namespace collection for
   namespace-free inputs, and result node storage is preallocated from the
