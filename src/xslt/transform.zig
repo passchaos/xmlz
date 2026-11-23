@@ -1061,33 +1061,47 @@ const Runtime = struct {
 
     fn prepareSource(self: *Runtime) Error!void {
         if (self.stylesheet.space_rules.len == 0) return;
-        var builder = dom_builder.Builder.init(self.allocator) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return error.InvalidStylesheet,
+        self.filtered_source = try self.buildFilteredDocument();
+        self.source = self.filtered_source.?;
+    }
+
+    /// Copy the source tree with whitespace-only text nodes removed where the
+    /// stylesheet strip rules apply. Only the node and attribute arrays are
+    /// allocated: names and values are shared with the source document, which
+    /// outlives the transformation.
+    fn buildFilteredDocument(self: *Runtime) Error!*dom.Document {
+        const document = try self.allocator.create(dom.Document);
+        document.* = .{
+            .arena = std.heap.ArenaAllocator.init(self.allocator),
+            .nodes = &.{},
+            .attributes = &.{},
         };
-        var finished = false;
-        defer {
-            if (!finished) builder.deinit();
-        }
-        try self.copyFilteredNode(
-            &builder,
-            self.source.documentNode(),
-            builder.document(),
+        errdefer document.arena.deinit();
+        const allocator = document.arena.allocator();
+        var nodes: std.ArrayList(dom.Node) = .empty;
+        var attributes: std.ArrayList(dom.Attribute) = .empty;
+        try nodes.ensureTotalCapacity(allocator, self.source.nodes.len);
+        try attributes.ensureTotalCapacity(
+            allocator,
+            self.source.attributes.len,
         );
-        var document = builder.finish() catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return error.InvalidStylesheet,
-        };
-        finished = true;
+        _ = try self.copyFilteredNode(
+            allocator,
+            &nodes,
+            &attributes,
+            self.source.documentNode(),
+            dom.null_node,
+        );
+        // The reserved capacity stays with the arrays; the document only
+        // uses the length, and the arena releases the whole buffer.
+        document.nodes = nodes.items;
+        document.attributes = attributes.items;
         // The filtered tree still describes the same document, so keep the
         // DTD view: id() needs DTD-declared ID attributes.
         document.dtd = self.source.dtd;
         document.declaration = self.source.declaration;
         document.doctype = self.source.doctype;
-        const pointer = try self.allocator.create(dom.Document);
-        pointer.* = document;
-        self.filtered_source = pointer;
-        self.source = pointer;
+        return document;
     }
 
     fn deinitFilteredSource(self: *Runtime) void {
@@ -1425,85 +1439,63 @@ const Runtime = struct {
         self.last_selector_cacheable = false;
     }
 
+    /// Copy one node and its subtree into the filtered arrays, returning the
+    /// new node id. Whitespace-only text children of elements covered by a
+    /// strip rule are skipped.
     fn copyFilteredNode(
         self: *Runtime,
-        builder: *dom_builder.Builder,
+        allocator: std.mem.Allocator,
+        nodes: *std.ArrayList(dom.Node),
+        attributes: *std.ArrayList(dom.Attribute),
         id: dom.NodeId,
         parent: dom.NodeId,
-    ) Error!void {
-        const node = self.source.node(id);
-        switch (node.kind) {
-            .document => {
-                var child = node.first_child;
-                while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
-                    try self.copyFilteredNode(builder, child, parent);
-                }
-            },
-            .element => {
-                // Source names were validated when the document was parsed.
-                const new_id = builder.createElementNsUnchecked(
-                    prefixOf(node),
-                    node.local,
-                    node.ns,
-                ) catch |err| return mapBuilderError(err);
-                builder.appendChild(parent, new_id) catch |err|
-                    return mapBuilderError(err);
-                for (self.source.attributesOf(id)) |attr| {
-                    if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
-                        builder.setAttribute(
-                            new_id,
-                            attr.name,
-                            attr.value,
-                        ) catch |err| return mapBuilderError(err);
-                    } else if (attr.ns.len == 0) {
-                        builder.setAttribute(
-                            new_id,
-                            attr.name,
-                            attr.value,
-                        ) catch |err| return mapBuilderError(err);
-                    } else {
-                        builder.setAttributeNs(
-                            new_id,
-                            attr.prefixName(),
-                            attr.localName(),
-                            attr.ns,
-                            attr.value,
-                        ) catch |err| return mapBuilderError(err);
-                    }
-                }
-                const strip = self.shouldStrip(node.ns, node.local);
-                var child = node.first_child;
-                while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
-                    const child_node = self.source.node(child);
-                    if (child_node.kind == .text and strip and
-                        isWhitespaceText(child_node.value))
-                    {
-                        continue;
-                    }
-                    try self.copyFilteredNode(builder, child, new_id);
-                }
-            },
-            .text => {
-                const new_id = builder.createText(node.value) catch |err|
-                    return mapBuilderError(err);
-                builder.appendChild(parent, new_id) catch |err|
-                    return mapBuilderError(err);
-            },
-            .comment => {
-                const new_id = builder.createComment(node.value) catch |err|
-                    return mapBuilderError(err);
-                builder.appendChild(parent, new_id) catch |err|
-                    return mapBuilderError(err);
-            },
-            .processing_instruction => {
-                const new_id = builder.createProcessingInstruction(
-                    node.name,
-                    node.value,
-                ) catch |err| return mapBuilderError(err);
-                builder.appendChild(parent, new_id) catch |err|
-                    return mapBuilderError(err);
-            },
+    ) Error!dom.NodeId {
+        const source = self.source.node(id);
+        const new_id: dom.NodeId = @intCast(nodes.items.len);
+        var node = source.*;
+        node.parent = parent;
+        node.first_child = dom.null_node;
+        node.last_child = dom.null_node;
+        node.next_sibling = dom.null_node;
+        node.attr_start = 0;
+        node.attr_count = 0;
+        if (source.kind == .element) {
+            const list = self.source.attributesOf(id);
+            node.attr_start = @intCast(attributes.items.len);
+            node.attr_count = @intCast(list.len);
+            try attributes.appendSlice(allocator, list);
         }
+        try nodes.append(allocator, node);
+        if (source.kind != .document and source.kind != .element) {
+            return new_id;
+        }
+        const strip = source.kind == .element and
+            self.shouldStrip(source.ns, source.local);
+        var child = source.first_child;
+        var last: dom.NodeId = dom.null_node;
+        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
+            const child_node = self.source.node(child);
+            if (strip and child_node.kind == .text and
+                isWhitespaceText(child_node.value))
+            {
+                continue;
+            }
+            const new_child = try self.copyFilteredNode(
+                allocator,
+                nodes,
+                attributes,
+                child,
+                new_id,
+            );
+            if (last == dom.null_node) {
+                nodes.items[new_id].first_child = new_child;
+            } else {
+                nodes.items[last].next_sibling = new_child;
+            }
+            nodes.items[new_id].last_child = new_child;
+            last = new_child;
+        }
+        return new_id;
     }
 
     fn buildSpaceRuleIndex(self: *Runtime) Error!void {
