@@ -722,7 +722,10 @@ const Builder = struct {
         // Hoist the trusted flag: writing through `self.attributes` prevents
         // the compiler from proving it cannot alias `self.parser.options`.
         const trusted = self.parser.options.trusted;
-        for (element.attrs, out) |attr, *dst| {
+        // Write through a moving pointer: indexing the destination array
+        // adds a scaled address computation to every attribute.
+        var dest: [*]Attribute = out.ptr;
+        for (element.attrs) |attr| {
             var flags: u32 = attr.colon;
             if (attr.whitespace_char_ref) {
                 flags |= attr_flag_whitespace_char_ref;
@@ -735,7 +738,7 @@ const Builder = struct {
                 // value that needs decoding.
                 if (attr.raw_adjacent) flags |= attr_flag_raw_adjacent;
             }
-            dst.* = .{
+            dest[0] = .{
                 .name = attr.name,
                 .value = attr.value,
                 .ns = if (attr.namespace_uri.len == 0)
@@ -744,6 +747,7 @@ const Builder = struct {
                     try self.internNamespace(attr.namespace_uri),
                 .flags = flags,
             };
+            dest += 1;
         }
         self.attributes.items.len += element.attrs.len;
         if (element.attrs_need_work) {
