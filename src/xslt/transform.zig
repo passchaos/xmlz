@@ -5269,6 +5269,9 @@ const Runtime = struct {
                 .keys = all_keys[base..][0..sorts.len],
             };
         }
+        // A stable sort whose keys all compare equal preserves the input
+        // order, so low-cardinality sort keys skip the comparison sort.
+        if (sortKeysAllEqual(all_keys, entries[0].keys, sorts.len)) return nodes;
         std.mem.sort(SortEntry, entries, sorts, sortEntryLessThan);
         const out = try self.allocator.alloc(xpath.NodeRef, nodes.len);
         for (entries, 0..) |entry, index| out[index] = entry.node;
@@ -6183,6 +6186,23 @@ fn modeMatches(template_mode: ?[]const u8, mode: ?[]const u8) bool {
     if (template_mode == null) return mode == null;
     if (mode == null) return false;
     return std.mem.eql(u8, template_mode.?, mode.?);
+}
+
+/// Whether every entry's sort keys compare equal to the first entry's keys.
+/// A stable sort over equal keys keeps document order, so callers can skip it.
+fn sortKeysAllEqual(
+    all_keys: []const SortValue,
+    first: []const SortValue,
+    key_count: usize,
+) bool {
+    var index: usize = 1;
+    while (index * key_count < all_keys.len) : (index += 1) {
+        const keys = all_keys[index * key_count ..][0..key_count];
+        for (keys, first) |value, expected| {
+            if (compareSortValues(value, expected) != .eq) return false;
+        }
+    }
+    return true;
 }
 
 fn sortEntryLessThan(

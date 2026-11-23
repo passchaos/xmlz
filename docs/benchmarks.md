@@ -258,15 +258,15 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.160 | 8.00 |
-| identity | libxslt (lxml) | 1.029 | 51.46 |
-| sorted report | xmlz | 0.155 | 7.76 |
-| sorted report | libxslt (lxml) | 0.885 | 44.24 |
+| identity | xmlz | 0.148 | 7.42 |
+| identity | libxslt (lxml) | 1.024 | 51.21 |
+| sorted report | xmlz | 0.123 | 6.17 |
+| sorted report | libxslt (lxml) | 0.875 | 43.73 |
 
 ## Interpretation
 
-- The identity transform is **6.4x faster than libxslt** and the sorted
-  report is **5.7x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **6.9x faster than libxslt** and the sorted
+  report is **7.1x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -289,7 +289,9 @@ column amortizes parsing and serialization over the 20 applications.
 - The merged source view aliases the parsed arrays until `document()` loads
   another document, copies skip in-scope namespace collection for
   namespace-free inputs, and result node storage is preallocated from the
-  source size.
+  source size. Sort keys are precomputed once per node, and when every
+  entry's keys compare equal the stable sort is skipped because document
+  order is already the tie-break order.
 - The source document's non-simple match patterns are indexed once and later
   lookups use a flag instead of a hash-map probe; result children skip the
   ancestor walk when they are freshly created; and string values borrow a
