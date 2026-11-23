@@ -908,13 +908,59 @@ const Evaluator = struct {
             .node => |node_id| node_id,
             else => return,
         };
-        const node_value = context.document.node(id);
+        const document = context.document;
+        const node_value = document.node(id);
         if (node_value.kind != .document and node_value.kind != .element) {
+            return;
+        }
+        // The node test is fixed for the whole traversal, so test names
+        // inline instead of dispatching per descendant.
+        if (step.node_test == .name) {
+            const name_test = step.node_test.name;
+            const expected_uri = if (name_test.prefix != null)
+                prefix_uri orelse ""
+            else
+                "";
+            var child = node_value.first_child;
+            while (child != dom.null_node) : (child =
+                document.node(child).next_sibling)
+            {
+                const child_value = document.node(child);
+                if (child_value.kind != .element) continue;
+                var matches = true;
+                if (name_test.local) |local| {
+                    matches = child_value.local.len == local.len and
+                        std.mem.eql(u8, child_value.local, local);
+                }
+                if (matches) {
+                    if (name_test.prefix != null) {
+                        matches = std.mem.eql(
+                            u8,
+                            child_value.ns,
+                            expected_uri,
+                        );
+                    } else if (name_test.local != null) {
+                        // An unprefixed name test selects no-namespace
+                        // elements; `*` matches regardless of namespace.
+                        matches = child_value.ns.len == 0;
+                    }
+                }
+                if (matches) {
+                    try out.append(self.allocator, .{ .node = child });
+                }
+                try self.appendDescendantMatches(
+                    context,
+                    .{ .node = child },
+                    step,
+                    prefix_uri,
+                    out,
+                );
+            }
             return;
         }
         var child = node_value.first_child;
         while (child != dom.null_node) : (child =
-            context.document.node(child).next_sibling)
+            document.node(child).next_sibling)
         {
             const candidate: value.NodeRef = .{ .node = child };
             if (try self.matchesTest(
@@ -926,13 +972,16 @@ const Evaluator = struct {
             )) {
                 try out.append(self.allocator, candidate);
             }
-            try self.appendDescendantMatches(
-                context,
-                candidate,
-                step,
-                prefix_uri,
-                out,
-            );
+            const child_value = document.node(child);
+            if (child_value.kind == .element or child_value.kind == .document) {
+                try self.appendDescendantMatches(
+                    context,
+                    candidate,
+                    step,
+                    prefix_uri,
+                    out,
+                );
+            }
         }
     }
 
