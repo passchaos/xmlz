@@ -101,13 +101,13 @@ because the host was shared during measurement.
 
 | Serializer | MB/s | Peak RSS |
 | --- | ---: | ---: |
-| xmlz | 1424.25 | 123 MiB |
-| pugixml | 1101.91 | 115 MiB |
-| libxml2 | 263.95 | 357 MiB |
+| xmlz | 1384.38 | 125 MiB |
+| pugixml | 1093.06 | 115 MiB |
+| libxml2 | 266.40 | 357 MiB |
 
 ## Interpretation
 
-- xmlz's writer is **1.3x faster than pugixml** and **5.4x faster than
+- xmlz's writer is **1.27x faster than pugixml** and **5.2x faster than
   libxml2** while still validating XML 1.0 characters and escaping carriage
   returns, which neither comparison engine does.
 - Text and attribute values are scanned once: the 32-byte SIMD pass flags
@@ -122,6 +122,11 @@ because the host was shared during measurement.
 - Namespace declarations that repeat an inherited binding are dropped, and the
   hot checks for `xmlns` / `xmlns:prefix` names are length tests rather than
   generic slice comparisons; that change alone cut writer time by about 10%.
+- Parsed documents record that every character was validated at parse time,
+  so the serializer skips re-validating UTF-8. On CJK-heavy documents that
+  lifts serialization from about 0.3 GB/s to 2.2-2.8 GB/s (pugixml: 1.9-2.1
+  GB/s); the ASCII benchmark pays about 3% for the extra branch and stays
+  ahead of both engines.
 
 ## XSLT transformation
 
