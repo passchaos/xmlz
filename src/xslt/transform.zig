@@ -2831,6 +2831,69 @@ const Runtime = struct {
         }
     }
 
+    /// Literal result element bodies are dominated by text-producing
+    /// instructions, so dispatch those directly and skip the large
+    /// instruction switch for them.
+    fn executeLiteralBody(
+        self: *Runtime,
+        body: []const compile.Instruction,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+    ) Error!void {
+        const mark = self.variable_len;
+        defer self.variable_len = mark;
+        for (body) |*instruction| {
+            switch (instruction.*) {
+                .literal_text => |text| try self.appendText(text),
+                .text => |text| try self.appendText(text),
+                .value_of => |value_of| try self.executeValueOf(
+                    value_of,
+                    node,
+                    position,
+                    size,
+                ),
+                else => try self.executeInstruction(
+                    instruction,
+                    node,
+                    position,
+                    size,
+                ),
+            }
+        }
+    }
+
+    fn executeValueOf(
+        self: *Runtime,
+        value_of: compile.ValueOf,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+    ) Error!void {
+        // A single child name test is the common case; read its string value
+        // directly instead of building a node set.
+        if (try self.simpleChildString(value_of.select, node)) |text| {
+            if (value_of.disable_output_escaping) {
+                try self.appendTextRaw(text);
+            } else {
+                try self.appendText(text);
+            }
+            return;
+        }
+        const value = try self.evalOwned(
+            value_of.select,
+            node,
+            position,
+            size,
+        );
+        const text = try self.toString(value);
+        if (value_of.disable_output_escaping) {
+            try self.appendTextRaw(text);
+        } else {
+            try self.appendText(text);
+        }
+    }
+
     fn executeInstruction(
         self: *Runtime,
         instruction: *const compile.Instruction,
@@ -2842,30 +2905,12 @@ const Runtime = struct {
             .literal_text => |text| try self.appendText(text),
             .text => |text| try self.appendText(text),
             .raw_text => |text| try self.appendTextRaw(text),
-            .value_of => |value_of| {
-                // A single child name test is the common case; read its
-                // string value directly instead of building a node set.
-                if (try self.simpleChildString(value_of.select, node)) |text| {
-                    if (value_of.disable_output_escaping) {
-                        try self.appendTextRaw(text);
-                    } else {
-                        try self.appendText(text);
-                    }
-                    return;
-                }
-                const value = try self.evalOwned(
-                    value_of.select,
-                    node,
-                    position,
-                    size,
-                );
-                const text = try self.toString(value);
-                if (value_of.disable_output_escaping) {
-                    try self.appendTextRaw(text);
-                } else {
-                    try self.appendText(text);
-                }
-            },
+            .value_of => |value_of| try self.executeValueOf(
+                value_of,
+                node,
+                position,
+                size,
+            ),
             .literal_element => |element| try self.executeLiteralElement(
                 element,
                 node,
@@ -3794,7 +3839,7 @@ const Runtime = struct {
                 ) catch |err| return mapBuilderError(err);
             }
         }
-        try self.executeInstructions(element.body, node, position, size);
+        try self.executeLiteralBody(element.body, node, position, size);
     }
 
     fn executeApplyTemplates(
