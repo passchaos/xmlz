@@ -697,12 +697,8 @@ inline fn shortPlainText(text: []const u8, escape_gt: bool) bool {
 fn validateHighRun(text: []const u8, start: usize) Error!usize {
     var index = start;
     while (index < text.len and text[index] >= 0x80) {
-        const length = std.unicode.utf8ByteSequenceLength(text[index]) catch
+        const length = chars.xmlCodepointLength(text, index, .xml_1_0) orelse
             return error.InvalidCharacter;
-        if (index + length > text.len) return error.InvalidCharacter;
-        const codepoint = std.unicode.utf8Decode(text[index..][0..length]) catch
-            return error.InvalidCharacter;
-        if (!chars.isXmlChar(codepoint)) return error.InvalidCharacter;
         index += length;
     }
     return index;

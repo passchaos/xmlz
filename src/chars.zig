@@ -402,6 +402,56 @@ pub fn scanNmtoken(bytes: []const u8) usize {
     return index;
 }
 
+/// Decode one UTF-8 sequence starting at `index` (whose first byte is at or
+/// above 0x80) and check it against the XML character rules. Returns the
+/// sequence length, or null when it is malformed or not an XML character.
+pub inline fn xmlCodepointLength(
+    bytes: []const u8,
+    index: usize,
+    version: Version,
+) ?usize {
+    const byte = bytes[index];
+    if (byte < 0xC2) return null; // continuation byte or overlong lead
+    if (byte < 0xE0) {
+        if (index + 2 > bytes.len) return null;
+        const b1 = bytes[index + 1];
+        if (b1 & 0xC0 != 0x80) return null;
+        const cp: u21 = (@as(u21, byte & 0x1F) << 6) | (b1 & 0x3F);
+        if (!isXmlCharVersion(cp, version)) return null;
+        if (version == .xml_1_1 and isRestrictedChar11(cp)) return null;
+        return 2;
+    }
+    if (byte < 0xF0) {
+        if (index + 3 > bytes.len) return null;
+        const b1 = bytes[index + 1];
+        const b2 = bytes[index + 2];
+        if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80) return null;
+        const cp: u21 = (@as(u21, byte & 0x0F) << 12) |
+            (@as(u21, b1 & 0x3F) << 6) | (b2 & 0x3F);
+        if (cp < 0x800) return null; // overlong
+        if (cp >= 0xD800 and cp <= 0xDFFF) return null; // surrogate
+        if (!isXmlCharVersion(cp, version)) return null;
+        if (version == .xml_1_1 and isRestrictedChar11(cp)) return null;
+        return 3;
+    }
+    if (byte < 0xF5) {
+        if (index + 4 > bytes.len) return null;
+        const b1 = bytes[index + 1];
+        const b2 = bytes[index + 2];
+        const b3 = bytes[index + 3];
+        if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80 or
+            b3 & 0xC0 != 0x80) return null;
+        const cp: u21 = (@as(u21, byte & 0x07) << 18) |
+            (@as(u21, b1 & 0x3F) << 12) | (@as(u21, b2 & 0x3F) << 6) |
+            (b3 & 0x3F);
+        if (cp < 0x10000 or cp > 0x10FFFF) return null;
+        if (!isXmlCharVersion(cp, version)) return null;
+        if (version == .xml_1_1 and isRestrictedChar11(cp)) return null;
+        return 4;
+    }
+    return null;
+}
+
 /// Validate a run of literal character data. For XML 1.1 this rejects
 /// restricted characters, which are only permitted through character
 /// references.
@@ -452,11 +502,8 @@ pub inline fn findInvalidLiteralCharVersion(
             }
             return index;
         }
-        const len = codepointLength(bytes, index) catch return index;
-        const cp = std.unicode.utf8Decode(bytes[index..][0..len]) catch
+        const len = xmlCodepointLength(bytes, index, version) orelse
             return index;
-        if (!isXmlCharVersion(cp, version)) return index;
-        if (version == .xml_1_1 and isRestrictedChar11(cp)) return index;
         index += len;
     }
     return null;
