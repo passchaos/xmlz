@@ -3745,6 +3745,19 @@ const Runtime = struct {
             );
             return;
         }
+        if (instruction.stream_identity) {
+            try self.applyIdentitySelect(
+                node,
+                instruction.mode,
+                try self.evaluateParams(
+                    instruction.params,
+                    node,
+                    position,
+                    size,
+                ),
+            );
+            return;
+        }
         const selected: []const xpath.NodeRef = if (instruction.select) |select|
             try self.requireNodeSet(try self.evalOwned(
                 select,
@@ -3768,6 +3781,75 @@ const Runtime = struct {
             size,
         );
         try self.applyTemplates(sorted, instruction.mode, params);
+    }
+
+    /// Apply the standard identity select `@*|node()` by walking attributes
+    /// and children directly instead of materializing a node set.
+    fn applyIdentitySelect(
+        self: *Runtime,
+        node: xpath.NodeRef,
+        mode: ?[]const u8,
+        params: []const xpath.Variable,
+    ) Error!void {
+        const id = switch (node) {
+            .node => |value| value,
+            .attribute, .namespace_node => return,
+        };
+        const value = self.source.node(id);
+        if (value.kind != .element and value.kind != .document) return;
+        var size: usize = 0;
+        if (self.stylesheet.uses_last) {
+            if (value.kind == .element) {
+                for (self.source.attributesOf(id)) |attr| {
+                    if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                        continue;
+                    }
+                    size += 1;
+                }
+            }
+            var count_child = value.first_child;
+            while (count_child != dom.null_node) : (count_child =
+                self.source.node(count_child).next_sibling)
+            {
+                size += 1;
+            }
+        }
+        const saved_mode = self.current_mode;
+        self.current_mode = mode;
+        defer self.current_mode = saved_mode;
+        var position: usize = 0;
+        if (value.kind == .element) {
+            for (self.source.attributesOf(id), 0..) |attr, index| {
+                if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                    continue;
+                }
+                position += 1;
+                try self.applyTemplateNode(
+                    .{ .attribute = .{
+                        .element = id,
+                        .index = @intCast(index),
+                    } },
+                    mode,
+                    params,
+                    position,
+                    size,
+                );
+            }
+        }
+        var child = value.first_child;
+        while (child != dom.null_node) {
+            const current = child;
+            const child_value = self.source.node(current);
+            child = child_value.next_sibling;
+            position += 1;
+            try self.applyTemplateNode(
+                .{ .node = current },
+                mode,
+                params,
+                position,
+                size,
+            );
+        }
     }
 
     fn executeCallTemplate(

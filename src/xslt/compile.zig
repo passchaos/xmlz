@@ -252,6 +252,9 @@ pub const ApplyTemplates = struct {
     mode: ?[]const u8 = null,
     params: []const ParamBinding = &.{},
     sorts: []const SortKey = &.{},
+    /// True when `select` is the standard identity union (`@*|node()`), which
+    /// the transformer can apply without materializing the node set.
+    stream_identity: bool = false,
 };
 
 pub const CallTemplate = struct {
@@ -1291,6 +1294,11 @@ const Compiler = struct {
         instruction.mode = self.document.attribute(id, "mode");
         instruction.params = try self.compileWithParams(id);
         instruction.sorts = try self.compileSorts(id);
+        if (instruction.sorts.len == 0) {
+            if (instruction.select) |select| {
+                instruction.stream_identity = identitySelectShape(select.node);
+            }
+        }
         return instruction;
     }
 
@@ -2094,4 +2102,63 @@ fn defaultPriority(expression: *const ast.Expr) f64 {
         },
         else => 0.5,
     };
+}
+
+/// Match the standard identity select `@*|node()` (in either order), which
+/// the transformer can apply by walking attributes and children directly.
+fn identitySelectShape(expression: *const ast.Expr) bool {
+    const binary = switch (expression.*) {
+        .binary => |value| value,
+        else => return false,
+    };
+    if (binary.op != .union_) return false;
+    var saw_attributes = false;
+    var saw_children = false;
+    for ([_]*const ast.Expr{ binary.lhs, binary.rhs }) |branch| {
+        const step = singleSelectStep(branch) orelse return false;
+        switch (step.axis) {
+            .attribute => {
+                if (saw_attributes) return false;
+                saw_attributes = true;
+                switch (step.node_test) {
+                    .name => |name_test| {
+                        if (name_test.prefix != null or name_test.local != null) {
+                            return false;
+                        }
+                    },
+                    else => return false,
+                }
+            },
+            .child => {
+                if (saw_children) return false;
+                saw_children = true;
+                switch (step.node_test) {
+                    .node => {},
+                    else => return false,
+                }
+            },
+            else => return false,
+        }
+    }
+    return saw_attributes and saw_children;
+}
+
+const SingleSelectStep = struct {
+    axis: ast.Axis,
+    node_test: ast.NodeTest,
+};
+
+/// Match a relative select with a single child or attribute step.
+fn singleSelectStep(expression: *const ast.Expr) ?SingleSelectStep {
+    const path = switch (expression.*) {
+        .path => |value| value,
+        else => return null,
+    };
+    if (path.absolute or path.start != null or path.steps.len != 1) {
+        return null;
+    }
+    const step = path.steps[0];
+    if (step.predicates.len != 0) return null;
+    if (step.axis != .child and step.axis != .attribute) return null;
+    return .{ .axis = step.axis, .node_test = step.node_test };
 }
