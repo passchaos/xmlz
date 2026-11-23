@@ -2750,12 +2750,16 @@ const Runtime = struct {
             try self.ensureDocumentMatches(node);
         }
         var best: ?*const compile.Template = null;
-        if (self.template_index.nodes.get(nodeKey(node))) |candidates| {
-            for (candidates.items) |index| {
-                const template = self.template_states[index].template;
-                if (template.precedence >= maximum_precedence) continue;
-                if (!modeMatches(template.mode, mode)) continue;
-                best = betterTemplate(best, template);
+        // Patterns that cannot be matched structurally are precomputed into
+        // this map; most stylesheets have none, so skip the hash lookup.
+        if (self.template_index.nodes.count() != 0) {
+            if (self.template_index.nodes.get(nodeKey(node))) |candidates| {
+                for (candidates.items) |index| {
+                    const template = self.template_states[index].template;
+                    if (template.precedence >= maximum_precedence) continue;
+                    if (!modeMatches(template.mode, mode)) continue;
+                    best = betterTemplate(best, template);
+                }
             }
         }
         try self.collectCandidates(
@@ -2797,13 +2801,15 @@ const Runtime = struct {
                                 best,
                             );
                         }
-                        if (index.elements_by_uri.get(value.ns)) |bucket| {
-                            try self.addCandidates(
-                                bucket.candidates(mode),
-                                node,
-                                maximum_precedence,
-                                best,
-                            );
+                        if (index.elements_by_uri.count() != 0) {
+                            if (index.elements_by_uri.get(value.ns)) |bucket| {
+                                try self.addCandidates(
+                                    bucket.candidates(mode),
+                                    node,
+                                    maximum_precedence,
+                                    best,
+                                );
+                            }
                         }
                         try self.addCandidates(
                             index.child_node.candidates(mode),
@@ -2885,13 +2891,15 @@ const Runtime = struct {
                         best,
                     );
                 }
-                if (index.attributes_by_uri.get(name.ns)) |bucket| {
-                    try self.addCandidates(
-                        bucket.candidates(mode),
-                        node,
-                        maximum_precedence,
-                        best,
-                    );
+                if (index.attributes_by_uri.count() != 0) {
+                    if (index.attributes_by_uri.get(name.ns)) |bucket| {
+                        try self.addCandidates(
+                            bucket.candidates(mode),
+                            node,
+                            maximum_precedence,
+                            best,
+                        );
+                    }
                 }
             },
             .namespace_node => {},
