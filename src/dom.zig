@@ -41,6 +41,9 @@ pub const Attribute = struct {
     normalization_changed: bool = false,
     /// True when a character reference produced tab, LF, or CR.
     whitespace_char_ref: bool = false,
+    /// True when the parser proved the value needs no serialization
+    /// escaping: no references, markup, quotes, or line ends.
+    plain: bool = false,
 
     pub fn localName(self: Attribute) []const u8 {
         return if (self.colon == 0xFFFF) self.name else self.name[self.colon + 1 ..];
@@ -75,6 +78,9 @@ pub const Node = struct {
     /// The element carries an `xmlns` / `xmlns:prefix` declaration, so
     /// serializers must inspect its attributes for redundant bindings.
     has_ns_decls: bool = false,
+    /// True when the parser proved the text needs no serialization escaping
+    /// (no references, markup, line ends, or `>`).
+    text_plain: bool = false,
 };
 
 pub const Options = struct {
@@ -496,6 +502,9 @@ const Builder = struct {
                 .ns = attr.namespace_uri,
                 .value = attr.value,
                 .whitespace_char_ref = attr.whitespace_char_ref,
+                // A validated value with no references or line ends cannot
+                // contain a character the serializer must escape.
+                .plain = !attr.needs_decode and !self.parser.options.trusted,
             };
         }
         self.attributes.items.len += element.attrs.len;
@@ -602,7 +611,24 @@ const Builder = struct {
             .verbatim => raw,
         };
         const parent = self.stack[self.stack_len - 1];
-        _ = try self.addChildNode(parent, .{ .kind = .text, .value = decoded });
+        // A verbatim span was already validated and contains no references,
+        // markup, or line ends; it only needs an escaping pass when it
+        // contains `>`. Short spans dominate, so a scalar test avoids the
+        // vector scanner's setup.
+        var plain = mode == .verbatim and !self.parser.options.trusted;
+        if (plain) {
+            for (decoded) |byte| {
+                if (byte == '>') {
+                    plain = false;
+                    break;
+                }
+            }
+        }
+        _ = try self.addChildNode(parent, .{
+            .kind = .text,
+            .value = decoded,
+            .text_plain = plain,
+        });
         if (self.parser.text_whitespace_char_ref) {
             self.nodes.items[parent].has_whitespace_char_ref_text = true;
         }

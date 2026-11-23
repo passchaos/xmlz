@@ -226,7 +226,7 @@ fn writeNode(
             validated,
         ),
         .text => {
-            if (node.raw_text) {
+            if (node.raw_text or node.text_plain) {
                 try writer.writeAll(node.value);
             } else {
                 try escapeTextVersionChecked(
@@ -343,7 +343,7 @@ fn writeStartTag(
                     const attr = attrs[index];
                     if (skip_decls and
                         shouldSkipAttribute(doc, id, attr, default_ns)) continue;
-                    if (!shortPlainAttribute(attr.value) and
+                    if (!attr.plain and !shortPlainAttribute(attr.value) and
                         (if (validated)
                             try scanAttributeTrusted(attr.value, 0)
                         else
@@ -395,7 +395,16 @@ fn writeStartTag(
                     try writer.writeByte(' ');
                     try writer.writeAll(attr.name);
                     try writer.writeAll("=\"");
-                    try escapeAttributeVersion(writer, attr.value, version);
+                    if (attr.plain) {
+                        try writer.writeAll(attr.value);
+                    } else {
+                        try escapeAttributeVersionChecked(
+                            writer,
+                            attr.value,
+                            version,
+                            validated,
+                        );
+                    }
                     try writer.writeByte('"');
                 }
                 try writer.writeAll(if (empty) "/>" else ">");
@@ -1122,6 +1131,40 @@ test "writer escapes text and attribute values" {
     try testing.expect(std.mem.indexOf(u8, output, "a=\"x &amp; y &#10; z\"") != null);
     try testing.expect(std.mem.indexOf(u8, output, "a &lt; b &amp; c &#13;") != null);
     try testing.expect(std.mem.indexOf(u8, output, "&#13;") != null);
+}
+
+test "parsed values record serializer plainness" {
+    const input =
+        "<doc plain=\"abc\" amp=\"a&amp;b\" quote='say &quot;hi&quot;'>" ++
+        "text > tail &lt; &amp; &#13;</doc>";
+    var doc = try dom.Document.parse(testing.allocator, input, .{});
+    defer doc.deinit();
+
+    const root = doc.root();
+    const attrs = doc.attributesOf(root);
+    try testing.expect(attrs[0].plain);
+    // A decoded reference can introduce '&', so the value is not plain.
+    try testing.expect(!attrs[1].plain);
+    try testing.expect(!attrs[2].plain);
+
+    var saw_gt_text = false;
+    var child = doc.node(root).first_child;
+    while (child != dom.null_node) : (child = doc.node(child).next_sibling) {
+        const node = doc.node(child);
+        if (node.kind == .text and
+            std.mem.indexOfScalar(u8, node.value, '>') != null)
+        {
+            saw_gt_text = true;
+            try testing.expect(!node.text_plain);
+        }
+    }
+    try testing.expect(saw_gt_text);
+
+    const output = try render(&doc, .{ .xml_declaration = false });
+    defer testing.allocator.free(output);
+    try testing.expect(std.mem.indexOf(u8, output, "plain=\"abc\"") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "amp=\"a&amp;b\"") != null);
+    try testing.expect(std.mem.indexOf(u8, output, "text &gt; tail") != null);
 }
 
 test "writer pretty prints block elements and preserves mixed content" {

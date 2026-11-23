@@ -212,6 +212,9 @@ pub const Builder = struct {
         const node = &self.nodes.items[id];
         if (node.kind != .text) return error.InvalidTree;
         if (value.len == 0) return;
+        // The appended bytes are unvalidated, so the node is no longer known
+        // to be serializer-plain.
+        node.text_plain = false;
         const total = node.value.len + value.len;
         if (total > self.slab.len - self.slab_index) {
             if (total >= slab_size / 4) {
