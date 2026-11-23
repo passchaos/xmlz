@@ -3,6 +3,7 @@
 const std = @import("std");
 const dom = @import("../dom.zig");
 const dom_builder = @import("../dom_builder.zig");
+const local_arena = @import("../local_arena.zig");
 const encoding = @import("../encoding.zig");
 const namespace = @import("../namespace.zig");
 const xmlbase = @import("../xmlbase.zig");
@@ -241,7 +242,10 @@ pub fn apply(
 ) Error!Result {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
-    const arena_allocator = arena.allocator();
+    // Expressions allocate many small node sets and strings on one thread;
+    // a bump allocator avoids the arena's atomic bookkeeping.
+    var bump = local_arena.Arena.init(arena.allocator());
+    const arena_allocator = bump.allocator();
 
     // The result document owns its arena. Parent it to the caller allocator,
     // not to the transform arena, because the transform arena struct is moved

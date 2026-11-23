@@ -8,6 +8,7 @@ const namespace = @import("../namespace.zig");
 const exslt = @import("exslt.zig");
 const exslt_date = @import("exslt_date.zig");
 const xmlbase = @import("../xmlbase.zig");
+const local_arena = @import("../local_arena.zig");
 
 pub const Error = error{
     OutOfMemory,
@@ -25,7 +26,8 @@ pub fn evaluate(
 ) Error!value.Result {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
-    var evaluator: Evaluator = .{ .allocator = arena.allocator() };
+    var bump = local_arena.Arena.init(arena.allocator());
+    var evaluator: Evaluator = .{ .allocator = bump.allocator() };
     const result = try evaluator.eval(expression, context);
     return .{ .arena = arena, .value = result };
 }
