@@ -644,7 +644,8 @@ pub const Parser = struct {
         if (self.startsWith("<!")) return self.fail(error.UnexpectedMarkup, self.pos);
         if (self.input[self.pos] == '<') {
             self.state = .content;
-            event.* = .{ .start_element = try self.scanStartTag() };
+            event.* = .{ .start_element = undefined };
+            try self.scanStartTag(&event.start_element);
             return true;
         }
         return self.fail(error.InvalidSyntax, self.pos);
@@ -688,7 +689,8 @@ pub const Parser = struct {
                     return true;
                 },
                 else => {
-                    event.* = .{ .start_element = try self.scanStartTag() };
+                    event.* = .{ .start_element = undefined };
+                    try self.scanStartTag(&event.start_element);
                     return true;
                 },
             }
@@ -720,7 +722,7 @@ pub const Parser = struct {
         return self.fail(error.ContentAfterRoot, self.pos);
     }
 
-    fn scanStartTag(self: *Parser) Error!StartElement {
+    fn scanStartTag(self: *Parser, out: *StartElement) Error!void {
         const start = self.pos;
         const input = self.input;
         std.debug.assert(input[start] == '<');
@@ -892,7 +894,7 @@ pub const Parser = struct {
             event_depth = self.depth;
         }
 
-        return .{
+        out.* = .{
             .name = name,
             .name_range = .{
                 .start = @intCast(name_start),
