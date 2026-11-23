@@ -147,17 +147,18 @@ column amortizes parsing and serialization over the 20 applications.
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.654 | 32.70 |
-| identity | libxslt (lxml) | 1.145 | 57.26 |
-| sorted report | xmlz | 0.463 | 23.13 |
-| sorted report | libxslt (lxml) | 0.894 | 44.69 |
+| identity | xmlz | 0.513 | 25.65 |
+| identity | libxslt (lxml) | 1.032 | 51.58 |
+| sorted report | xmlz | 0.391 | 19.53 |
+| sorted report | libxslt (lxml) | 0.896 | 44.80 |
 
 ## Interpretation
 
-- The identity transform is **1.75x faster than libxslt** and the sorted
-  report is **1.93x faster**; libxslt is measured through lxml in-process so
-  Python call overhead is included. Absolute times move with host load, so
-  the ratio is the meaningful comparison.
+- The identity transform is **2.0x faster than libxslt** and the sorted
+  report is **2.3x faster**; libxslt is measured through lxml in-process so
+  Python call overhead is included, and the xmlz column also serializes the
+  result while lxml only builds the result tree. Absolute times move with
+  host load, so the ratio is the meaningful comparison.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
   directly against each node instead of precomputing a match set, and child
   iteration no longer materializes node-sets for `apply-templates` without
