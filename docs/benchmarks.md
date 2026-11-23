@@ -259,22 +259,22 @@ plus `xsl:apply-templates` for every node), the standard identity transform
 once; the per-transform column amortizes parsing and serialization over the
 20 applications.
 
-## Results (2026-11-24)
+## Results (2026-11-24, median of three runs)
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.125 | 6.23 |
-| identity | libxslt (lxml) | 1.031 | 51.57 |
-| identity (attributes) | xmlz | 0.128 | 6.41 |
-| identity (attributes) | libxslt (lxml) | 1.661 | 83.05 |
-| sorted report | xmlz | 0.097 | 4.87 |
-| sorted report | libxslt (lxml) | 0.930 | 46.49 |
+| identity | xmlz | 0.120 | 6.01 |
+| identity | libxslt (lxml) | 1.037 | 51.86 |
+| identity (attributes) | xmlz | 0.140 | 6.99 |
+| identity (attributes) | libxslt (lxml) | 1.696 | 84.80 |
+| sorted report | xmlz | 0.086 | 4.31 |
+| sorted report | libxslt (lxml) | 0.886 | 44.31 |
 
 ## Interpretation
 
-- The identity transform is **8.3x faster than libxslt**, the standard
-  identity transform (attributes copied) is **13.0x faster**, and the sorted
-  report is **9.5x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **8.6x faster than libxslt**, the standard
+  identity transform (attributes copied) is **12.1x faster**, and the sorted
+  report is **10.3x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
@@ -294,8 +294,9 @@ once; the per-transform column amortizes parsing and serialization over the
   deduplicated when the stylesheet was parsed. Result attribute storage is
   reserved before a for-each loop from the literal result elements its body
   declares, a body that is a single literal element runs without the
-  instruction-dispatch layers, and the slab string copy is inlined at its
-  call sites.
+  instruction-dispatch layers, and the hot small helpers (slab string copy,
+  result node creation, text append, simple child select) are inlined at
+  their call sites so the per-node path has no out-of-line returns.
   Absolute times move with host load, so the ratio is the meaningful
   comparison.
 - Simple match patterns (`*`, name tests, `text()`, `@*`) are tested
