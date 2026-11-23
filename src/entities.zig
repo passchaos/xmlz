@@ -339,6 +339,38 @@ fn decodeSimple(
     max_output: usize,
     buffer: []u8,
 ) ?usize {
+    // Long text without line ends takes the bulk-copy path; short values and
+    // attribute values are cheaper to walk byte by byte.
+    if (attribute or normalize or raw.len <= 32) {
+        return decodeSimpleBytes(raw, attribute, normalize, max_output, buffer);
+    }
+    var out: usize = 0;
+    var index: usize = 0;
+    while (index < raw.len) {
+        const stop = chars.findByteSoon(raw, index, '&') orelse raw.len;
+        const run = stop - index;
+        if (run != 0) {
+            if (out + run > buffer.len or out + run > max_output) return null;
+            @memcpy(buffer[out..][0..run], raw[index..][0..run]);
+            out += run;
+            index = stop;
+        }
+        if (index >= raw.len) break;
+        const reference = decodeSimpleReference(raw, &index, max_output, buffer, out) orelse
+            return null;
+        out = reference;
+    }
+    return out;
+}
+
+/// Single-pass byte loop used for short spans and attribute values.
+fn decodeSimpleBytes(
+    raw: []const u8,
+    attribute: bool,
+    normalize: bool,
+    max_output: usize,
+    buffer: []u8,
+) ?usize {
     var out: usize = 0;
     var index: usize = 0;
     while (index < raw.len) {
@@ -346,30 +378,9 @@ fn decodeSimple(
         var advance: usize = 1;
         var replacement: ?u8 = null;
         if (byte == '&') {
-            const semicolon = std.mem.indexOfScalarPos(
-                u8,
-                raw,
-                index + 1,
-                ';',
-            ) orelse return null;
-            const body = raw[index + 1 .. semicolon];
-            if (body.len != 0 and body[0] == '#') {
-                const codepoint = if (body.len > 1 and body[1] == 'x')
-                    chars.parseHexCharRefVersion(body[1..], .xml_1_0)
-                else
-                    chars.parseDecimalCharRefVersion(body[1..], .xml_1_0);
-                const cp = codepoint orelse return null;
-                var encoded: [4]u8 = undefined;
-                const bytes = chars.encodeUtf8(&encoded, cp);
-                if (out + bytes.len > buffer.len or
-                    out + bytes.len > max_output) return null;
-                @memcpy(buffer[out..][0..bytes.len], bytes);
-                out += bytes.len;
-                index = semicolon + 1;
-                continue;
-            }
-            replacement = predefinedReplacement(body) orelse return null;
-            advance = semicolon + 1 - index;
+            out = decodeSimpleReference(raw, &index, max_output, buffer, out) orelse
+                return null;
+            continue;
         } else if (byte == '\r') {
             if (attribute or normalize) {
                 replacement = if (attribute) ' ' else '\n';
@@ -385,6 +396,40 @@ fn decodeSimple(
         index += advance;
     }
     return out;
+}
+
+/// Decode the reference at `index` and advance it. Returns the new output
+/// length, or null when the general decoder is needed.
+inline fn decodeSimpleReference(
+    raw: []const u8,
+    index: *usize,
+    max_output: usize,
+    buffer: []u8,
+    out: usize,
+) ?usize {
+    const amp = index.*;
+    const semicolon = chars.findByteSoon(raw, amp + 1, ';') orelse return null;
+    const body = raw[amp + 1 .. semicolon];
+    if (body.len != 0 and body[0] == '#') {
+        const codepoint = if (body.len > 1 and body[1] == 'x')
+            chars.parseHexCharRefVersion(body[1..], .xml_1_0)
+        else
+            chars.parseDecimalCharRefVersion(body[1..], .xml_1_0);
+        const cp = codepoint orelse return null;
+        var encoded: [4]u8 = undefined;
+        const bytes = chars.encodeUtf8(&encoded, cp);
+        if (out + bytes.len > buffer.len or out + bytes.len > max_output) {
+            return null;
+        }
+        @memcpy(buffer[out..][0..bytes.len], bytes);
+        index.* = semicolon + 1;
+        return out + bytes.len;
+    }
+    const replacement = predefinedReplacement(body) orelse return null;
+    if (out + 1 > buffer.len or out + 1 > max_output) return null;
+    buffer[out] = replacement;
+    index.* = semicolon + 1;
+    return out + 1;
 }
 
 fn needsTextDecode(raw: []const u8, version: chars.Version) bool {
