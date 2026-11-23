@@ -47,6 +47,18 @@ pub fn apply(
     );
 }
 
+/// Apply with an explicit allocator for the transformation and result
+/// arenas. Batch callers can pass a reusable arena and reset it after each
+/// result is released, avoiding per-application allocation churn.
+pub fn applyWithAllocator(
+    allocator: std.mem.Allocator,
+    stylesheet: *const Stylesheet,
+    source: *const dom.Document,
+    options: Options,
+) Error!Result {
+    return transform_mod.apply(allocator, stylesheet, source, options);
+}
+
 /// Compile and apply a stylesheet in one call.
 pub fn transform(
     allocator: std.mem.Allocator,

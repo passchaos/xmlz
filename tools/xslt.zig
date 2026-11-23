@@ -100,7 +100,12 @@ pub fn main(init: std.process.Init) !void {
         },
     );
     defer compiled.deinit();
-    var result = try xmlz.xslt.apply(
+    // Repeated applications reuse one arena so their trees come from the
+    // same pages instead of a fresh mapping per iteration.
+    var iteration_arena = std.heap.ArenaAllocator.init(init.gpa);
+    defer iteration_arena.deinit();
+    var result = try xmlz.xslt.applyWithAllocator(
+        iteration_arena.allocator(),
         &compiled,
         &source.document,
         .{
@@ -116,7 +121,9 @@ pub fn main(init: std.process.Init) !void {
     var iteration: usize = 1;
     while (iteration < repeat) : (iteration += 1) {
         result.deinit();
-        result = try xmlz.xslt.apply(
+        _ = iteration_arena.reset(.retain_capacity);
+        result = try xmlz.xslt.applyWithAllocator(
+            iteration_arena.allocator(),
             &compiled,
             &source.document,
             .{
