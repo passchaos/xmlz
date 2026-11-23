@@ -487,35 +487,37 @@ const Builder = struct {
             };
         }
         self.attributes.items.len += element.attrs.len;
-        for (out, element.attrs) |*dst, attr| {
-            if (attr.needs_decode or attr.tokenized) {
-                var value = attr.value;
-                if (attr.needs_decode) {
-                    value = try entities.decodeAttributeAlloc(
-                        self.allocator,
-                        attr.value,
-                        self.parser.entityTable(),
-                        .{},
-                        .{
-                            .version = self.parser.xmlVersion(),
-                            .preserve_undeclared = true,
-                            .preserve_external = true,
-                        },
-                    );
+        if (element.attrs_need_work) {
+            for (out, element.attrs) |*dst, attr| {
+                if (attr.needs_decode or attr.tokenized) {
+                    var value = attr.value;
+                    if (attr.needs_decode) {
+                        value = try entities.decodeAttributeAlloc(
+                            self.allocator,
+                            attr.value,
+                            self.parser.entityTable(),
+                            .{},
+                            .{
+                                .version = self.parser.xmlVersion(),
+                                .preserve_undeclared = true,
+                                .preserve_external = true,
+                            },
+                        );
+                    }
+                    if (attr.tokenized) {
+                        const normalized = try normalizeTokenized(
+                            self.allocator,
+                            value,
+                        );
+                        dst.normalization_changed = !std.mem.eql(
+                            u8,
+                            value,
+                            normalized,
+                        );
+                        value = normalized;
+                    }
+                    dst.value = value;
                 }
-                if (attr.tokenized) {
-                    const normalized = try normalizeTokenized(
-                        self.allocator,
-                        value,
-                    );
-                    dst.normalization_changed = !std.mem.eql(
-                        u8,
-                        value,
-                        normalized,
-                    );
-                    value = normalized;
-                }
-                dst.value = value;
             }
         }
         if (!self.parser.options.namespaces) {

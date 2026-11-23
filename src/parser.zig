@@ -257,6 +257,9 @@ pub const StartElement = struct {
     colon: u16 = 0xFFFF,
     /// True when the element declared at least one namespace.
     has_namespace_decls: bool = false,
+    /// True when at least one attribute value needs entity decoding or
+    /// tokenized normalization.
+    attrs_need_work: bool = false,
 };
 
 pub const EndElement = struct {
@@ -683,6 +686,7 @@ pub const Parser = struct {
         var self_closing = false;
         var has_namespace_decls = false;
         var has_prefixed = false;
+        var attrs_need_work = false;
         while (true) {
             const before_whitespace = pos;
             // A single space separates attributes in normal markup; only fall
@@ -734,6 +738,7 @@ pub const Parser = struct {
                 pos = try self.scanAttributeInto(&self.attrs[attr_count], pos);
             }
             const attr = &self.attrs[attr_count];
+            attrs_need_work = attrs_need_work or attr.needs_decode;
             if (self.options.namespaces) {
                 if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
                     has_namespace_decls = true;
@@ -764,11 +769,13 @@ pub const Parser = struct {
             self.fixed_attribute_count != 0)
         {
             try self.applyAttributeDefaults(name, &attr_count);
+            if (attr_count != scanned_attr_count) attrs_need_work = true;
         }
         if (self.tokenized_attr_count != 0) {
             for (self.attrs[0..attr_count]) |*attr| {
                 attr.tokenized = self.isTokenizedAttribute(name, attr.name);
             }
+            attrs_need_work = true;
         }
         // DTD defaults may introduce namespace declarations or prefixed
         // attributes. Their namespace URI is resolved while the default is
@@ -828,6 +835,7 @@ pub const Parser = struct {
             .namespace_uri = element_namespace,
             .colon = name_info.colon,
             .has_namespace_decls = has_namespace_decls,
+            .attrs_need_work = attrs_need_work,
         };
     }
 
