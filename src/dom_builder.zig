@@ -208,6 +208,28 @@ pub const Builder = struct {
         return node.id;
     }
 
+    /// Create an element from an already-validated qualified name and its
+    /// colon offset, such as when copying a parsed tree. The name is copied
+    /// once instead of assembling prefix and local parts.
+    pub fn createElementRaw(
+        self: *Builder,
+        raw_name: []const u8,
+        colon: u16,
+        uri: []const u8,
+    ) Error!dom.NodeId {
+        const raw = try self.copyString(raw_name);
+        const node = try self.addNodeSlot();
+        node.slot.* = .{
+            .kind = .element,
+            .name = raw,
+            .colon = colon,
+            .ns = if (uri.len == 0) 0 else try self.internNamespace(uri),
+            .attr_start = @intCast(self.attributes.items.len),
+            .attr_count = 0,
+        };
+        return node.id;
+    }
+
     pub inline fn createText(self: *Builder, value: []const u8) Error!dom.NodeId {
         return self.createTextNode(value, false);
     }

@@ -3804,9 +3804,9 @@ const Runtime = struct {
                 const node_value = self.source.node(id);
                 switch (node_value.kind) {
                     .element => {
-                        const new_id = self.builder.createElementNsUnchecked(
-                            prefixOf(node_value),
-                            node_value.localName(),
+                        const new_id = self.builder.createElementRaw(
+                            node_value.name,
+                            node_value.colon,
                             self.source.ns(node_value.ns),
                         ) catch |err| return mapBuilderError(err);
                         self.builder.appendChild(self.parent, new_id) catch |err|
@@ -5154,9 +5154,9 @@ const Runtime = struct {
                 }
             },
             .element => {
-                const new_id = self.builder.createElementNsUnchecked(
-                    prefixOf(node_value),
-                    node_value.localName(),
+                const new_id = self.builder.createElementRaw(
+                    node_value.name,
+                    node_value.colon,
                     self.source.ns(node_value.ns),
                 ) catch |err| return mapBuilderError(err);
                 self.builder.appendChild(self.parent, new_id) catch |err|
