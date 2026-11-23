@@ -153,9 +153,10 @@ input; the numbers below were measured sequentially, pinned, best of four.
 | Engine | Mode | MB/s |
 | --- | --- | ---: |
 | xmlz | pull, trusted fast mode | 2359.04 |
-| pugixml | DOM | 1189.18 |
+| xmlz | DOM, trusted fast mode, reusable arena | 1369.06 |
 | xmlz | pull, no namespaces | 1238.44 |
 | xmlz | pull, namespaces | 1198.35 |
+| pugixml | DOM | 1189.18 |
 | xmlz | DOM, trusted fast mode | 970.48 |
 | xmlz | DOM, reusable arena | 837.69 |
 | xmlz | DOM, namespaces | 664.98 |
@@ -173,7 +174,9 @@ libxml2 451.95.
   libxml2**; parsed trees skip writer-side UTF-8 revalidation.
 - pugixml's non-validating DOM is faster than xmlz's validating one on this
   shape because it neither checks UTF-8 nor copies attribute values out of the
-  in-situ buffer. xmlz's validating DOM still beats libxml2's by **6.6x**.
+  in-situ buffer. On the comparable settings (trusted mode, reusable arena
+  against pugixml's allocator reuse) xmlz's DOM is **1.15x faster** than
+  pugixml's, and xmlz's validating DOM still beats libxml2's by **6.6x**.
 
 ## Serialization
 
