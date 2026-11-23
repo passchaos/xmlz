@@ -1581,8 +1581,10 @@ pub const Parser = struct {
             return self.fail(error.UnexpectedEndOfInput, self.input.len);
         };
         const content = self.input[content_start..end];
-        if (self.findInvalidLiteral(content)) |bad| {
-            return self.fail(error.InvalidCharacter, content_start + bad);
+        if (!self.options.trusted) {
+            if (self.findInvalidLiteral(content)) |bad| {
+                return self.fail(error.InvalidCharacter, content_start + bad);
+            }
         }
         self.pos = end + 3;
         return content;
@@ -1591,18 +1593,18 @@ pub const Parser = struct {
     fn scanComment(self: *Parser) Error![]const u8 {
         std.debug.assert(self.startsWith("<!--"));
         const content_start = self.pos + "<!--".len;
-        const end = std.mem.indexOfPos(u8, self.input, content_start, "-->") orelse {
+        // The first `--` must be the terminator; anything else is invalid.
+        const end = std.mem.indexOfPos(u8, self.input, content_start, "--") orelse {
             return self.fail(error.UnexpectedEndOfInput, self.input.len);
         };
+        if (end + 2 >= self.input.len or self.input[end + 2] != '>') {
+            return self.fail(error.InvalidComment, end);
+        }
         const content = self.input[content_start..end];
-        if (std.mem.indexOf(u8, content, "--")) |bad| {
-            return self.fail(error.InvalidComment, content_start + bad);
-        }
-        if (content.len != 0 and content[content.len - 1] == '-') {
-            return self.fail(error.InvalidComment, end - 1);
-        }
-        if (self.findInvalidLiteral(content)) |bad| {
-            return self.fail(error.InvalidCharacter, content_start + bad);
+        if (!self.options.trusted) {
+            if (self.findInvalidLiteral(content)) |bad| {
+                return self.fail(error.InvalidCharacter, content_start + bad);
+            }
         }
         self.pos = end + 3;
         return content;
@@ -1612,7 +1614,7 @@ pub const Parser = struct {
         std.debug.assert(self.startsWith("<?"));
         self.pos += 2;
         const target_start = self.pos;
-        const target_len = chars.scanName(self.input[target_start..]);
+        const target_len = self.nameInfo(self.input[target_start..]).len;
         if (target_len == 0) return self.fail(error.InvalidName, target_start);
         const target = self.input[target_start .. target_start + target_len];
         if (self.options.namespaces and
@@ -1640,8 +1642,10 @@ pub const Parser = struct {
             return self.fail(error.UnexpectedEndOfInput, self.input.len);
         };
         const data = self.input[data_start..end];
-        if (self.findInvalidLiteral(data)) |bad| {
-            return self.fail(error.InvalidCharacter, data_start + bad);
+        if (!self.options.trusted) {
+            if (self.findInvalidLiteral(data)) |bad| {
+                return self.fail(error.InvalidCharacter, data_start + bad);
+            }
         }
         self.pos = end + 2;
         return .{ .target = target, .data = data };
