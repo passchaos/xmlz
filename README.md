@@ -141,7 +141,9 @@ then exposes them through a pull parser and reusable lexical primitives.
   reader); see `docs/benchmarks.md`. The
   validating DOM reaches 521 MB/s one-shot, 663 MB/s with a reusable arena
   (`dom.Document.parseIn`), and 610 MB/s in trusted mode — 7.2x faster than
-  libxml2's DOM and faster than pugixml; see `docs/benchmarks.md`.
+  libxml2's DOM and faster than pugixml; see `docs/benchmarks.md`. The
+  measurement method, performance model, and the optimization experiments
+  that were rejected with evidence are recorded in `docs/performance.md`.
 
 ## Status
 
