@@ -5,6 +5,12 @@ const dom = @import("../dom.zig");
 const dom_builder = @import("../dom_builder.zig");
 const local_arena = @import("../local_arena.zig");
 const name_match = @import("../names.zig");
+
+/// Namespace comparison with a fast path for the common no-namespace case.
+inline fn namespaceMatches(actual: []const u8, expected: []const u8) bool {
+    if (expected.len == 0) return actual.len == 0;
+    return std.mem.eql(u8, actual, expected);
+}
 const encoding = @import("../encoding.zig");
 const namespace = @import("../namespace.zig");
 const xmlbase = @import("../xmlbase.zig");
@@ -2282,7 +2288,7 @@ const Runtime = struct {
                     const value = self.source.node(id);
                     if (value.kind != .element) return false;
                     if (name.check_namespace and
-                        !std.mem.eql(u8, value.ns, name.uri))
+                        !namespaceMatches(value.ns, name.uri))
                     {
                         return false;
                     }
@@ -2298,7 +2304,7 @@ const Runtime = struct {
                 .attribute => |attr| {
                     const value = self.source.attributesOf(attr.element)[attr.index];
                     if (name.check_namespace and
-                        !std.mem.eql(u8, value.ns, name.uri))
+                        !namespaceMatches(value.ns, name.uri))
                     {
                         return false;
                     }
@@ -3173,7 +3179,7 @@ const Runtime = struct {
                 continue;
             }
             if (name.check_namespace and
-                !std.mem.eql(u8, attribute.ns, name.uri)) continue;
+                !namespaceMatches(attribute.ns, name.uri)) continue;
             if (name.local) |local| {
                 if (!name_match.equal(attribute.localName(), local)) continue;
             }
@@ -3199,7 +3205,7 @@ const Runtime = struct {
             const child_value = self.source.node(child);
             if (child_value.kind != .element) continue;
             if (name.check_namespace and
-                !std.mem.eql(u8, child_value.ns, name.uri)) continue;
+                !namespaceMatches(child_value.ns, name.uri)) continue;
             if (name.local) |local| {
                 if (!name_match.equal(child_value.local, local)) continue;
             }
@@ -3285,7 +3291,7 @@ const Runtime = struct {
                     const value = self.source.node(id);
                     if (value.kind != .element) return false;
                     if (name.check_namespace and
-                        !std.mem.eql(u8, value.ns, name.uri))
+                        !namespaceMatches(value.ns, name.uri))
                     {
                         return false;
                     }
@@ -3299,7 +3305,7 @@ const Runtime = struct {
                         attr.element,
                     )[attr.index];
                     if (name.check_namespace and
-                        !std.mem.eql(u8, value.ns, name.uri))
+                        !namespaceMatches(value.ns, name.uri))
                     {
                         return false;
                     }
