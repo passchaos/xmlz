@@ -431,6 +431,9 @@ const Compiler = struct {
     next_function_order: usize = 0,
     compiling_function: bool = false,
     space_rules: std.ArrayList(SpaceRule) = .empty,
+    /// Canonical slices for variable names so runtime lookups can compare
+    /// pointers before falling back to string equality.
+    variable_names: std.StringHashMapUnmanaged([]const u8) = .empty,
     decimal_formats: std.ArrayList(DecimalFormat) = .empty,
     aliases: std.ArrayList(NamespaceAlias) = .empty,
     output: Output = .{},
@@ -1295,7 +1298,7 @@ const Compiler = struct {
             const name = self.document.attribute(child, "name") orelse
                 return error.InvalidStylesheet;
             try params.append(self.arena, .{
-                .name = name,
+                .name = try self.internVariableName(name),
                 .value = try self.compileValue(child, "select"),
             });
         }
@@ -1472,7 +1475,7 @@ const Compiler = struct {
         const name = self.document.attribute(id, "name") orelse
             return error.InvalidStylesheet;
         return .{
-            .name = name,
+            .name = try self.internVariableName(name),
             .value = try self.compileValue(id, "select"),
             .param = param,
         };
@@ -1801,10 +1804,54 @@ const Compiler = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidExpression,
         };
+        try self.internVariableNames(root);
         return .{
             .node = root,
             .namespaces = try self.namespacesOf(id),
         };
+    }
+
+    fn internVariableName(self: *Compiler, name: []const u8) Error![]const u8 {
+        const entry = try self.variable_names.getOrPut(self.arena, name);
+        if (!entry.found_existing) {
+            const owned = try self.arena.dupe(u8, name);
+            entry.key_ptr.* = owned;
+            entry.value_ptr.* = owned;
+        }
+        return entry.value_ptr.*;
+    }
+
+    /// Replace every variable reference in a parsed expression with the
+    /// canonical name slice.
+    fn internVariableNames(self: *Compiler, expression: *ast.Expr) Error!void {
+        switch (expression.*) {
+            .variable => |name| expression.variable = try self.internVariableName(name),
+            .binary => |binary| {
+                try self.internVariableNames(binary.lhs);
+                try self.internVariableNames(binary.rhs);
+            },
+            .unary_minus => |inner| try self.internVariableNames(inner),
+            .path => |path| {
+                if (path.start) |start| try self.internVariableNames(start);
+                for (path.steps) |step| {
+                    for (step.predicates) |predicate| {
+                        try self.internVariableNames(predicate);
+                    }
+                }
+            },
+            .filter => |filter| {
+                try self.internVariableNames(filter.primary);
+                for (filter.predicates) |predicate| {
+                    try self.internVariableNames(predicate);
+                }
+            },
+            .function_call => |call| {
+                for (call.args) |argument| {
+                    try self.internVariableNames(argument);
+                }
+            },
+            .literal, .number => {},
+        }
     }
 
     fn namespacesOf(self: *Compiler, id: dom.NodeId) Error![]const namespace.Binding {

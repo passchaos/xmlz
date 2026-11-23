@@ -273,6 +273,11 @@ pub const Context = struct {
         while (index > self.variable_floor) {
             index -= 1;
             const entry = self.variables[index];
+            // XSLT compiles variable references and bindings to canonical
+            // name slices, so pointer equality is the common case.
+            if (entry.name.ptr == name.ptr and entry.name.len == name.len) {
+                return entry.value;
+            }
             if (std.mem.eql(u8, entry.name, name)) return entry.value;
         }
         return null;

@@ -2343,7 +2343,10 @@ const Runtime = struct {
         for (template.params) |param| {
             var supplied: ?xpath.Value = null;
             for (params) |candidate| {
-                if (std.mem.eql(u8, candidate.name, param.name)) {
+                const same = (candidate.name.ptr == param.name.ptr and
+                    candidate.name.len == param.name.len) or
+                    std.mem.eql(u8, candidate.name, param.name);
+                if (same) {
                     supplied = candidate.value;
                     break;
                 }
