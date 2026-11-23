@@ -161,7 +161,7 @@ const Matcher = struct {
             },
             .element => |element| {
                 const node = self.document.node(id);
-                if (!nameClassMatches(element.name_class, self.document.ns(node.ns), node.local)) {
+                if (!nameClassMatches(element.name_class, self.document.ns(node.ns), node.localName())) {
                     return false;
                 }
                 return self.matchElementContent(element.content, id);
@@ -455,7 +455,7 @@ const Matcher = struct {
         switch (resolved.*) {
             .element => |element| {
                 const node = self.document.node(child);
-                if (!nameClassMatches(element.name_class, self.document.ns(node.ns), node.local)) {
+                if (!nameClassMatches(element.name_class, self.document.ns(node.ns), node.localName())) {
                     return &.{};
                 }
                 if (!try self.matchElementContent(element.content, child)) {

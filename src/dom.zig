@@ -111,7 +111,8 @@ pub const Node = struct {
     next_sibling: NodeId = null_node,
     /// Raw element name or PI target.
     name: []const u8 = "",
-    local: []const u8 = "",
+    /// Byte offset of the first colon in the raw name, or 0xFFFF.
+    colon: u16 = 0xFFFF,
     /// Index into `Document.namespaces`; zero when the element has no
     /// namespace.
     ns: NamespaceId = 0,
@@ -121,6 +122,19 @@ pub const Node = struct {
     attr_count: u32 = 0,
     /// Boolean node state; see the `node_flag_*` constants.
     flags: u8 = 0,
+
+    /// Local part of an element name: the text after the first colon, or the
+    /// whole name when unprefixed.
+    pub inline fn localName(self: Node) []const u8 {
+        const index = self.colon;
+        return if (index == 0xFFFF) self.name else self.name[index + 1 ..];
+    }
+
+    /// Prefix of an element name, or an empty slice when unprefixed.
+    pub inline fn prefixName(self: Node) []const u8 {
+        const index = self.colon;
+        return if (index == 0xFFFF) "" else self.name[0..index];
+    }
 
     /// Text produced with XSLT disable-output-escaping; serializers emit it raw.
     pub inline fn isRawText(self: Node) bool {
@@ -360,7 +374,7 @@ pub const Document = struct {
         while (child != null_node) : (child = self.nodes[child].next_sibling) {
             const node_value = &self.nodes[child];
             if (node_value.kind == .element and
-                std.mem.eql(u8, node_value.local, local))
+                std.mem.eql(u8, node_value.localName(), local))
             {
                 return child;
             }
@@ -379,7 +393,7 @@ pub const Document = struct {
             const node_value = &self.nodes[child];
             if (node_value.kind == .element and
                 std.mem.eql(u8, self.ns(node_value.ns), uri) and
-                std.mem.eql(u8, node_value.local, local))
+                std.mem.eql(u8, node_value.localName(), local))
             {
                 return child;
             }
@@ -606,10 +620,6 @@ const Builder = struct {
         element: parser_mod.StartElement,
     ) Error!void {
         const parent = self.currentParent();
-        const element_local = if (element.colon == 0xFFFF)
-            element.name
-        else
-            element.name[element.colon + 1 ..];
         var has_ns_decls = element.has_namespace_decls;
 
         const attr_start: u32 = @intCast(self.attributes.items.len);
@@ -628,6 +638,9 @@ const Builder = struct {
             0
         else
             try self.internNamespace(element.namespace_uri);
+        // Hoist the trusted flag: writing through `self.attributes` prevents
+        // the compiler from proving it cannot alias `self.parser.options`.
+        const trusted = self.parser.options.trusted;
         for (element.attrs, out) |attr, *dst| {
             var flags: u32 = attr.colon;
             if (attr.whitespace_char_ref) {
@@ -635,7 +648,7 @@ const Builder = struct {
             }
             // A validated value with no references or line ends cannot
             // contain a character the serializer must escape.
-            if (!attr.needs_decode and !self.parser.options.trusted) {
+            if (!attr.needs_decode and !trusted) {
                 flags |= attr_flag_plain;
             }
             dst.* = .{
@@ -694,7 +707,7 @@ const Builder = struct {
         const id = try self.addNode(.{
             .kind = .element,
             .name = element.name,
-            .local = element_local,
+            .colon = element.colon,
             .ns = element_ns,
             .attr_start = attr_start,
             .attr_count = @intCast(self.attributes.items.len - attr_start),
@@ -935,7 +948,7 @@ test "DOM parses elements attributes text and namespaces" {
 
     const root = doc.root();
     try testing.expect(root != null_node);
-    try testing.expectEqualStrings("svg", doc.node(root).local);
+    try testing.expectEqualStrings("svg", doc.node(root).localName());
     try testing.expectEqualStrings("http://www.w3.org/2000/svg", doc.ns(doc.node(root).ns));
     try testing.expectEqualStrings("10", doc.attribute(root, "width").?);
 
@@ -1069,7 +1082,7 @@ test "DOM parses into a reusable arena" {
     );
     defer first.deinit();
     const first_root = first.root();
-    try testing.expectEqualStrings("root", first.node(first_root).local);
+    try testing.expectEqualStrings("root", first.node(first_root).localName());
     const first_item = first.findChild(first_root, "item").?;
     try testing.expectEqualStrings("a", first.attribute(first_item, "id").?);
     try testing.expectEqualStrings("one", first.node(first.node(first_item).first_child).value);
@@ -1082,7 +1095,7 @@ test "DOM parses into a reusable arena" {
     );
     defer second.deinit();
     const second_root = second.root();
-    try testing.expectEqualStrings("other", second.node(second_root).local);
+    try testing.expectEqualStrings("other", second.node(second_root).localName());
     const entry = second.findChild(second_root, "entry").?;
     try testing.expectEqualStrings("two", second.node(second.node(entry).first_child).value);
 }

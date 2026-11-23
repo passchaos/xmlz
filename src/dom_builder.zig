@@ -121,7 +121,10 @@ pub const Builder = struct {
         return self.addNode(.{
             .kind = .element,
             .name = owned,
-            .local = qname.local,
+            .colon = if (qname.prefix.len == 0)
+                0xFFFF
+            else
+                @intCast(qname.prefix.len),
         });
     }
 
@@ -151,11 +154,10 @@ pub const Builder = struct {
             );
             raw = try self.copyString(combined);
         }
-        const owned_local = if (prefix.len == 0) raw else raw[prefix.len + 1 ..];
         return self.addNode(.{
             .kind = .element,
             .name = raw,
-            .local = owned_local,
+            .colon = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
             .ns = try self.internNamespace(uri),
         });
     }
@@ -184,11 +186,10 @@ pub const Builder = struct {
             );
             raw = try self.copyString(combined);
         }
-        const owned_local = if (prefix.len == 0) raw else raw[prefix.len + 1 ..];
         return self.addNode(.{
             .kind = .element,
             .name = raw,
-            .local = owned_local,
+            .colon = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
             .ns = try self.internNamespace(uri),
         });
     }

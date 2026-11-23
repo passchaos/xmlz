@@ -797,23 +797,23 @@ const Compiler = struct {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
             if (!isXsd(self.document, child_node, null)) continue;
-            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-            if (std.mem.eql(u8, child_node.local, "element")) {
+            if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+            if (std.mem.eql(u8, child_node.localName(), "element")) {
                 const decl = try self.globalElement(child);
                 if (self.findGlobalElement(.{
                     .namespace_uri = decl.namespace_uri,
                     .local = decl.name,
                 }) != null) return error.InvalidSchema;
                 try self.elements.append(self.arena, decl);
-            } else if (std.mem.eql(u8, child_node.local, "attribute")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "attribute")) {
                 const decl = try self.globalAttribute(child);
                 if (self.findGlobalAttribute(.{
                     .namespace_uri = decl.namespace_uri,
                     .local = decl.name,
                 }) != null) return error.InvalidSchema;
                 try self.attributes.append(self.arena, decl);
-            } else if (std.mem.eql(u8, child_node.local, "complexType") or
-                std.mem.eql(u8, child_node.local, "simpleType"))
+            } else if (std.mem.eql(u8, child_node.localName(), "complexType") or
+                std.mem.eql(u8, child_node.localName(), "simpleType"))
             {
                 const decl = try self.globalType(child);
                 if (self.findGlobalType(.{
@@ -821,25 +821,25 @@ const Compiler = struct {
                     .local = decl.name,
                 }) != null) return error.InvalidSchema;
                 try self.types.append(self.arena, decl);
-            } else if (std.mem.eql(u8, child_node.local, "group")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "group")) {
                 const decl = try self.globalGroup(child);
                 if (self.findGlobalGroup(.{
                     .namespace_uri = decl.namespace_uri,
                     .local = decl.name,
                 }) != null) return error.InvalidSchema;
                 try self.groups.append(self.arena, decl);
-            } else if (std.mem.eql(u8, child_node.local, "attributeGroup")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "attributeGroup")) {
                 const decl = try self.globalAttributeGroup(child);
                 if (self.findGlobalAttributeGroup(.{
                     .namespace_uri = decl.namespace_uri,
                     .local = decl.name,
                 }) != null) return error.InvalidSchema;
                 try self.attribute_groups.append(self.arena, decl);
-            } else if (std.mem.eql(u8, child_node.local, "include")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "include")) {
                 try self.processSchemaReference(child, false);
-            } else if (std.mem.eql(u8, child_node.local, "import")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "import")) {
                 try self.processSchemaReference(child, true);
-            } else if (std.mem.eql(u8, child_node.local, "notation")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "notation")) {
                 const decl = try self.globalNotation(child);
                 for (self.notations.items) |existing| {
                     if (std.mem.eql(
@@ -851,7 +851,7 @@ const Compiler = struct {
                     }
                 }
                 try self.notations.append(self.arena, decl);
-            } else if (std.mem.eql(u8, child_node.local, "redefine")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "redefine")) {
                 try self.processRedefine(child);
             }
         }
@@ -866,9 +866,9 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const node = self.document.node(child);
             if (node.kind != .element or !isXsd(self.document, node, null)) continue;
-            if (std.mem.eql(u8, node.local, "annotation")) continue;
-            if (std.mem.eql(u8, node.local, "simpleType") or
-                std.mem.eql(u8, node.local, "complexType"))
+            if (std.mem.eql(u8, node.localName(), "annotation")) continue;
+            if (std.mem.eql(u8, node.localName(), "simpleType") or
+                std.mem.eql(u8, node.localName(), "complexType"))
             {
                 const decl = try self.globalType(child);
                 const original = self.findGlobalType(.{
@@ -879,7 +879,7 @@ const Compiler = struct {
                 try self.types.append(self.arena, decl);
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "group")) {
+            if (std.mem.eql(u8, node.localName(), "group")) {
                 const decl = try self.globalGroup(child);
                 const original = self.findGlobalGroup(.{
                     .namespace_uri = decl.namespace_uri,
@@ -889,7 +889,7 @@ const Compiler = struct {
                 try self.groups.append(self.arena, decl);
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "attributeGroup")) {
+            if (std.mem.eql(u8, node.localName(), "attributeGroup")) {
                 const decl = try self.globalAttributeGroup(child);
                 const original = self.findGlobalAttributeGroup(.{
                     .namespace_uri = decl.namespace_uri,
@@ -1111,7 +1111,7 @@ const Compiler = struct {
         const decl = try self.arena.create(TypeDecl);
         const complex = std.mem.eql(
             u8,
-            self.document.node(id).local,
+            self.document.node(id).localName(),
             "complexType",
         );
         decl.* = .{
@@ -1232,10 +1232,10 @@ const Compiler = struct {
             if (child_node.kind != .element or !isXsd(self.document, child_node, null)) {
                 continue;
             }
-            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-            if (std.mem.eql(u8, child_node.local, "sequence") or
-                std.mem.eql(u8, child_node.local, "choice") or
-                std.mem.eql(u8, child_node.local, "all"))
+            if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+            if (std.mem.eql(u8, child_node.localName(), "sequence") or
+                std.mem.eql(u8, child_node.localName(), "choice") or
+                std.mem.eql(u8, child_node.localName(), "all"))
             {
                 if (particle != null) return error.InvalidSchema;
                 particle = try self.parseParticle(child);
@@ -1303,10 +1303,10 @@ const Compiler = struct {
             if (child_node.kind != .element or !isXsd(self.document, child_node, null)) {
                 continue;
             }
-            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-            if (std.mem.eql(u8, child_node.local, "attribute") or
-                std.mem.eql(u8, child_node.local, "attributeGroup") or
-                std.mem.eql(u8, child_node.local, "anyAttribute"))
+            if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+            if (std.mem.eql(u8, child_node.localName(), "attribute") or
+                std.mem.eql(u8, child_node.localName(), "attributeGroup") or
+                std.mem.eql(u8, child_node.localName(), "anyAttribute"))
             {
                 try self.parseAttributeContent(
                     child,
@@ -1335,11 +1335,11 @@ const Compiler = struct {
                 continue;
             }
             var kind: ?IdentityKind = null;
-            if (std.mem.eql(u8, child_node.local, "key")) {
+            if (std.mem.eql(u8, child_node.localName(), "key")) {
                 kind = .key;
-            } else if (std.mem.eql(u8, child_node.local, "keyref")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "keyref")) {
                 kind = .keyref;
-            } else if (std.mem.eql(u8, child_node.local, "unique")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "unique")) {
                 kind = .unique;
             }
             if (kind == null) continue;
@@ -1377,7 +1377,7 @@ const Compiler = struct {
             if (child_node.kind != .element or !isXsd(self.document, child_node, null)) {
                 continue;
             }
-            if (std.mem.eql(u8, child_node.local, "selector")) {
+            if (std.mem.eql(u8, child_node.localName(), "selector")) {
                 if (selector != null) return error.InvalidSchema;
                 const xpath_value = self.document.attribute(child, "xpath") orelse
                     return error.InvalidSchema;
@@ -1386,7 +1386,7 @@ const Compiler = struct {
                     return error.InvalidSchema;
                 }
                 selector = compiled;
-            } else if (std.mem.eql(u8, child_node.local, "field")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "field")) {
                 const xpath_value = self.document.attribute(child, "xpath") orelse
                     return error.InvalidSchema;
                 try fields.append(
@@ -1484,7 +1484,7 @@ const Compiler = struct {
             return error.InvalidSchema);
         defer self.leaveSchema(saved);
         const node = self.document.node(decl.node);
-        if (std.mem.eql(u8, node.local, "simpleType")) {
+        if (std.mem.eql(u8, node.localName(), "simpleType")) {
             @constCast(decl).body = .{
                 .simple = try self.parseSimpleType(decl.node),
             };
@@ -1501,8 +1501,8 @@ const Compiler = struct {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
             if (!isXsd(self.document, child_node, null)) continue;
-            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-            if (std.mem.eql(u8, child_node.local, "restriction")) {
+            if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+            if (std.mem.eql(u8, child_node.localName(), "restriction")) {
                 var base: ?TypeUse = null;
                 if (self.document.attribute(child, "base")) |value| {
                     base = try self.typeUseFromQName(
@@ -1517,12 +1517,12 @@ const Compiler = struct {
                     const facet_node = self.document.node(facet_child);
                     if (facet_node.kind != .element) continue;
                     if (!isXsd(self.document, facet_node, null)) continue;
-                    if (std.mem.eql(u8, facet_node.local, "simpleType")) {
+                    if (std.mem.eql(u8, facet_node.localName(), "simpleType")) {
                         if (inline_type != null or base != null) {
                             return error.InvalidSchema;
                         }
                         inline_type = try self.inlineSimpleType(facet_child);
-                    } else if (std.mem.eql(u8, facet_node.local, "annotation")) {
+                    } else if (std.mem.eql(u8, facet_node.localName(), "annotation")) {
                         continue;
                     } else {
                         try self.addFacet(&facets, facet_child);
@@ -1534,7 +1534,7 @@ const Compiler = struct {
                     .facets = facets,
                 } };
             }
-            if (std.mem.eql(u8, child_node.local, "list")) {
+            if (std.mem.eql(u8, child_node.localName(), "list")) {
                 var item: ?TypeUse = null;
                 if (self.document.attribute(child, "itemType")) |value| {
                     item = try self.typeUseFromQName(
@@ -1560,7 +1560,7 @@ const Compiler = struct {
                         return error.InvalidSchema,
                 } };
             }
-            if (std.mem.eql(u8, child_node.local, "union")) {
+            if (std.mem.eql(u8, child_node.localName(), "union")) {
                 var members: std.ArrayList(TypeUse) = .empty;
                 if (self.document.attribute(child, "memberTypes")) |value| {
                     var tokens = std.mem.tokenizeAny(u8, value, " \t\r\n");
@@ -1629,14 +1629,14 @@ const Compiler = struct {
         const node = self.document.node(id);
         const value = self.document.attribute(id, "value") orelse
             return error.InvalidSchema;
-        if (std.mem.eql(u8, node.local, "enumeration")) {
+        if (std.mem.eql(u8, node.localName(), "enumeration")) {
             var list: std.ArrayList([]const u8) = .empty;
             if (facets.enumeration.len != 0) {
                 try list.appendSlice(self.arena, facets.enumeration);
             }
             try list.append(self.arena, value);
             facets.enumeration = try list.toOwnedSlice(self.arena);
-        } else if (std.mem.eql(u8, node.local, "pattern")) {
+        } else if (std.mem.eql(u8, node.localName(), "pattern")) {
             const compiled = regex.compile(self.arena, value) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => return error.InvalidRegex,
@@ -1649,25 +1649,25 @@ const Compiler = struct {
             }
             try list.append(self.arena, pointer);
             facets.patterns = try list.toOwnedSlice(self.arena);
-        } else if (std.mem.eql(u8, node.local, "length")) {
+        } else if (std.mem.eql(u8, node.localName(), "length")) {
             facets.length = try parseUnsigned(value);
-        } else if (std.mem.eql(u8, node.local, "minLength")) {
+        } else if (std.mem.eql(u8, node.localName(), "minLength")) {
             facets.min_length = try parseUnsigned(value);
-        } else if (std.mem.eql(u8, node.local, "maxLength")) {
+        } else if (std.mem.eql(u8, node.localName(), "maxLength")) {
             facets.max_length = try parseUnsigned(value);
-        } else if (std.mem.eql(u8, node.local, "minInclusive")) {
+        } else if (std.mem.eql(u8, node.localName(), "minInclusive")) {
             facets.min_inclusive = value;
-        } else if (std.mem.eql(u8, node.local, "maxInclusive")) {
+        } else if (std.mem.eql(u8, node.localName(), "maxInclusive")) {
             facets.max_inclusive = value;
-        } else if (std.mem.eql(u8, node.local, "minExclusive")) {
+        } else if (std.mem.eql(u8, node.localName(), "minExclusive")) {
             facets.min_exclusive = value;
-        } else if (std.mem.eql(u8, node.local, "maxExclusive")) {
+        } else if (std.mem.eql(u8, node.localName(), "maxExclusive")) {
             facets.max_exclusive = value;
-        } else if (std.mem.eql(u8, node.local, "totalDigits")) {
+        } else if (std.mem.eql(u8, node.localName(), "totalDigits")) {
             facets.total_digits = try parseUnsigned(value);
-        } else if (std.mem.eql(u8, node.local, "fractionDigits")) {
+        } else if (std.mem.eql(u8, node.localName(), "fractionDigits")) {
             facets.fraction_digits = try parseUnsigned(value);
-        } else if (std.mem.eql(u8, node.local, "whiteSpace")) {
+        } else if (std.mem.eql(u8, node.localName(), "whiteSpace")) {
             if (std.mem.eql(u8, value, "preserve")) {
                 facets.white_space = .preserve;
             } else if (std.mem.eql(u8, value, "replace")) {
@@ -1691,27 +1691,27 @@ const Compiler = struct {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
             if (!isXsd(self.document, child_node, null)) continue;
-            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-            if (std.mem.eql(u8, child_node.local, "sequence") or
-                std.mem.eql(u8, child_node.local, "choice") or
-                std.mem.eql(u8, child_node.local, "all") or
-                std.mem.eql(u8, child_node.local, "group"))
+            if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+            if (std.mem.eql(u8, child_node.localName(), "sequence") or
+                std.mem.eql(u8, child_node.localName(), "choice") or
+                std.mem.eql(u8, child_node.localName(), "all") or
+                std.mem.eql(u8, child_node.localName(), "group"))
             {
                 if (decl.content != .empty) return error.InvalidSchema;
                 decl.content = .{ .particle = try self.parseParticle(child) };
-            } else if (std.mem.eql(u8, child_node.local, "attribute") or
-                std.mem.eql(u8, child_node.local, "attributeGroup") or
-                std.mem.eql(u8, child_node.local, "anyAttribute"))
+            } else if (std.mem.eql(u8, child_node.localName(), "attribute") or
+                std.mem.eql(u8, child_node.localName(), "attributeGroup") or
+                std.mem.eql(u8, child_node.localName(), "anyAttribute"))
             {
                 try self.parseAttributeContent(
                     child,
                     &decl.attributes,
                     &decl.any_attribute,
                 );
-            } else if (std.mem.eql(u8, child_node.local, "simpleContent")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "simpleContent")) {
                 if (decl.content != .empty) return error.InvalidSchema;
                 decl.content = try self.parseSimpleContent(child, &decl);
-            } else if (std.mem.eql(u8, child_node.local, "complexContent")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "complexContent")) {
                 if (decl.content != .empty) return error.InvalidSchema;
                 decl.content = try self.parseComplexContent(child, &decl);
             }
@@ -1728,9 +1728,9 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element or !isXsd(self.document, child_node, null)) continue;
-            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-            const restriction = std.mem.eql(u8, child_node.local, "restriction");
-            if (!restriction and !std.mem.eql(u8, child_node.local, "extension")) {
+            if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+            const restriction = std.mem.eql(u8, child_node.localName(), "restriction");
+            if (!restriction and !std.mem.eql(u8, child_node.localName(), "extension")) {
                 return error.InvalidSchema;
             }
             var base: ?TypeUse = null;
@@ -1747,10 +1747,10 @@ const Compiler = struct {
                 if (facet_node.kind != .element or !isXsd(self.document, facet_node, null)) {
                     continue;
                 }
-                if (std.mem.eql(u8, facet_node.local, "annotation")) continue;
-                if (std.mem.eql(u8, facet_node.local, "attribute") or
-                    std.mem.eql(u8, facet_node.local, "attributeGroup") or
-                    std.mem.eql(u8, facet_node.local, "anyAttribute"))
+                if (std.mem.eql(u8, facet_node.localName(), "annotation")) continue;
+                if (std.mem.eql(u8, facet_node.localName(), "attribute") or
+                    std.mem.eql(u8, facet_node.localName(), "attributeGroup") or
+                    std.mem.eql(u8, facet_node.localName(), "anyAttribute"))
                 {
                     try self.parseAttributeContent(
                         facet_child,
@@ -1759,7 +1759,7 @@ const Compiler = struct {
                     );
                     continue;
                 }
-                if (std.mem.eql(u8, facet_node.local, "simpleType")) {
+                if (std.mem.eql(u8, facet_node.localName(), "simpleType")) {
                     if (base != null) return error.InvalidSchema;
                     base = try self.inlineSimpleType(facet_child);
                     continue;
@@ -1784,9 +1784,9 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element or !isXsd(self.document, child_node, null)) continue;
-            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-            const restriction = std.mem.eql(u8, child_node.local, "restriction");
-            if (!restriction and !std.mem.eql(u8, child_node.local, "extension")) {
+            if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+            const restriction = std.mem.eql(u8, child_node.localName(), "restriction");
+            if (!restriction and !std.mem.eql(u8, child_node.localName(), "extension")) {
                 return error.InvalidSchema;
             }
             const base_value = self.document.attribute(child, "base") orelse
@@ -1804,9 +1804,9 @@ const Compiler = struct {
                 {
                     continue;
                 }
-                if (std.mem.eql(u8, content_node.local, "attribute") or
-                    std.mem.eql(u8, content_node.local, "attributeGroup") or
-                    std.mem.eql(u8, content_node.local, "anyAttribute"))
+                if (std.mem.eql(u8, content_node.localName(), "attribute") or
+                    std.mem.eql(u8, content_node.localName(), "attributeGroup") or
+                    std.mem.eql(u8, content_node.localName(), "anyAttribute"))
                 {
                     try self.parseAttributeContent(
                         content_child,
@@ -1815,9 +1815,9 @@ const Compiler = struct {
                     );
                     continue;
                 }
-                if (std.mem.eql(u8, content_node.local, "sequence") or
-                    std.mem.eql(u8, content_node.local, "choice") or
-                    std.mem.eql(u8, content_node.local, "all"))
+                if (std.mem.eql(u8, content_node.localName(), "sequence") or
+                    std.mem.eql(u8, content_node.localName(), "choice") or
+                    std.mem.eql(u8, content_node.localName(), "all"))
                 {
                     if (particle != null) return error.InvalidSchema;
                     particle = try self.parseParticle(content_child);
@@ -1839,12 +1839,12 @@ const Compiler = struct {
         any_attribute: *?Wildcard,
     ) Error!void {
         const node = self.document.node(id);
-        if (std.mem.eql(u8, node.local, "attribute")) {
+        if (std.mem.eql(u8, node.localName(), "attribute")) {
             try self.parseAttributeUse(id, attributes);
-        } else if (std.mem.eql(u8, node.local, "anyAttribute")) {
+        } else if (std.mem.eql(u8, node.localName(), "anyAttribute")) {
             if (any_attribute.* != null) return error.InvalidSchema;
             any_attribute.* = try self.parseAnyAttribute(id);
-        } else if (std.mem.eql(u8, node.local, "attributeGroup")) {
+        } else if (std.mem.eql(u8, node.localName(), "attributeGroup")) {
             const ref = self.document.attribute(id, "ref") orelse
                 return error.InvalidSchema;
             const qname = try self.resolveQName(id, ref);
@@ -1994,7 +1994,7 @@ const Compiler = struct {
     fn parseParticle(self: *Compiler, id: dom.NodeId) Error!*const Particle {
         const node = self.document.node(id);
         const occurs = try self.parseOccurs(id);
-        if (std.mem.eql(u8, node.local, "element")) {
+        if (std.mem.eql(u8, node.localName(), "element")) {
             const decl = try self.localElement(id);
             const particle = try self.arena.create(Particle);
             particle.* = .{ .element = .{
@@ -2004,7 +2004,7 @@ const Compiler = struct {
             } };
             return particle;
         }
-        if (std.mem.eql(u8, node.local, "any")) {
+        if (std.mem.eql(u8, node.localName(), "any")) {
             var wildcard: Wildcard = .{
                 .target_namespace = self.target_namespace,
             };
@@ -2030,7 +2030,7 @@ const Compiler = struct {
             } };
             return particle;
         }
-        if (std.mem.eql(u8, node.local, "group")) {
+        if (std.mem.eql(u8, node.localName(), "group")) {
             const ref = self.document.attribute(id, "ref") orelse
                 return error.InvalidSchema;
             const qname = try self.resolveQName(id, ref);
@@ -2044,9 +2044,9 @@ const Compiler = struct {
             } };
             return particle;
         }
-        if (std.mem.eql(u8, node.local, "sequence") or
-            std.mem.eql(u8, node.local, "choice") or
-            std.mem.eql(u8, node.local, "all"))
+        if (std.mem.eql(u8, node.localName(), "sequence") or
+            std.mem.eql(u8, node.localName(), "choice") or
+            std.mem.eql(u8, node.localName(), "all"))
         {
             var items: std.ArrayList(*const Particle) = .empty;
             var child = node.first_child;
@@ -2054,13 +2054,13 @@ const Compiler = struct {
                 const child_node = self.document.node(child);
                 if (child_node.kind != .element) continue;
                 if (!isXsd(self.document, child_node, null)) continue;
-                if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-                if (std.mem.eql(u8, child_node.local, "element") or
-                    std.mem.eql(u8, child_node.local, "sequence") or
-                    std.mem.eql(u8, child_node.local, "choice") or
-                    std.mem.eql(u8, child_node.local, "all") or
-                    std.mem.eql(u8, child_node.local, "any") or
-                    std.mem.eql(u8, child_node.local, "group"))
+                if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+                if (std.mem.eql(u8, child_node.localName(), "element") or
+                    std.mem.eql(u8, child_node.localName(), "sequence") or
+                    std.mem.eql(u8, child_node.localName(), "choice") or
+                    std.mem.eql(u8, child_node.localName(), "all") or
+                    std.mem.eql(u8, child_node.localName(), "any") or
+                    std.mem.eql(u8, child_node.localName(), "group"))
                 {
                     try items.append(self.arena, try self.parseParticle(child));
                 } else {
@@ -2068,7 +2068,7 @@ const Compiler = struct {
                 }
             }
             const particle = try self.arena.create(Particle);
-            if (std.mem.eql(u8, node.local, "all")) {
+            if (std.mem.eql(u8, node.localName(), "all")) {
                 for (items.items) |item| {
                     if (item.* != .element) return error.InvalidSchema;
                     const element = item.element;
@@ -2078,13 +2078,13 @@ const Compiler = struct {
                     if (maximum > 1) return error.InvalidSchema;
                 }
             }
-            if (std.mem.eql(u8, node.local, "sequence")) {
+            if (std.mem.eql(u8, node.localName(), "sequence")) {
                 particle.* = .{ .sequence = .{
                     .items = try items.toOwnedSlice(self.arena),
                     .min = occurs.min,
                     .max = occurs.max,
                 } };
-            } else if (std.mem.eql(u8, node.local, "choice")) {
+            } else if (std.mem.eql(u8, node.localName(), "choice")) {
                 particle.* = .{ .choice = .{
                     .items = try items.toOwnedSlice(self.arena),
                     .min = occurs.min,
@@ -2123,8 +2123,8 @@ const Compiler = struct {
                 const child_node = self.document.node(child);
                 if (child_node.kind == .element and
                     std.mem.eql(u8, self.document.ns(child_node.ns), xsd_namespace) and
-                    (std.mem.eql(u8, child_node.local, "simpleType") or
-                        std.mem.eql(u8, child_node.local, "complexType")))
+                    (std.mem.eql(u8, child_node.localName(), "simpleType") or
+                        std.mem.eql(u8, child_node.localName(), "complexType")))
                 {
                     return error.InvalidSchema;
                 }
@@ -2211,10 +2211,10 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
-            if (std.mem.eql(u8, child_node.local, "simpleType")) {
+            if (std.mem.eql(u8, child_node.localName(), "simpleType")) {
                 return self.inlineSimpleType(child);
             }
-            if (std.mem.eql(u8, child_node.local, "complexType")) {
+            if (std.mem.eql(u8, child_node.localName(), "complexType")) {
                 return self.inlineComplexType(child);
             }
         }
@@ -2233,7 +2233,7 @@ const Compiler = struct {
         while (child != dom.null_node) : (child = self.document.node(child).next_sibling) {
             const child_node = self.document.node(child);
             if (child_node.kind == .element and
-                std.mem.eql(u8, child_node.local, "simpleType"))
+                std.mem.eql(u8, child_node.localName(), "simpleType"))
             {
                 return self.inlineSimpleType(child);
             }
@@ -2247,8 +2247,8 @@ const Compiler = struct {
             const child_node = self.document.node(child);
             if (child_node.kind == .element and
                 std.mem.eql(u8, self.document.ns(child_node.ns), xsd_namespace) and
-                (std.mem.eql(u8, child_node.local, "simpleType") or
-                    std.mem.eql(u8, child_node.local, "complexType")))
+                (std.mem.eql(u8, child_node.localName(), "simpleType") or
+                    std.mem.eql(u8, child_node.localName(), "complexType")))
             {
                 return true;
             }
@@ -3117,6 +3117,6 @@ fn parseUnsigned(value: []const u8) Error!usize {
 
 fn isXsd(document: *const dom.Document, node: *const dom.Node, local: ?[]const u8) bool {
     if (!std.mem.eql(u8, document.ns(node.ns), xsd_namespace)) return false;
-    if (local) |expected| return std.mem.eql(u8, node.local, expected);
+    if (local) |expected| return std.mem.eql(u8, node.localName(), expected);
     return true;
 }

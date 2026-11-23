@@ -522,8 +522,8 @@ const Compiler = struct {
             const child_node = document.node(child);
             if (child_node.kind != .element) continue;
             if (!isXsl(self.document, child_node, null)) continue;
-            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-            if (std.mem.eql(u8, child_node.local, "import")) {
+            if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+            if (std.mem.eql(u8, child_node.localName(), "import")) {
                 if (seen_non_import) return error.InvalidStylesheet;
                 try self.processReference(child, true, 0);
             } else {
@@ -546,12 +546,12 @@ const Compiler = struct {
                 u8,
                 self.document.ns(child_node.ns),
                 exslt_functions_namespace,
-            ) and std.mem.eql(u8, child_node.local, "function")) {
+            ) and std.mem.eql(u8, child_node.localName(), "function")) {
                 try self.compileFunction(child);
                 continue;
             }
             if (!isXsl(self.document, child_node, null)) continue;
-            const local = child_node.local;
+            const local = child_node.localName();
             if (std.mem.eql(u8, local, "import")) continue;
             if (std.mem.eql(u8, local, "include")) {
                 try self.processReference(child, false, precedence);
@@ -1106,7 +1106,7 @@ const Compiler = struct {
         const node = self.document.node(id);
         if (self.compiling_function and
             std.mem.eql(u8, self.document.ns(node.ns), exslt_functions_namespace) and
-            std.mem.eql(u8, node.local, "result"))
+            std.mem.eql(u8, node.localName(), "result"))
         {
             try body.append(self.arena, .{
                 .function_result = try self.compileFunctionResult(id),
@@ -1120,7 +1120,7 @@ const Compiler = struct {
             // libxslt's built-in test module: the `test` element emits a
             // comment so extension dispatch can be exercised by the suite.
             if (std.mem.eql(u8, self.document.ns(node.ns), libxslt_namespace) and
-                std.mem.eql(u8, node.local, "test"))
+                std.mem.eql(u8, node.localName(), "test"))
             {
                 const comment_body = try self.arena.alloc(Instruction, 1);
                 comment_body[0] = .{
@@ -1143,7 +1143,7 @@ const Compiler = struct {
             return;
         }
 
-        const local = node.local;
+        const local = node.localName();
         if (std.mem.eql(u8, local, "value-of")) {
             const select = self.document.attribute(id, "select") orelse
                 return error.InvalidStylesheet;
@@ -1594,7 +1594,7 @@ const Compiler = struct {
             self.document.ns(node.ns);
         var element: LiteralElement = .{
             .prefix = element_prefix,
-            .local = node.local,
+            .local = node.localName(),
             .ns = element_ns,
             .namespaces = &.{},
             .attributes = &.{},
@@ -1926,13 +1926,13 @@ const Compiler = struct {
 
 fn isXsl(document: *const dom.Document, node: *const dom.Node, local: ?[]const u8) bool {
     if (!std.mem.eql(u8, document.ns(node.ns), xsl_namespace)) return false;
-    if (local) |expected| return std.mem.eql(u8, node.local, expected);
+    if (local) |expected| return std.mem.eql(u8, node.localName(), expected);
     return true;
 }
 
 fn prefixOf(node: *const dom.Node) []const u8 {
-    if (node.local.len >= node.name.len) return "";
-    return node.name[0 .. node.name.len - node.local.len - 1];
+    if (node.localName().len >= node.name.len) return "";
+    return node.name[0 .. node.name.len - node.localName().len - 1];
 }
 
 fn preserveSpace(

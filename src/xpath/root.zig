@@ -539,7 +539,7 @@ test "XPath id matches normalized xml:id values" {
     try testing.expectEqual(@as(usize, 1), result.value.node_set.len);
     try testing.expectEqualStrings(
         "item",
-        document.node(result.value.node_set[0].node).local,
+        document.node(result.value.node_set[0].node).localName(),
     );
 }
 

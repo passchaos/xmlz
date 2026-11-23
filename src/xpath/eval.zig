@@ -430,7 +430,7 @@ const Evaluator = struct {
                                 )) continue;
                             }
                             if (name_test.local) |local| {
-                                if (!name_match.equal(child_value.local, local)) {
+                                if (!name_match.equal(child_value.localName(), local)) {
                                     continue;
                                 }
                             }
@@ -1001,8 +1001,8 @@ const Evaluator = struct {
                 if (child_value.kind == .element) {
                     var matches = true;
                     if (name_test.local) |local| {
-                        matches = child_value.local.len == local.len and
-                            std.mem.eql(u8, child_value.local, local);
+                        matches = child_value.localName().len == local.len and
+                            std.mem.eql(u8, child_value.localName(), local);
                     }
                     if (matches) {
                         if (name_test.prefix != null) {
@@ -1386,7 +1386,7 @@ const Evaluator = struct {
                         if (axis == .attribute) return false;
                         const node_value = context.document.node(id);
                         if (node_value.kind != .element) return false;
-                        local = node_value.local;
+                        local = node_value.localName();
                         uri = context.document.ns(node_value.ns);
                     },
                     .attribute => |attr| {
@@ -1447,7 +1447,7 @@ const Evaluator = struct {
             .node => |id| blk: {
                 const node_value = context.document.node(id);
                 break :blk switch (node_value.kind) {
-                    .element => node_value.local,
+                    .element => node_value.localName(),
                     .processing_instruction => node_value.name,
                     else => "",
                 };

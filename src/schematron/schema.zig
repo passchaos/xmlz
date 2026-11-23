@@ -160,7 +160,7 @@ const Compiler = struct {
         const node = self.document.node(root);
         if (node.kind != .element or
             !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
-            !std.mem.eql(u8, node.local, "schema"))
+            !std.mem.eql(u8, node.localName(), "schema"))
         {
             return error.InvalidSchema;
         }
@@ -177,7 +177,7 @@ const Compiler = struct {
             {
                 continue;
             }
-            if (std.mem.eql(u8, child_node.local, "ns")) {
+            if (std.mem.eql(u8, child_node.localName(), "ns")) {
                 try self.collectNamespace(child);
             }
         }
@@ -192,18 +192,18 @@ const Compiler = struct {
             {
                 continue;
             }
-            if (std.mem.eql(u8, child_node.local, "let")) {
+            if (std.mem.eql(u8, child_node.localName(), "let")) {
                 try self.variables.append(
                     self.arena,
                     try self.parseVariable(child, &.{}),
                 );
-            } else if (std.mem.eql(u8, child_node.local, "diagnostics")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "diagnostics")) {
                 try self.parseDiagnostics(child);
-            } else if (std.mem.eql(u8, child_node.local, "properties")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "properties")) {
                 try self.parseProperties(child);
-            } else if (std.mem.eql(u8, child_node.local, "phase")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "phase")) {
                 try self.phases.append(self.arena, try self.parsePhase(child));
-            } else if (std.mem.eql(u8, child_node.local, "pattern")) {
+            } else if (std.mem.eql(u8, child_node.localName(), "pattern")) {
                 try self.appendPattern(child);
             }
         }
@@ -254,7 +254,7 @@ const Compiler = struct {
             const node = self.document.node(child);
             if (node.kind != .element or
                 !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
-                !std.mem.eql(u8, node.local, "pattern"))
+                !std.mem.eql(u8, node.localName(), "pattern"))
             {
                 continue;
             }
@@ -266,7 +266,7 @@ const Compiler = struct {
         const node = self.document.node(id);
         if (node.kind != .element or
             !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
-            !std.mem.eql(u8, node.local, "pattern"))
+            !std.mem.eql(u8, node.localName(), "pattern"))
         {
             return error.InvalidSchema;
         }
@@ -285,7 +285,7 @@ const Compiler = struct {
             const rule_node = self.document.node(rule_child);
             if (rule_node.kind != .element or
                 !std.mem.eql(u8, self.document.ns(rule_node.ns), namespace_uri) or
-                !std.mem.eql(u8, rule_node.local, "rule"))
+                !std.mem.eql(u8, rule_node.localName(), "rule"))
             {
                 continue;
             }
@@ -316,7 +316,7 @@ const Compiler = struct {
             const node = self.document.node(child);
             if (node.kind != .element or
                 !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
-                !std.mem.eql(u8, node.local, "param"))
+                !std.mem.eql(u8, node.localName(), "param"))
             {
                 continue;
             }
@@ -383,7 +383,7 @@ const Compiler = struct {
             const node = self.document.node(child);
             if (node.kind != .element or
                 !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
-                !std.mem.eql(u8, node.local, "active"))
+                !std.mem.eql(u8, node.localName(), "active"))
             {
                 continue;
             }
@@ -406,7 +406,7 @@ const Compiler = struct {
             const node = self.document.node(child);
             if (node.kind != .element or
                 !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
-                !std.mem.eql(u8, node.local, "diagnostic"))
+                !std.mem.eql(u8, node.localName(), "diagnostic"))
             {
                 continue;
             }
@@ -425,7 +425,7 @@ const Compiler = struct {
             const node = self.document.node(child);
             if (node.kind != .element or
                 !std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) or
-                !std.mem.eql(u8, node.local, "property"))
+                !std.mem.eql(u8, node.localName(), "property"))
             {
                 continue;
             }
@@ -479,12 +479,12 @@ const Compiler = struct {
             {
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "let")) {
+            if (std.mem.eql(u8, node.localName(), "let")) {
                 try variables.append(
                     self.arena,
                     try self.parseVariable(child, params),
                 );
-            } else if (std.mem.eql(u8, node.local, "rule")) {
+            } else if (std.mem.eql(u8, node.localName(), "rule")) {
                 if (self.document.attribute(child, "abstract")) |value| {
                     if (isYes(value)) continue;
                 }
@@ -514,12 +514,12 @@ const Compiler = struct {
             {
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "let")) {
+            if (std.mem.eql(u8, node.localName(), "let")) {
                 try variables.append(
                     self.arena,
                     try self.parseVariable(child, params),
                 );
-            } else if (std.mem.eql(u8, node.local, "rule")) {
+            } else if (std.mem.eql(u8, node.localName(), "rule")) {
                 try rules.append(self.arena, try self.parseRule(child, params));
             }
         }
@@ -574,19 +574,19 @@ const Compiler = struct {
             {
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "let")) {
+            if (std.mem.eql(u8, node.localName(), "let")) {
                 try variables.append(
                     self.arena,
                     try self.parseVariable(child, params),
                 );
-            } else if (std.mem.eql(u8, node.local, "assert") or
-                std.mem.eql(u8, node.local, "report"))
+            } else if (std.mem.eql(u8, node.localName(), "assert") or
+                std.mem.eql(u8, node.localName(), "report"))
             {
                 try assertions.append(
                     self.arena,
                     try self.parseAssertion(child, params),
                 );
-            } else if (std.mem.eql(u8, node.local, "extends")) {
+            } else if (std.mem.eql(u8, node.localName(), "extends")) {
                 const reference = self.document.attribute(
                     child,
                     "rule",
@@ -621,7 +621,7 @@ const Compiler = struct {
             return error.InvalidSchema;
         const test_text = try self.substitute(test_source, params);
         return .{
-            .kind = if (std.mem.eql(u8, node.local, "assert"))
+            .kind = if (std.mem.eql(u8, node.localName(), "assert"))
                 .assert
             else
                 .report,
@@ -649,7 +649,7 @@ const Compiler = struct {
                 }),
                 .element => {
                     if (std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) and
-                        std.mem.eql(u8, node.local, "value-of"))
+                        std.mem.eql(u8, node.localName(), "value-of"))
                     {
                         const select = self.document.attribute(
                             child,
@@ -662,7 +662,7 @@ const Compiler = struct {
                             ),
                         });
                     } else if (std.mem.eql(u8, self.document.ns(node.ns), namespace_uri) and
-                        std.mem.eql(u8, node.local, "name"))
+                        std.mem.eql(u8, node.localName(), "name"))
                     {
                         const path = self.document.attribute(child, "path");
                         try parts.append(self.arena, .{

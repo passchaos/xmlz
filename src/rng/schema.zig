@@ -211,7 +211,7 @@ const Parser = struct {
         if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace)) {
             return error.InvalidSchema;
         }
-        if (std.mem.eql(u8, node.local, "grammar")) {
+        if (std.mem.eql(u8, node.localName(), "grammar")) {
             try self.parseGrammarChildren(root);
             if (self.start_patterns.items.len == 0) {
                 return error.InvalidSchema;
@@ -239,24 +239,24 @@ const Parser = struct {
             const node = self.document.node(child);
             if (node.kind != .element) continue;
             if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace)) continue;
-            if (std.mem.eql(u8, node.local, "start")) {
+            if (std.mem.eql(u8, node.localName(), "start")) {
                 const pattern = try self.singlePatternChild(child);
                 try self.start_patterns.append(self.arena, pattern);
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "define")) {
+            if (std.mem.eql(u8, node.localName(), "define")) {
                 try self.parseDefine(child, false);
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "div")) {
+            if (std.mem.eql(u8, node.localName(), "div")) {
                 try self.parseGrammarChildren(child);
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "include")) {
+            if (std.mem.eql(u8, node.localName(), "include")) {
                 try self.parseInclude(child);
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "annotation")) continue;
+            if (std.mem.eql(u8, node.localName(), "annotation")) continue;
             return error.InvalidPattern;
         }
     }
@@ -326,7 +326,7 @@ const Parser = struct {
         if (root == dom.null_node) return error.InvalidSchema;
         const node = self.document.node(root);
         if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace) or
-            !std.mem.eql(u8, node.local, "grammar"))
+            !std.mem.eql(u8, node.localName(), "grammar"))
         {
             return error.InvalidSchema;
         }
@@ -340,21 +340,21 @@ const Parser = struct {
             const child_node = self.document.node(child);
             if (child_node.kind != .element) continue;
             if (!std.mem.eql(u8, self.document.ns(child_node.ns), structure_namespace)) continue;
-            if (std.mem.eql(u8, child_node.local, "start")) {
+            if (std.mem.eql(u8, child_node.localName(), "start")) {
                 const pattern = try self.singlePatternChild(child);
                 self.start_patterns.shrinkRetainingCapacity(start_mark);
                 try self.start_patterns.append(self.arena, pattern);
                 continue;
             }
-            if (std.mem.eql(u8, child_node.local, "define")) {
+            if (std.mem.eql(u8, child_node.localName(), "define")) {
                 try self.parseDefine(child, true);
                 continue;
             }
-            if (std.mem.eql(u8, child_node.local, "div")) {
+            if (std.mem.eql(u8, child_node.localName(), "div")) {
                 try self.parseIncludeOverrides(child);
                 continue;
             }
-            if (std.mem.eql(u8, child_node.local, "annotation")) continue;
+            if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
             return error.InvalidPattern;
         }
     }
@@ -365,20 +365,20 @@ const Parser = struct {
             const node = self.document.node(child);
             if (node.kind != .element) continue;
             if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace)) continue;
-            if (std.mem.eql(u8, node.local, "define")) {
+            if (std.mem.eql(u8, node.localName(), "define")) {
                 try self.parseDefine(child, true);
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "div")) {
+            if (std.mem.eql(u8, node.localName(), "div")) {
                 try self.parseIncludeOverrides(child);
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "start")) {
+            if (std.mem.eql(u8, node.localName(), "start")) {
                 const pattern = try self.singlePatternChild(child);
                 try self.start_patterns.append(self.arena, pattern);
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "annotation")) continue;
+            if (std.mem.eql(u8, node.localName(), "annotation")) continue;
             return error.InvalidPattern;
         }
     }
@@ -452,7 +452,7 @@ const Parser = struct {
         {
             return error.InvalidPattern;
         }
-        const local = node.local;
+        const local = node.localName();
         if (std.mem.eql(u8, local, "empty")) return self.make(.empty);
         if (std.mem.eql(u8, local, "notAllowed")) {
             return self.make(.not_allowed);
@@ -585,7 +585,7 @@ const Parser = struct {
         if (root == dom.null_node) return error.InvalidSchema;
         const node = self.document.node(root);
         if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace) or
-            std.mem.eql(u8, node.local, "grammar"))
+            std.mem.eql(u8, node.localName(), "grammar"))
         {
             return error.InvalidSchema;
         }
@@ -605,13 +605,13 @@ const Parser = struct {
             const node = self.document.node(child);
             if (node.kind != .element) continue;
             if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace)) continue;
-            if (std.mem.eql(u8, node.local, "annotation")) continue;
-            if (std.mem.eql(u8, node.local, "except")) {
+            if (std.mem.eql(u8, node.localName(), "annotation")) continue;
+            if (std.mem.eql(u8, node.localName(), "except")) {
                 if (except != null) return error.InvalidPattern;
                 except = try self.singlePatternChild(child);
                 continue;
             }
-            if (!std.mem.eql(u8, node.local, "param")) {
+            if (!std.mem.eql(u8, node.localName(), "param")) {
                 return error.InvalidPattern;
             }
             const name = self.document.attribute(child, "name") orelse
@@ -752,7 +752,7 @@ const Parser = struct {
     fn nameAndContent(self: *Parser, id: dom.NodeId) Error!NameAndContent {
         const is_attribute = std.mem.eql(
             u8,
-            self.document.node(id).local,
+            self.document.node(id).localName(),
             "attribute",
         );
         const children = try self.patternChildIds(id);
@@ -763,7 +763,7 @@ const Parser = struct {
         } else {
             if (children.len < 1) return error.InvalidPattern;
             const first = self.document.node(children[0]);
-            if (!isNameClassElement(first.local)) {
+            if (!isNameClassElement(first.localName())) {
                 return error.InvalidPattern;
             }
             name_class = try self.parseNameClass(children[0]);
@@ -817,7 +817,7 @@ const Parser = struct {
             const node = self.document.node(child);
             if (node.kind != .element) continue;
             if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace)) continue;
-            if (std.mem.eql(u8, node.local, "annotation")) continue;
+            if (std.mem.eql(u8, node.localName(), "annotation")) continue;
             try children.append(self.arena, child);
         }
         return children.items;
@@ -832,7 +832,7 @@ const Parser = struct {
 
     fn parseNameClass(self: *Parser, id: dom.NodeId) Error!*const NameClass {
         const node = self.document.node(id);
-        const local = node.local;
+        const local = node.localName();
         if (std.mem.eql(u8, local, "name")) {
             const text = try self.textContent(id);
             const split = splitQName(text) orelse return error.InvalidPattern;
@@ -863,8 +863,8 @@ const Parser = struct {
                 const child_node = self.document.node(child);
                 if (child_node.kind != .element) continue;
                 if (!std.mem.eql(u8, self.document.ns(child_node.ns), structure_namespace)) continue;
-                if (std.mem.eql(u8, child_node.local, "annotation")) continue;
-                if (!isNameClassElement(child_node.local)) continue;
+                if (std.mem.eql(u8, child_node.localName(), "annotation")) continue;
+                if (!isNameClassElement(child_node.localName())) continue;
                 try children.append(self.arena, try self.parseNameClass(child));
             }
             if (children.items.len != 2) return error.InvalidPattern;
@@ -882,8 +882,8 @@ const Parser = struct {
             const node = self.document.node(child);
             if (node.kind != .element) continue;
             if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace)) continue;
-            if (std.mem.eql(u8, node.local, "annotation")) continue;
-            if (!std.mem.eql(u8, node.local, "except")) {
+            if (std.mem.eql(u8, node.localName(), "annotation")) continue;
+            if (!std.mem.eql(u8, node.localName(), "except")) {
                 return error.InvalidPattern;
             }
             var found: ?*const NameClass = null;
@@ -892,7 +892,7 @@ const Parser = struct {
                 const inner_node = self.document.node(inner);
                 if (inner_node.kind != .element) continue;
                 if (!std.mem.eql(u8, self.document.ns(inner_node.ns), structure_namespace)) continue;
-                if (!isNameClassElement(inner_node.local)) continue;
+                if (!isNameClassElement(inner_node.localName())) continue;
                 if (found != null) return error.InvalidPattern;
                 found = try self.parseNameClass(inner);
             }
@@ -920,7 +920,7 @@ const Parser = struct {
             const node = self.document.node(child);
             if (node.kind != .element) continue;
             if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace)) continue;
-            if (std.mem.eql(u8, node.local, "annotation")) continue;
+            if (std.mem.eql(u8, node.localName(), "annotation")) continue;
             if (found != null) return error.InvalidPattern;
             found = child;
         }
@@ -938,7 +938,7 @@ const Parser = struct {
             const node = self.document.node(child);
             if (node.kind != .element) continue;
             if (!std.mem.eql(u8, self.document.ns(node.ns), structure_namespace)) continue;
-            if (std.mem.eql(u8, node.local, "annotation")) continue;
+            if (std.mem.eql(u8, node.localName(), "annotation")) continue;
             if (count == 2) return error.InvalidPattern;
             children[count] = try self.parsePattern(child);
             count += 1;

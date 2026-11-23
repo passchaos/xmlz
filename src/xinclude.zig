@@ -122,20 +122,20 @@ const Processor = struct {
                 }
                 const current_base = element_base orelse base;
                 if (std.mem.eql(u8, source.ns(node.ns), namespace_uri) and
-                    std.mem.eql(u8, node.local, "include"))
+                    std.mem.eql(u8, node.localName(), "include"))
                 {
                     try self.processInclude(source, current_base, id, parent);
                     return;
                 }
                 if (std.mem.eql(u8, source.ns(node.ns), namespace_uri) and
-                    std.mem.eql(u8, node.local, "fallback"))
+                    std.mem.eql(u8, node.localName(), "fallback"))
                 {
                     return error.InvalidInclude;
                 }
 
                 const new_id = self.builder.createElementNs(
                     prefixOf(node),
-                    node.local,
+                    node.localName(),
                     source.ns(node.ns),
                 ) catch |err| return mapBuilderError(err);
                 for (source.attributesOf(id)) |attribute| {
@@ -605,7 +605,7 @@ const Processor = struct {
         while (child != dom.null_node) : (child = source.node(child).next_sibling) {
             const node = source.node(child);
             if (node.kind == .element and std.mem.eql(u8, source.ns(node.ns), namespace_uri) and
-                std.mem.eql(u8, node.local, "fallback"))
+                std.mem.eql(u8, node.localName(), "fallback"))
             {
                 var fallback_child = node.first_child;
                 while (fallback_child != dom.null_node) : (fallback_child = source.node(fallback_child).next_sibling) {
@@ -651,10 +651,10 @@ fn isNCNamePointer(text: []const u8) bool {
 }
 
 fn prefixOf(node: *const dom.Node) []const u8 {
-    if (node.local.len == node.name.len or node.local.len >= node.name.len) {
+    if (node.localName().len == node.name.len or node.localName().len >= node.name.len) {
         return "";
     }
-    return node.name[0 .. node.name.len - node.local.len - 1];
+    return node.name[0 .. node.name.len - node.localName().len - 1];
 }
 
 fn findAttribute(

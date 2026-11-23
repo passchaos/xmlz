@@ -41,7 +41,8 @@ prefix/local/URI metadata for elements and attributes.
 `dom.Document` stores nodes in one contiguous array and attributes in another,
 using 32-bit indices and ranges. Namespace URIs are interned into a per-document
 table so each node and attribute holds a 32-bit table index; boolean state is
-packed into flag words, keeping records at 80 and 40 bytes. The tree is built
+packed into flag words and a node stores the colon offset of its qualified
+name, keeping records at 64 and 40 bytes. The tree is built
 from parser events with namespace processing enabled, decoded/normalized text
 and attribute values, DTD attribute defaults, and optional comments/PIs. The document owns an arena; input slices
 remain borrowed, so the input must outlive the document. `Document.parseIn`

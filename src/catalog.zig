@@ -405,7 +405,7 @@ const Compiler = struct {
         const root_node = document.node(root_id);
         if (root_node.kind != .element or
             !std.mem.eql(u8, document.ns(root_node.ns), namespace_uri) or
-            !std.mem.eql(u8, root_node.local, "catalog"))
+            !std.mem.eql(u8, root_node.localName(), "catalog"))
         {
             return error.InvalidCatalog;
         }
@@ -462,7 +462,7 @@ const Compiler = struct {
                 continue;
             }
             const entry_base = try self.elementBase(document, child, base);
-            if (std.mem.eql(u8, node.local, "group")) {
+            if (std.mem.eql(u8, node.localName(), "group")) {
                 const group_prefer = try self.preferFor(
                     document,
                     child,
@@ -477,7 +477,7 @@ const Compiler = struct {
                 );
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "public")) {
+            if (std.mem.eql(u8, node.localName(), "public")) {
                 try entries.append(self.arena, .{ .public = .{
                     .id = try self.normalizePublic(
                         try self.requiredAttribute(document, child, "publicId"),
@@ -489,7 +489,7 @@ const Compiler = struct {
                 } });
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "system")) {
+            if (std.mem.eql(u8, node.localName(), "system")) {
                 try entries.append(self.arena, .{ .system = .{
                     .id = try self.arena.dupe(
                         u8,
@@ -502,7 +502,7 @@ const Compiler = struct {
                 } });
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "uri")) {
+            if (std.mem.eql(u8, node.localName(), "uri")) {
                 try entries.append(self.arena, .{ .uri = .{
                     .id = try self.arena.dupe(
                         u8,
@@ -515,12 +515,12 @@ const Compiler = struct {
                 } });
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "rewriteSystem") or
-                std.mem.eql(u8, node.local, "rewriteURI"))
+            if (std.mem.eql(u8, node.localName(), "rewriteSystem") or
+                std.mem.eql(u8, node.localName(), "rewriteURI"))
             {
                 const is_system = std.mem.eql(
                     u8,
-                    node.local,
+                    node.localName(),
                     "rewriteSystem",
                 );
                 const start = try self.requiredAttribute(
@@ -544,12 +544,12 @@ const Compiler = struct {
                     } });
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "systemSuffix") or
-                std.mem.eql(u8, node.local, "uriSuffix"))
+            if (std.mem.eql(u8, node.localName(), "systemSuffix") or
+                std.mem.eql(u8, node.localName(), "uriSuffix"))
             {
                 const is_system = std.mem.eql(
                     u8,
-                    node.local,
+                    node.localName(),
                     "systemSuffix",
                 );
                 const suffix = try self.requiredAttribute(
@@ -573,18 +573,18 @@ const Compiler = struct {
                     } });
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "delegatePublic") or
-                std.mem.eql(u8, node.local, "delegateSystem") or
-                std.mem.eql(u8, node.local, "delegateURI"))
+            if (std.mem.eql(u8, node.localName(), "delegatePublic") or
+                std.mem.eql(u8, node.localName(), "delegateSystem") or
+                std.mem.eql(u8, node.localName(), "delegateURI"))
             {
                 const is_public = std.mem.eql(
                     u8,
-                    node.local,
+                    node.localName(),
                     "delegatePublic",
                 );
                 const is_system = std.mem.eql(
                     u8,
-                    node.local,
+                    node.localName(),
                     "delegateSystem",
                 );
                 const start = try self.requiredAttribute(
@@ -621,7 +621,7 @@ const Compiler = struct {
                     } });
                 continue;
             }
-            if (std.mem.eql(u8, node.local, "nextCatalog")) {
+            if (std.mem.eql(u8, node.localName(), "nextCatalog")) {
                 const reference = try self.requiredAttribute(
                     document,
                     child,

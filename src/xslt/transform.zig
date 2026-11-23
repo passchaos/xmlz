@@ -113,7 +113,7 @@ pub const Result = struct {
             if (root != dom.null_node) {
                 const root_node = self.document.node(root);
                 if (self.document.ns(root_node.ns).len == 0 and std.ascii.eqlIgnoreCase(
-                    root_node.local,
+                    root_node.localName(),
                     "html",
                 )) {
                     method = .html;
@@ -898,14 +898,14 @@ fn nodeNameKey(
         .element => {
             buffer[0] = 'e';
             const uri = document.ns(node.ns);
-            const total = 1 + uri.len + 1 + node.local.len;
+            const total = 1 + uri.len + 1 + node.localName().len;
             if (total > buffer.len) return null;
             @memcpy(buffer[1..][0..uri.len], uri);
             length = 1 + uri.len;
             buffer[length] = 0;
             length += 1;
-            @memcpy(buffer[length..][0..node.local.len], node.local);
-            length += node.local.len;
+            @memcpy(buffer[length..][0..node.localName().len], node.localName());
+            length += node.localName().len;
         },
         .text => {
             buffer[0] = 't';
@@ -1518,7 +1518,7 @@ const Runtime = struct {
             return new_id;
         }
         const strip = source.kind == .element and
-            self.shouldStrip(self.source.ns(source.ns), source.local);
+            self.shouldStrip(self.source.ns(source.ns), source.localName());
         var child = source.first_child;
         var last: dom.NodeId = dom.null_node;
         while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
@@ -2270,7 +2270,7 @@ const Runtime = struct {
             if (value.kind != .element) continue;
             if (check_namespace and !std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
             if (name_test.local) |local| {
-                if (!name_match.equal(value.local, local)) continue;
+                if (!name_match.equal(value.localName(), local)) continue;
             }
             if (count == matches.len) {
                 overflow = true;
@@ -2293,7 +2293,7 @@ const Runtime = struct {
             if (value.kind != .element) continue;
             if (check_namespace and !std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
             if (name_test.local) |local| {
-                if (!name_match.equal(value.local, local)) continue;
+                if (!name_match.equal(value.localName(), local)) continue;
             }
             count += 1;
         }
@@ -2306,7 +2306,7 @@ const Runtime = struct {
             if (value.kind != .element) continue;
             if (check_namespace and !std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
             if (name_test.local) |local| {
-                if (!name_match.equal(value.local, local)) continue;
+                if (!name_match.equal(value.localName(), local)) continue;
             }
             out[write] = .{ .node = child };
             write += 1;
@@ -2334,7 +2334,7 @@ const Runtime = struct {
                         return false;
                     }
                     return if (name.local) |local|
-                        name_match.equal(value.local, local)
+                        name_match.equal(value.localName(), local)
                     else
                         true;
                 },
@@ -2850,7 +2850,7 @@ const Runtime = struct {
                         if (index.elements.count() != 0) {
                             if (index.elements.get(.{
                                 .uri = self.source.ns(value.ns),
-                                .local = value.local,
+                                .local = value.localName(),
                             })) |bucket| {
                                 try self.addCandidates(
                                     bucket.candidates(mode),
@@ -3248,7 +3248,7 @@ const Runtime = struct {
             if (name.check_namespace and
                 !namespaceMatches(self.source.ns(child_value.ns), name.uri)) continue;
             if (name.local) |local| {
-                if (!name_match.equal(child_value.local, local)) continue;
+                if (!name_match.equal(child_value.localName(), local)) continue;
             }
             return true;
         }
@@ -3337,7 +3337,7 @@ const Runtime = struct {
                         return false;
                     }
                     return if (name.local) |local|
-                        name_match.equal(value.local, local)
+                        name_match.equal(value.localName(), local)
                     else
                         true;
                 },
@@ -3629,7 +3629,7 @@ const Runtime = struct {
                     .element => {
                         const new_id = self.builder.createElementNsUnchecked(
                             prefixOf(node_value),
-                            node_value.local,
+                            node_value.localName(),
                             self.source.ns(node_value.ns),
                         ) catch |err| return mapBuilderError(err);
                         self.builder.appendChild(self.parent, new_id) catch |err|
@@ -4098,7 +4098,7 @@ const Runtime = struct {
                     try key_buffer.append(self.allocator, 'e');
                     try key_buffer.appendSlice(self.allocator, self.source.ns(node.ns));
                     try key_buffer.append(self.allocator, 0);
-                    try key_buffer.appendSlice(self.allocator, node.local);
+                    try key_buffer.appendSlice(self.allocator, node.localName());
                 },
                 .text => try key_buffer.append(self.allocator, 't'),
                 .comment => try key_buffer.append(self.allocator, 'c'),
@@ -4953,7 +4953,7 @@ const Runtime = struct {
             .element => {
                 const new_id = self.builder.createElementNsUnchecked(
                     prefixOf(node_value),
-                    node_value.local,
+                    node_value.localName(),
                     self.source.ns(node_value.ns),
                 ) catch |err| return mapBuilderError(err);
                 self.builder.appendChild(self.parent, new_id) catch |err|
@@ -5148,7 +5148,7 @@ const Runtime = struct {
             const value = self.source.node(child);
             if (value.kind != .element) continue;
             if (!std.mem.eql(u8, self.source.ns(value.ns), uri)) continue;
-            if (!std.mem.eql(u8, value.local, local)) continue;
+            if (!std.mem.eql(u8, value.localName(), local)) continue;
             return try self.stringValue(.{ .node = child });
         }
         return "";
@@ -6639,8 +6639,8 @@ fn defaultCountMatches(
                     break :blk switch (current_node.kind) {
                         .element => std.mem.eql(
                             u8,
-                            candidate_node.local,
-                            current_node.local,
+                            candidate_node.localName(),
+                            current_node.localName(),
                         ) and std.mem.eql(
                             u8,
                             document.ns(candidate_node.ns),
@@ -6847,8 +6847,8 @@ fn runExtensionFunction(
 }
 
 fn prefixOf(node: *const dom.Node) []const u8 {
-    if (node.local.len >= node.name.len) return "";
-    return node.name[0 .. node.name.len - node.local.len - 1];
+    if (node.localName().len >= node.name.len) return "";
+    return node.name[0 .. node.name.len - node.localName().len - 1];
 }
 
 fn resolvePrefix(
@@ -6941,10 +6941,10 @@ fn writeHtmlElement(
 ) std.Io.Writer.Error!void {
     const node_value = document.node(id);
     const info = if (document.ns(node_value.ns).len == 0)
-        htmlTagInfo(node_value.local)
+        htmlTagInfo(node_value.localName())
     else
         null;
-    const is_p = node_value.local.len != 0 and node_value.local[0] == 'p';
+    const is_p = node_value.localName().len != 0 and node_value.localName()[0] == 'p';
     const prefixed = std.mem.indexOfScalar(u8, node_value.name, ':') != null;
     var declared_default: ?[]const u8 = null;
     for (document.attributesOf(id)) |attr| {
@@ -6993,8 +6993,8 @@ fn writeHtmlElement(
         !(compat and isHtmlHeadWithMeta(document, id)))
     {
         if (info != null and info.?.save_end and !is_p and
-            !std.ascii.eqlIgnoreCase(node_value.local, "html") and
-            !std.ascii.eqlIgnoreCase(node_value.local, "body"))
+            !std.ascii.eqlIgnoreCase(node_value.localName(), "html") and
+            !std.ascii.eqlIgnoreCase(node_value.localName(), "body"))
         {
             try out.writeByte('>');
         } else {
@@ -7032,7 +7032,7 @@ fn writeHtmlElement(
             try out.writeByte('\n');
         }
         if (insert_meta) {
-            const prefix = node_value.name[0 .. node_value.name.len - node_value.local.len];
+            const prefix = node_value.name[0 .. node_value.name.len - node_value.localName().len];
             try out.writeByte('<');
             try out.writeAll(prefix);
             try out.writeAll("meta charset=\"");
@@ -7047,8 +7047,8 @@ fn writeHtmlElement(
             }
         }
         const raw_text = document.ns(node_value.ns).len == 0 and
-            (std.ascii.eqlIgnoreCase(node_value.local, "script") or
-                std.ascii.eqlIgnoreCase(node_value.local, "style"));
+            (std.ascii.eqlIgnoreCase(node_value.localName(), "script") or
+                std.ascii.eqlIgnoreCase(node_value.localName(), "style"));
         child = node_value.first_child;
         while (child != dom.null_node) : (child = document.node(child).next_sibling) {
             try writeHtmlNode(
@@ -7079,7 +7079,7 @@ fn writeHtmlElement(
         if (next.kind != .text and node_value.parent != dom.null_node) {
             const parent = document.node(node_value.parent);
             if (parent.kind == .element and
-                (parent.local.len == 0 or parent.local[0] != 'p'))
+                (parent.localName().len == 0 or parent.localName()[0] != 'p'))
             {
                 try out.writeByte('\n');
             }
@@ -7089,7 +7089,7 @@ fn writeHtmlElement(
 
 fn isHtmlHeadWithMeta(document: *const dom.Document, id: dom.NodeId) bool {
     const node_value = document.node(id);
-    if (!std.ascii.eqlIgnoreCase(node_value.local, "head")) return false;
+    if (!std.ascii.eqlIgnoreCase(node_value.localName(), "head")) return false;
     return !hasHtmlCharsetMeta(document, id);
 }
 
@@ -7098,7 +7098,7 @@ fn hasHtmlCharsetMeta(document: *const dom.Document, id: dom.NodeId) bool {
     while (child != dom.null_node) : (child = document.node(child).next_sibling) {
         const node_value = document.node(child);
         if (node_value.kind != .element) continue;
-        if (!std.ascii.eqlIgnoreCase(node_value.local, "meta")) continue;
+        if (!std.ascii.eqlIgnoreCase(node_value.localName(), "meta")) continue;
         if (document.attribute(child, "charset") != null or
             document.attribute(child, "http-equiv") != null)
         {

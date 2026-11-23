@@ -92,7 +92,7 @@ const Validator = struct {
             return;
         }
         const node = self.document.node(root);
-        const decl = self.schema.findElement(self.document.ns(node.ns), node.local) orelse {
+        const decl = self.schema.findElement(self.document.ns(node.ns), node.localName()) orelse {
             try self.addError(root, "no declaration for root element");
             return;
         };
@@ -277,7 +277,7 @@ const Validator = struct {
     ) Error!void {
         if (wildcard.process == .skip) return;
         const node = self.document.node(id);
-        const decl = self.schema.findElement(self.document.ns(node.ns), node.local);
+        const decl = self.schema.findElement(self.document.ns(node.ns), node.localName());
         if (decl) |found| {
             try self.validateElement(id, found);
         } else if (wildcard.process == .strict) {
@@ -1025,7 +1025,7 @@ const Matcher = struct {
                 const child = self.validator.document.node(child_id);
                 var actual = element.decl;
                 const direct_match =
-                    std.mem.eql(u8, child.local, element.decl.name) and
+                    std.mem.eql(u8, child.localName(), element.decl.name) and
                     std.mem.eql(u8, self.validator.document.ns(child.ns), element.decl.namespace_uri);
                 if (!direct_match) {
                     if (!element.decl.global) return null;
@@ -1035,7 +1035,7 @@ const Matcher = struct {
                     if (blocked.substitution) return null;
                     const candidate = self.validator.schema.findElement(
                         self.validator.document.ns(child.ns),
-                        child.local,
+                        child.localName(),
                     ) orelse return null;
                     if (!self.validator.schema.isSubstitutionMember(
                         candidate,

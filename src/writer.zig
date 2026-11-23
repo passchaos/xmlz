@@ -169,7 +169,7 @@ pub fn writeDoctype(writer: *std.Io.Writer, doctype: Doctype) Error!void {
 fn isCdataElement(options: Options, doc: *const dom.Document, node: *const dom.Node) bool {
     for (options.cdata_elements) |name| {
         if (std.mem.eql(u8, name.uri, doc.ns(node.ns)) and
-            std.mem.eql(u8, name.local, node.local))
+            std.mem.eql(u8, name.local, node.localName()))
         {
             return true;
         }
@@ -310,7 +310,7 @@ fn writeStartTag(
     // XHTML serialization gives a plain <html> root the XHTML namespace
     // declaration (libxml2's xhtmlNodeDumpOutput behavior).
     const xhtml_ns = options.html_meta_charset != null and doc.ns(node.ns).len == 0 and
-        std.mem.eql(u8, node.local, "html") and
+        std.mem.eql(u8, node.localName(), "html") and
         !hasNamespaceDeclaration(doc, id);
 
     if (version == .xml_1_0 and !xhtml_ns) {
@@ -453,7 +453,7 @@ fn writeElement(
     const node = doc.node(id);
     if (pretty) try writeIndent(writer, depth, options.indent.?);
 
-    const prefixed = node.local.len != node.name.len;
+    const prefixed = node.localName().len != node.name.len;
     var declared_default: ?[]const u8 = null;
     if (node.hasNsDecls()) {
         for (doc.attributesOf(id)) |attr| {
@@ -500,11 +500,11 @@ fn writeElement(
     // (libxml2's xmlNodeDumpOutput behavior for XHTML doctypes).
     const meta_charset: ?[]const u8 = blk: {
         const charset = options.html_meta_charset orelse break :blk null;
-        if (!std.mem.eql(u8, node.local, "head")) break :blk null;
+        if (!std.mem.eql(u8, node.localName(), "head")) break :blk null;
         if (node.parent == dom.null_node) break :blk null;
         const parent = doc.node(node.parent);
         if (parent.kind != .element or
-            !std.mem.eql(u8, parent.local, "html"))
+            !std.mem.eql(u8, parent.localName(), "html"))
         {
             break :blk null;
         }
@@ -621,7 +621,7 @@ fn hasContentTypeMeta(doc: *const dom.Document, id: dom.NodeId) bool {
     while (child != dom.null_node) : (child = doc.node(child).next_sibling) {
         const node = doc.node(child);
         if (node.kind != .element) continue;
-        if (!std.mem.eql(u8, node.local, "meta")) continue;
+        if (!std.mem.eql(u8, node.localName(), "meta")) continue;
         if (doc.attribute(child, "http-equiv")) |value| {
             if (std.ascii.eqlIgnoreCase(value, "Content-Type")) return true;
         }
