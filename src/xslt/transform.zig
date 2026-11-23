@@ -2880,6 +2880,18 @@ const Runtime = struct {
             }
             return;
         }
+        return self.executeValueOfSlow(value_of, node, position, size);
+    }
+
+    /// General value-of evaluation, kept out of line so the common child-name
+    /// path does not carry the evaluator's stack frame.
+    noinline fn executeValueOfSlow(
+        self: *Runtime,
+        value_of: compile.ValueOf,
+        node: xpath.NodeRef,
+        position: usize,
+        size: usize,
+    ) Error!void {
         const value = try self.evalOwned(
             value_of.select,
             node,
