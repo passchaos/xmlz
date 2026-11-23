@@ -259,6 +259,33 @@ fn writeNode(
     }
 }
 
+/// Copy up to sixteen bytes with two overlapping loads and stores. The
+/// writer copies millions of short names, values, and raw attribute spans,
+/// where the generic memcpy's size dispatch costs more than the copy.
+inline fn copyShort(out: []u8, in: []const u8) void {
+    const n = in.len;
+    if (n >= 16) {
+        @memcpy(out[0..n], in);
+        return;
+    }
+    if (n >= 8) {
+        out[0..8].* = in[0..8].*;
+        out[n - 8 ..][0..8].* = in[n - 8 ..][0..8].*;
+        return;
+    }
+    if (n >= 4) {
+        out[0..4].* = in[0..4].*;
+        out[n - 4 ..][0..4].* = in[n - 4 ..][0..4].*;
+        return;
+    }
+    if (n >= 2) {
+        out[0..2].* = in[0..2].*;
+        out[n - 2 ..][0..2].* = in[n - 2 ..][0..2].*;
+        return;
+    }
+    if (n == 1) out[0] = in[0];
+}
+
 inline fn isXmlnsAttribute(name: []const u8) bool {
     if (name.len != 5) return false;
     return std.mem.eql(u8, name, "xmlns");
@@ -325,7 +352,7 @@ fn writeStartTag(
             var used: usize = 0;
             out[used] = '<';
             used += 1;
-            @memcpy(out[used..][0..node.name.len], node.name);
+            copyShort(out[used..], node.name);
             used += node.name.len;
             var direct = true;
             if (needs_synth_ns) {
@@ -380,7 +407,7 @@ fn writeStartTag(
                     out[used] = ' ';
                     used += 1;
                     if (raw) |bytes| {
-                        @memcpy(out[used..][0..bytes.len], bytes);
+                        copyShort(out[used..], bytes);
                         used += bytes.len;
                     } else {
                         @memcpy(out[used..][0..attr.name.len], attr.name);
@@ -603,7 +630,7 @@ fn writeEndTag(writer: *std.Io.Writer, name: []const u8) Error!void {
     if (out.len >= name.len + 3) {
         out[0] = '<';
         out[1] = '/';
-        @memcpy(out[2..][0..name.len], name);
+        copyShort(out[2..], name);
         out[name.len + 2] = '>';
         writer.advance(name.len + 3);
         return;
