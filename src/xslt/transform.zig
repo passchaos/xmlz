@@ -2973,7 +2973,7 @@ const Runtime = struct {
         }
     }
 
-    fn addCandidates(
+    inline fn addCandidates(
         self: *Runtime,
         candidates: []const u32,
         node: xpath.NodeRef,
