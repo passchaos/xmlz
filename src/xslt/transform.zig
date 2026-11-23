@@ -2530,6 +2530,16 @@ const Runtime = struct {
             .text => |text| try self.appendText(text),
             .raw_text => |text| try self.appendTextRaw(text),
             .value_of => |value_of| {
+                // A single child name test is the common case; read its
+                // string value directly instead of building a node set.
+                if (try self.simpleChildString(value_of.select, node)) |text| {
+                    if (value_of.disable_output_escaping) {
+                        try self.appendTextRaw(text);
+                    } else {
+                        try self.appendText(text);
+                    }
+                    return;
+                }
                 const value = try self.evalOwned(
                     value_of.select,
                     node,
@@ -4541,9 +4551,14 @@ const Runtime = struct {
         if (avt.len == 1) {
             switch (avt[0]) {
                 .literal => |text| return text,
-                .expr => |expression| return self.toString(
-                    try self.evalOwned(expression, node, position, size),
-                ),
+                .expr => |expression| {
+                    if (try self.simpleChildString(expression, node)) |text| {
+                        return text;
+                    }
+                    return self.toString(
+                        try self.evalOwned(expression, node, position, size),
+                    );
+                },
             }
         }
         var out: std.ArrayList(u8) = .empty;
@@ -4551,6 +4566,10 @@ const Runtime = struct {
             switch (part) {
                 .literal => |text| try out.appendSlice(self.allocator, text),
                 .expr => |expression| {
+                    if (try self.simpleChildString(expression, node)) |text| {
+                        try out.appendSlice(self.allocator, text);
+                        continue;
+                    }
                     const value = try self.evalOwned(
                         expression,
                         node,
@@ -5042,8 +5061,9 @@ const Runtime = struct {
         return out;
     }
 
-    /// Fast path for a sort key such as `lastname`: a single child name test
-    /// whose string value is the first matching child's text.
+    /// Fast path for a single child name test such as `lastname` in a sort
+    /// key, `xsl:value-of`, or an attribute value template: the string value
+    /// is the first matching child's text.
     fn simpleChildString(
         self: *Runtime,
         select: compile.CompiledExpr,
