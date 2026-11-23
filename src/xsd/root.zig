@@ -1300,3 +1300,27 @@ test "XSD enforces schema-component constraints" {
         "<a>x<b/></a>",
     );
 }
+
+test "XSD matches a large repeated particle without deep recursion" {
+    // The occurrence matcher used to recurse once per matched element, so a
+    // long `maxOccurs="unbounded"` run overflowed the stack. Build an
+    // instance large enough that the old recursion could not fit and check
+    // that validation still succeeds.
+    var instance: std.ArrayList(u8) = .empty;
+    defer instance.deinit(testing.allocator);
+    try instance.appendSlice(testing.allocator, "<root id='1'>");
+    for (0..120_000) |_| {
+        try instance.appendSlice(testing.allocator, "<item>a</item>");
+    }
+    try instance.appendSlice(testing.allocator, "</root>");
+
+    var schema_document = try parseDocument(basic_schema);
+    defer schema_document.deinit();
+    var compiled = try parse(testing.allocator, &schema_document);
+    defer compiled.deinit();
+    var instance_document = try parseDocument(instance.items);
+    defer instance_document.deinit();
+    var result = try validate(&compiled, testing.allocator, &instance_document);
+    defer result.deinit();
+    try testing.expect(result.isValid());
+}

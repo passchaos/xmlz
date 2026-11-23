@@ -989,28 +989,27 @@ const Matcher = struct {
         minimum: usize,
         maximum: ?usize,
     ) ?usize {
-        if (maximum) |max| {
-            if (max == 0) return if (minimum == 0) index else null;
-        }
-        const saved = self.assignments.items.len;
-        if (self.matchOnce(particle, index)) |next| {
-            if (next == index) return index;
-            const next_min = if (minimum > 0) minimum - 1 else 0;
-            const next_max: ?usize = if (maximum) |max|
-                (if (max > 0) max - 1 else 0)
-            else
-                null;
-            if (self.matchWithOccurrences(
-                particle,
-                next,
-                next_min,
-                next_max,
-            )) |end| {
-                return end;
+        // Iterative greedy match: repeated elements (for example an
+        // `maxOccurs="unbounded"` particle over a large document) would
+        // otherwise recurse once per occurrence and overflow the stack.
+        const entry_assignments = self.assignments.items.len;
+        var current = index;
+        var remaining_min = minimum;
+        var remaining_max = maximum;
+        while (true) {
+            if (remaining_max) |max| {
+                if (max == 0) break;
             }
-            self.assignments.shrinkRetainingCapacity(saved);
+            const next = self.matchOnce(particle, current) orelse break;
+            if (next == current) return current;
+            current = next;
+            if (remaining_min > 0) remaining_min -= 1;
+            if (remaining_max) |max| {
+                if (max > 0) remaining_max = max - 1;
+            }
         }
-        if (minimum == 0) return index;
+        if (remaining_min == 0) return current;
+        self.assignments.shrinkRetainingCapacity(entry_assignments);
         return null;
     }
 
