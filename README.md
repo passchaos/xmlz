@@ -135,10 +135,10 @@ then exposes them through a pull parser and reusable lexical primitives.
   extracted from `zsvg` remain available and are used by the pull parser's
   fast paths.
 - **Measured performance.** On a 16 MiB SVG-like document the pull parser
-  reaches 970 MB/s (904 MB/s with namespaces) and 1140 MB/s in opt-in trusted
-  mode, 5.8x faster than expat and 6.7x faster than libxml2's reader. The
-  validating DOM reaches 446 MB/s one-shot, 592 MB/s with a reusable arena
-  (`dom.Document.parseIn`), and 523 MB/s in trusted mode — 4.6x faster than
+  reaches 969 MB/s (905 MB/s with namespaces) and 1143 MB/s in opt-in trusted
+  mode, 5.9x faster than expat and 6.7x faster than libxml2's reader. The
+  validating DOM reaches 446 MB/s one-shot, 595 MB/s with a reusable arena
+  (`dom.Document.parseIn`), and 518 MB/s in trusted mode — 4.4x faster than
   libxml2's DOM and faster than pugixml; see `docs/benchmarks.md`.
 
 ## Status
