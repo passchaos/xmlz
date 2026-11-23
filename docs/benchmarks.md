@@ -94,28 +94,28 @@ input; the numbers below were measured sequentially, pinned, best of four.
 
 | Engine | Mode | MB/s |
 | --- | --- | ---: |
-| xmlz | pull, trusted fast mode | 2359.09 |
-| pugixml | DOM | 1166.74 |
-| xmlz | pull, no namespaces | 841.31 |
-| xmlz | pull, namespaces | 818.35 |
-| xmlz | DOM, trusted fast mode | 811.92 |
-| xmlz | DOM, reusable arena | 593.16 |
-| xmlz | DOM, namespaces | 486.07 |
-| expat | SAX | 308.43 |
-| libxml2 | reader | 138.23 |
-| libxml2 | DOM | 104.20 |
+| xmlz | pull, trusted fast mode | 2327.73 |
+| pugixml | DOM | 1159.86 |
+| xmlz | pull, no namespaces | 995.07 |
+| xmlz | pull, namespaces | 951.49 |
+| xmlz | DOM, trusted fast mode | 818.46 |
+| xmlz | DOM, reusable arena | 671.51 |
+| xmlz | DOM, namespaces | 536.93 |
+| expat | SAX | 306.11 |
+| libxml2 | reader | 140.43 |
+| libxml2 | DOM | 86.32 |
 
-Serialization on the same input: xmlz **2451.14 MB/s**, pugixml 2003.00,
-libxml2 448.95.
+Serialization on the same input: xmlz **2354.08 MB/s**, pugixml 2031.30,
+libxml2 453.34.
 
-- The pull parser is **7.7x faster than expat** and **5.9x faster than
-  libxml2's reader** with namespaces enabled (17x in trusted mode) while
+- The pull parser is **7.6x faster than expat** and **6.8x faster than
+  libxml2's reader** with namespaces enabled (16.6x in trusted mode) while
   validating UTF-8.
-- Serialization is **1.22x faster than pugixml** and **5.46x faster than
+- Serialization is **1.16x faster than pugixml** and **5.19x faster than
   libxml2**; parsed trees skip writer-side UTF-8 revalidation.
 - pugixml's non-validating DOM is faster than xmlz's validating one on this
   shape because it neither checks UTF-8 nor copies attribute values out of the
-  in-situ buffer. xmlz's validating DOM still beats libxml2's by **4.7x**.
+  in-situ buffer. xmlz's validating DOM still beats libxml2's by **6.2x**.
 
 ## Serialization
 
