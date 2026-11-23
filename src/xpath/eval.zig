@@ -20,6 +20,20 @@ pub const Error = error{
     InvalidArgument,
 };
 
+/// Append a matched node without the out-of-line capacity call that
+/// `ArrayList.append` performs even when capacity remains. Step evaluation
+/// appends once per matched node, so this is a hot helper.
+inline fn appendRef(
+    out: *std.ArrayList(value.NodeRef),
+    allocator: std.mem.Allocator,
+    node: value.NodeRef,
+) Error!void {
+    if (out.items.len == out.capacity) {
+        try out.ensureTotalCapacity(allocator, out.items.len + 1);
+    }
+    out.appendAssumeCapacity(node);
+}
+
 pub fn evaluate(
     allocator: std.mem.Allocator,
     expression: *const ast.Expr,
@@ -385,7 +399,7 @@ const Evaluator = struct {
                     step.axis,
                     prefix_uri,
                 )) {
-                    try out.append(self.allocator, node);
+                    try appendRef(out, self.allocator, node);
                 }
                 return true;
             },
@@ -434,7 +448,7 @@ const Evaluator = struct {
                                     continue;
                                 }
                             }
-                            try out.append(self.allocator, .{ .node = child });
+                            try appendRef(out, self.allocator, .{ .node = child });
                         }
                         return true;
                     }
@@ -450,7 +464,7 @@ const Evaluator = struct {
                             step.axis,
                             prefix_uri,
                         )) {
-                            try out.append(self.allocator, candidate);
+                            try appendRef(out, self.allocator, candidate);
                         }
                     }
                     return true;
@@ -474,7 +488,7 @@ const Evaluator = struct {
                                 expected_uri,
                                 local,
                             )) continue;
-                            try out.append(self.allocator, .{ .attribute = .{
+                            try appendRef(out, self.allocator, .{ .attribute = .{
                                 .element = id,
                                 .index = @intCast(index),
                             } });
@@ -494,7 +508,7 @@ const Evaluator = struct {
                                 expected_uri,
                             )) continue;
                         }
-                        try out.append(self.allocator, .{ .attribute = .{
+                        try appendRef(out, self.allocator, .{ .attribute = .{
                             .element = id,
                             .index = @intCast(index),
                         } });
