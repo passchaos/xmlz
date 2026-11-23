@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 199309L
 #include <libxml/parser.h>
 #include <libxml/xmlreader.h>
+#include <libxml/xmlsave.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -62,9 +63,32 @@ int main(int argc, char **argv) {
         if (i != 0 && elapsed < best_reader) best_reader = elapsed;
     }
 
+    double best_write = 1e30;
+    xmlDocPtr write_doc = xmlReadMemory(
+        data, (int)size, "bench.xml", NULL,
+        XML_PARSE_NONET | XML_PARSE_NOERROR | XML_PARSE_NOWARNING);
+    if (write_doc) {
+        xmlBufferPtr buffer = xmlBufferCreateSize((size_t)size * 2);
+        for (int i = 0; i < iterations; i++) {
+            double start = now_sec();
+            xmlBufferEmpty(buffer);
+            xmlSaveCtxtPtr ctx = xmlSaveToBuffer(
+                buffer, "UTF-8", XML_SAVE_NO_DECL);
+            xmlSaveDoc(ctx, write_doc);
+            xmlSaveClose(ctx);
+            double elapsed = now_sec() - start;
+            if (i != 0 && elapsed < best_write) best_write = elapsed;
+        }
+        xmlBufferFree(buffer);
+        xmlFreeDoc(write_doc);
+    }
+
     double mb = (double)size / (1024.0 * 1024.0);
     printf("libxml2,dom,%.2f,%ld\n", mb / best_dom, rss_kb());
     printf("libxml2,reader,%.2f,%ld\n", mb / best_reader, rss_kb());
+    if (best_write < 1e29) {
+        printf("libxml2,write,%.2f,%ld\n", mb / best_write, rss_kb());
+    }
     xmlCleanupParser();
     free(data);
     return 0;

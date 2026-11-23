@@ -48,6 +48,36 @@ pub fn main(init: std.process.Init) !void {
     if (std.mem.eql(u8, mode, "dom-pool-fast")) {
         try runDomPool(init.gpa, io, source, mb, true, true);
     }
+    if (std.mem.eql(u8, mode, "all") or std.mem.eql(u8, mode, "write")) {
+        try runWrite(init.gpa, io, source, mb);
+    }
+}
+
+fn runWrite(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source: []const u8,
+    mb: f64,
+) !void {
+    var doc = try xmlz.dom.Document.parse(allocator, source, .{});
+    defer doc.deinit();
+    // Serialize into a preallocated memory buffer so every engine pays the
+    // same copying cost.
+    const capacity = source.len * 2;
+    const buffer = try allocator.alloc(u8, capacity);
+    defer allocator.free(buffer);
+    var best: f64 = std.math.inf(f64);
+    for (0..iterations) |iteration| {
+        const start = std.Io.Clock.Timestamp.now(io, .awake);
+        var fixed = std.Io.Writer.fixed(buffer);
+        try xmlz.writer.writeDocument(&fixed, &doc, .{});
+        const elapsed = start.raw.durationTo(
+            std.Io.Clock.Timestamp.now(io, .awake).raw,
+        );
+        const seconds = @as(f64, @floatFromInt(elapsed.nanoseconds)) / std.time.ns_per_s;
+        if (iteration != 0 and seconds < best) best = seconds;
+    }
+    std.debug.print("xmlz,write,{d:.2},{d}\n", .{ mb / best, rssKilobytes() });
 }
 
 fn runPull(

@@ -68,6 +68,51 @@ attributes, text with entity references, and self-closing elements. The
 generator is `bench/gen.zig`; the size target is 16 MiB and the output is
 deterministic.
 
+## Serialization
+
+Reproduce with:
+
+```sh
+zig build bench
+```
+
+Each engine parses the generated document once and then serializes it six
+times into a preallocated `2 * input` byte memory buffer; the best timed
+iteration is reported. pugixml loads with `parse_ws_pcdata` and saves with
+`format_raw`; libxml2 uses `xmlSaveToBuffer` with `XML_SAVE_NO_DECL`; xmlz
+writes the parsed XML declaration. The three outputs are byte-identical apart
+from the newline xmlz emits after the declaration (16,778,022 bytes versus
+16,778,021), so every engine moves the same payload.
+
+## Results (2026-11-23)
+
+Each binary was run six times pinned to one P-core and the best row kept,
+because the host was shared during measurement.
+
+| Serializer | MB/s | Peak RSS |
+| --- | ---: | ---: |
+| xmlz | 1424.25 | 123 MiB |
+| pugixml | 1101.91 | 115 MiB |
+| libxml2 | 263.95 | 357 MiB |
+
+## Interpretation
+
+- xmlz's writer is **1.3x faster than pugixml** and **5.4x faster than
+  libxml2** while still validating XML 1.0 characters and escaping carriage
+  returns, which neither comparison engine does.
+- Text and attribute values are scanned once: the 32-byte SIMD pass flags
+  escape bytes, XML 1.0 control characters, and non-ASCII bytes together, so
+  UTF-8 validation no longer needs a separate pass. The median attribute value
+  in this document is four bytes, so short values take an inline scalar check
+  before falling back to the vector scanner.
+- Start tags are assembled directly in the writer's free buffer, copying each
+  element name, attribute name, and attribute value exactly once; values that
+  need escaping or tags that outgrow the buffer switch to the generic path.
+  End tags are written the same way.
+- Namespace declarations that repeat an inherited binding are dropped, and the
+  hot checks for `xmlns` / `xmlns:prefix` names are length tests rather than
+  generic slice comparisons; that change alone cut writer time by about 10%.
+
 ## XSLT transformation
 
 Reproduce with:
