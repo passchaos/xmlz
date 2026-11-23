@@ -4348,9 +4348,9 @@ inline fn sameName(a: []const u8, b: []const u8) bool {
 }
 
 fn attributeNameKey(name: []const u8) u32 {
-    const last = name[name.len - 1];
-    return (@as(u32, @intCast(name.len)) << 16) ^
-        (@as(u32, name[0]) << 8) ^ @as(u32, last);
+    // Length and first byte are enough to spread the bloom filter; a
+    // collision only costs one full name comparison.
+    return (@as(u32, @intCast(name.len)) << 8) ^ @as(u32, name[0]);
 }
 
 fn hasWhitespace(value: []const u8) bool {
