@@ -66,6 +66,14 @@ pub const Builder = struct {
         try self.nodes.ensureTotalCapacity(allocator, count);
     }
 
+    /// Preallocate attribute storage for an expected result size. Copy-heavy
+    /// transforms (such as identity copies) add about as many attributes as
+    /// the source document holds.
+    pub fn reserveAttributes(self: *Builder, count: usize) Error!void {
+        const allocator = self.arena.allocator();
+        try self.attributes.ensureTotalCapacity(allocator, count);
+    }
+
     pub fn deinit(self: *Builder) void {
         if (!self.finished) self.arena.deinit();
         self.finished = true;

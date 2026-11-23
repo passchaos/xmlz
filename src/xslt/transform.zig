@@ -266,6 +266,10 @@ pub fn apply(
         error.OutOfMemory => return error.OutOfMemory,
         else => return error.InvalidStylesheet,
     };
+    builder.reserveAttributes(source.attributes.len + 16) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidStylesheet,
+    };
     errdefer builder.deinit();
 
     var runtime: Runtime = .{
