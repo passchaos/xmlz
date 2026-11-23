@@ -2440,16 +2440,22 @@ const Runtime = struct {
         };
         const value = self.source.node(id);
         if (value.kind != .document and value.kind != .element) return;
+        // Only `last()` reads the node-set size, so skip the counting walk
+        // when the stylesheet never calls it.
         var size: usize = 0;
-        var child = value.first_child;
-        while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
-            size += 1;
+        if (self.stylesheet.uses_last) {
+            var count_child = value.first_child;
+            while (count_child != dom.null_node) : (count_child =
+                self.source.node(count_child).next_sibling)
+            {
+                size += 1;
+            }
         }
         const saved_mode = self.current_mode;
         self.current_mode = mode;
         defer self.current_mode = saved_mode;
         var position: usize = 0;
-        child = value.first_child;
+        var child = value.first_child;
         while (child != dom.null_node) : (child = self.source.node(child).next_sibling) {
             position += 1;
             try self.applyTemplateNode(

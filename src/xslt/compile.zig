@@ -173,6 +173,9 @@ pub const Stylesheet = struct {
     functions: []const FunctionDef = &.{},
     attribute_sets: []const AttributeSet = &.{},
     space_rules: []const SpaceRule = &.{},
+    /// True when any compiled expression calls `last()`, which is the only
+    /// consumer of the context node-set size.
+    uses_last: bool = false,
     decimal_formats: []const DecimalFormat = &.{},
     aliases: []const NamespaceAlias = &.{},
     output: Output = .{},
@@ -407,6 +410,7 @@ pub fn compileWithOptions(
             compiler.arena,
         ),
         .space_rules = try compiler.space_rules.toOwnedSlice(compiler.arena),
+        .uses_last = compiler.uses_last,
         .decimal_formats = try compiler.decimal_formats.toOwnedSlice(
             compiler.arena,
         ),
@@ -431,6 +435,7 @@ const Compiler = struct {
     next_function_order: usize = 0,
     compiling_function: bool = false,
     space_rules: std.ArrayList(SpaceRule) = .empty,
+    uses_last: bool = false,
     /// Canonical slices for variable names so runtime lookups can compare
     /// pointers before falling back to string equality.
     variable_names: std.StringHashMapUnmanaged([]const u8) = .empty,
@@ -1815,6 +1820,9 @@ const Compiler = struct {
             else => return error.InvalidExpression,
         };
         try self.internVariableNames(root);
+        if (!self.uses_last and ast.usesLast(root)) {
+            self.uses_last = true;
+        }
         return .{
             .node = root,
             .namespaces = try self.namespacesOf(id),

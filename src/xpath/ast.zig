@@ -1,5 +1,7 @@
 //! XPath 1.0 abstract syntax tree.
 
+const std = @import("std");
+
 pub const Axis = enum {
     ancestor,
     ancestor_or_self,
@@ -76,6 +78,44 @@ pub const FunctionCall = struct {
     name: []const u8,
     args: []const *Expr,
 };
+
+/// True when the expression calls the core `last()` function anywhere.
+/// `last()` is the only core function that needs the context node-set size,
+/// so callers can skip computing it when this is false.
+pub fn usesLast(expr: *const Expr) bool {
+    return switch (expr.*) {
+        .binary => |binary| usesLast(binary.lhs) or usesLast(binary.rhs),
+        .unary_minus => |operand| usesLast(operand),
+        .path => |path| blk: {
+            if (path.start) |start| {
+                if (usesLast(start)) break :blk true;
+            }
+            for (path.steps) |step| {
+                for (step.predicates) |predicate| {
+                    if (usesLast(predicate)) break :blk true;
+                }
+            }
+            break :blk false;
+        },
+        .filter => |filter| blk: {
+            if (usesLast(filter.primary)) break :blk true;
+            for (filter.predicates) |predicate| {
+                if (usesLast(predicate)) break :blk true;
+            }
+            break :blk false;
+        },
+        .function_call => |call| blk: {
+            // A prefixed extension function named `last` also keeps the
+            // size pass; that is conservative, not wrong.
+            if (std.mem.eql(u8, call.name, "last")) break :blk true;
+            for (call.args) |argument| {
+                if (usesLast(argument)) break :blk true;
+            }
+            break :blk false;
+        },
+        .literal, .number, .variable => false,
+    };
+}
 
 pub const Expr = union(enum) {
     binary: Binary,
