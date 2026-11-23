@@ -5332,7 +5332,7 @@ const Runtime = struct {
         };
     }
 
-    fn appendText(self: *Runtime, text: []const u8) Error!void {
+    inline fn appendText(self: *Runtime, text: []const u8) Error!void {
         if (text.len == 0) return;
         if (try self.mergeIntoLastText(text, false)) return;
         const id = self.builder.createText(text) catch |err|
