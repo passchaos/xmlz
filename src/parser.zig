@@ -1027,7 +1027,7 @@ pub const Parser = struct {
         // whitespace-skipping path.
         var pos = name_start + name_info.len;
         var fast_shape = false;
-        if (pos + 1 < input.len and input[pos] == '=' and
+        if (name_info.stop == '=' and pos + 1 < input.len and
             (input[pos + 1] == '"' or input[pos + 1] == '\''))
         {
             fast_shape = true;
@@ -1160,7 +1160,7 @@ pub const Parser = struct {
 
         var pos = name_start + name_info.len;
         var fast_shape = false;
-        if (pos + 1 < input.len and input[pos] == '=' and
+        if (name_info.stop == '=' and pos + 1 < input.len and
             (input[pos + 1] == '"' or input[pos + 1] == '\''))
         {
             fast_shape = true;

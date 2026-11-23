@@ -266,6 +266,9 @@ pub const NameInfo = struct {
     len: usize,
     /// Byte offset of the first colon, or 0xFFFF when absent.
     colon: u16 = 0xFFFF,
+    /// Byte that ended the scan (the first non-name byte), or zero at end of
+    /// input. Callers use it to avoid reloading the delimiter.
+    stop: u8 = 0,
 };
 
 /// Scan the longest valid XML `Name` prefix and remember the first colon.
@@ -301,6 +304,7 @@ pub inline fn scanNameInfo(bytes: []const u8) NameInfo {
         }
         if (class == NameClass.stop) {
             info.len = index;
+            info.stop = bytes[index];
             return info;
         }
         break;
@@ -348,7 +352,10 @@ pub inline fn scanNameInfo(bytes: []const u8) NameInfo {
     while (index < bytes.len) {
         const byte = bytes[index];
         if (byte < 0x80) {
-            if (!isAsciiNameChar(byte)) break;
+            if (!isAsciiNameChar(byte)) {
+                info.stop = byte;
+                break;
+            }
             if (byte == ':' and info.colon == 0xFFFF and index < 0xFFFF) {
                 info.colon = @intCast(index);
             }
@@ -390,7 +397,10 @@ pub inline fn scanNameInfoFast(bytes: []const u8) NameInfo {
             ')',
             '?',
             '!',
-            => break,
+            => {
+                info.stop = byte;
+                break;
+            },
             ':' => {
                 if (info.colon == 0xFFFF and index < 0xFFFF) {
                     info.colon = @intCast(index);
