@@ -3835,6 +3835,13 @@ const Runtime = struct {
         const saved_mode = self.current_mode;
         self.current_mode = mode;
         defer self.current_mode = saved_mode;
+        // The standard identity index resolves to a lone child rule; dispatch
+        // it here so the per-child lookup chain is skipped.
+        var lone_child: ?*const compile.Template = null;
+        if (mode == null) {
+            self.refreshLoneTemplates();
+            lone_child = self.lone_child_template;
+        }
         var position: usize = 0;
         if (value.kind == .element) {
             for (self.source.attributesOf(id), 0..) |attr, index| {
@@ -3860,13 +3867,24 @@ const Runtime = struct {
             const child_value = self.source.node(current);
             child = child_value.next_sibling;
             position += 1;
-            try self.applyTemplateNode(
-                .{ .node = current },
-                mode,
-                params,
-                position,
-                size,
-            );
+            const child_ref: xpath.NodeRef = .{ .node = current };
+            if (lone_child) |template| {
+                try self.executeTemplate(
+                    template,
+                    child_ref,
+                    position,
+                    size,
+                    params,
+                );
+            } else {
+                try self.applyTemplateNode(
+                    child_ref,
+                    mode,
+                    params,
+                    position,
+                    size,
+                );
+            }
         }
     }
 

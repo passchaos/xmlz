@@ -263,18 +263,18 @@ once; the per-transform column amortizes parsing and serialization over the
 
 | Workload | Engine | Total (s) | Per transform (ms) |
 | --- | --- | ---: | ---: |
-| identity | xmlz | 0.127 | 6.36 |
-| identity | libxslt (lxml) | 1.016 | 50.81 |
-| identity (attributes) | xmlz | 0.148 | 7.41 |
-| identity (attributes) | libxslt (lxml) | 1.632 | 81.58 |
-| sorted report | xmlz | 0.102 | 5.10 |
-| sorted report | libxslt (lxml) | 0.876 | 43.78 |
+| identity | xmlz | 0.131 | 6.56 |
+| identity | libxslt (lxml) | 1.008 | 50.38 |
+| identity (attributes) | xmlz | 0.131 | 6.56 |
+| identity (attributes) | libxslt (lxml) | 1.635 | 81.77 |
+| sorted report | xmlz | 0.104 | 5.18 |
+| sorted report | libxslt (lxml) | 0.871 | 43.53 |
 
 ## Interpretation
 
-- The identity transform is **8.0x faster than libxslt**, the standard
-  identity transform (attributes copied) is **11.0x faster**, and the sorted
-  report is **8.6x faster**; libxslt is measured through lxml in-process so
+- The identity transform is **7.7x faster than libxslt**, the standard
+  identity transform (attributes copied) is **12.5x faster**, and the sorted
+  report is **8.4x faster**; libxslt is measured through lxml in-process so
   Python call overhead is included, and the xmlz column also serializes the
   result while lxml only builds the result tree. Repeated applications reuse
   one arena in the CLI, so a batch does not remap the result tree each time,
