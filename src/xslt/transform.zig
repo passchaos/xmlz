@@ -2441,6 +2441,25 @@ const Runtime = struct {
         }
     }
 
+    /// Whether the matcher unconditionally accepts every attribute, which
+    /// lets a lone `@*` rule resolve in constant time.
+    fn matcherAcceptsAttributes(matcher: PatternMatcher) bool {
+        switch (matcher) {
+            .simple => |pattern| switch (pattern) {
+                .attribute_any => return true,
+                else => return false,
+            },
+            .simple_union => |patterns| {
+                for (patterns) |pattern| switch (pattern) {
+                    .attribute_any => return true,
+                    else => {},
+                };
+                return false;
+            },
+            .structural => return false,
+        }
+    }
+
     fn findTemplate(
         self: *Runtime,
         node: xpath.NodeRef,
@@ -3058,7 +3077,26 @@ const Runtime = struct {
                         }
                     },
                 },
-                .attribute, .namespace_node => {},
+                .attribute => {
+                    // A lone unconditional attribute rule resolves every
+                    // attribute directly.
+                    if (index.attribute_any.default.items.len == 1 and
+                        index.attributes.count() == 0 and
+                        index.attributes_by_uri.count() == 0)
+                    {
+                        const state = &self.template_states[index.attribute_any.default.items[0]];
+                        if (state.matcher) |matcher| {
+                            if (matcherAcceptsAttributes(matcher)) {
+                                const template = state.template;
+                                if (template.precedence < maximum_precedence) {
+                                    return template;
+                                }
+                                return null;
+                            }
+                        }
+                    }
+                },
+                .namespace_node => {},
             }
         }
         var best: ?*const compile.Template = null;
