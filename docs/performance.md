@@ -148,6 +148,9 @@ uop-cache slot.
   +3.0% instructions and +2% cycles, sorted report +3.9% and +2-5%, wall
   neutral to 4% slower. The loops are instruction-bound, so the extra
   prefetch instruction costs more than the hidden load latency.
+- Inlining the XSLT `appendAttributeRaw` wrapper: +1% instructions and no
+  wall gain; the out-of-line call is cheaper than duplicating the attribute
+  dispatch at each copy site.
 
 ## Remaining architectural options
 
