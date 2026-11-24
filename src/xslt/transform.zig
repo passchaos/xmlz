@@ -7439,25 +7439,6 @@ fn defaultCountMatches(
     }
 }
 
-fn numberInRange(
-    candidate: xpath.NodeRef,
-    current: xpath.NodeRef,
-    boundary: ?xpath.NodeRef,
-) bool {
-    const candidate_key = candidate.orderKey();
-    if (boundary) |boundary_node| {
-        const boundary_key = boundary_node.orderKey();
-        if (valueOrderKeyLessThan(candidate_key, boundary_key) or
-            orderKeysEqual(candidate_key, boundary_key))
-        {
-            return false;
-        }
-    }
-    const current_key = current.orderKey();
-    if (valueOrderKeyLessThan(current_key, candidate_key)) return false;
-    return true;
-}
-
 fn valueOrderKeyLessThan(
     a: xpath_value.OrderKey,
     b: xpath_value.OrderKey,

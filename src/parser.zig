@@ -4677,18 +4677,6 @@ fn validEncodingName(value: []const u8) bool {
 
 const testing = std.testing;
 
-fn expectEvents(input: []const u8, expected: []const Event) !void {
-    var parser = Parser.init(input, .{});
-    for (expected) |expected_event| {
-        const event = (try parser.next()) orelse {
-            std.debug.print("missing event for input: {s}\n", .{input});
-            return error.TestUnexpectedResult;
-        };
-        try expectEventEqual(expected_event, event);
-    }
-    try testing.expect((try parser.next()) == null);
-}
-
 fn expectEventEqual(expected: Event, actual: Event) !void {
     try testing.expectEqual(std.meta.activeTag(expected), std.meta.activeTag(actual));
     switch (expected) {

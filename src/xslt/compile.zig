@@ -2109,26 +2109,6 @@ fn isPrefixExcluded(excluded: []const []const u8, prefix: []const u8) bool {
     return false;
 }
 
-fn appendScopeNamespace(
-    namespaces: *std.ArrayList(NamespaceDecl),
-    in_scope: []const namespace.Binding,
-    prefix: []const u8,
-    allocator: std.mem.Allocator,
-) Error!void {
-    for (namespaces.items) |decl| {
-        if (std.mem.eql(u8, decl.prefix, prefix)) return;
-    }
-    for (in_scope) |binding| {
-        if (std.mem.eql(u8, binding.prefix, prefix)) {
-            try namespaces.append(allocator, .{
-                .prefix = prefix,
-                .uri = binding.uri,
-            });
-            return;
-        }
-    }
-}
-
 fn findAvtEnd(text: []const u8, start: usize) ?usize {
     var index = start;
     var quote: u8 = 0;
