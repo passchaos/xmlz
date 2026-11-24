@@ -109,6 +109,14 @@ from 626-643 MB/s to 688-696 MB/s with a reusable arena; retired
 instructions fell about 0.3% and cycles about 7%. Fast mode is unchanged
 within run noise.
 
+### Short writer span copies (2026-11-24)
+
+Plain text and non-raw attribute names/values now use the same
+overlapping-load helper as raw attribute spans. The full bench writer row
+moved from 2764-2829 MB/s in the pre-change runs to 3154-3164 MB/s; an
+isolated sixty-serialization run cut retired instructions 3.7%. The writer
+table above predates this change.
+
 ## Input shape
 
 The generated document contains namespaces, nested groups, many short

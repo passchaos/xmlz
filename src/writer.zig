@@ -410,12 +410,12 @@ fn writeStartTag(
                     }
                     out[used] = ' ';
                     used += 1;
-                    @memcpy(out[used..][0..name.len], name);
+                    copyShort(out[used..][0..name.len], name);
                     used += name.len;
                     out[used] = '=';
                     out[used + 1] = '"';
                     used += 2;
-                    @memcpy(out[used..][0..value.len], value);
+                    copyShort(out[used..][0..value.len], value);
                     used += value.len;
                     out[used] = '"';
                     used += 1;
