@@ -93,7 +93,10 @@ experiments that were already rejected with evidence.
   `parent` and `first_child` through a 64-byte `Node` copy just to validate
   the child, and `Builder.attributesOf` copied the node to read its attribute
   range. Reading through pointers cut identity-transform cycles 3-4% and wall
-  time about 5% in interleaved runs; the sorted report was unchanged.
+  time about 5% in interleaved runs; the sorted report was unchanged. The
+  XSLT attribute-copy path now also passes `*const dom.Attribute` instead of
+  a 32-byte value; on the 16 MiB SVG identity-attributes transform that cut
+  instructions about 0.6% and cycles about 2%.
 - **Copy short writer spans with `copyShort`**: the plain-text path used
   `@memcpy` for every text node, and the direct attribute path used it for
   names and values that were not raw-adjacent. Routing both through the

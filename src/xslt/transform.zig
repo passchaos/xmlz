@@ -4172,7 +4172,8 @@ const Runtime = struct {
     ) Error!void {
         switch (node) {
             .attribute => |attr| {
-                const attribute = self.source.attributesOf(attr.element)[attr.index];
+                const attributes = self.source.attributesOf(attr.element);
+                const attribute = &attributes[attr.index];
                 try self.appendAttributeRaw(
                     attribute,
                     self.source.ns(attribute.ns),
@@ -5436,7 +5437,7 @@ const Runtime = struct {
     /// and namespace were validated by the parser.
     fn appendAttributeRaw(
         self: *Runtime,
-        attr: dom.Attribute,
+        attr: *const dom.Attribute,
         uri: []const u8,
     ) Error!void {
         if (uri.len == 0) {
@@ -5598,7 +5599,8 @@ const Runtime = struct {
     ) Error!void {
         switch (node) {
             .attribute => |attr| {
-                const attribute = source.attributesOf(attr.element)[attr.index];
+                const attributes = source.attributesOf(attr.element);
+                const attribute = &attributes[attr.index];
                 try self.appendAttributeRaw(
                     attribute,
                     self.source.ns(attribute.ns),
