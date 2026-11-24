@@ -265,30 +265,40 @@ and escapes restricted characters as numeric references.
 src/parser.zig          pull parser, DTD, entity frames
 src/sax.zig             callback facade over the pull parser
 src/chars.zig           XML Char / Name productions and scanners
+src/bytes.zig           short-copy helpers shared by writer and builders
+src/names.zig           short-name comparison
 src/entities.zig        entity tables and reference decoding
+src/internal_entities.zig  predefined entity tables
 src/encoding.zig        byte-encoding detection and normalization
 src/markup.zig          quote-aware tag/declaration end scanners
 src/character_data.zig  character-data spans with CDATA provenance
 src/dom.zig             arena-backed document tree
 src/dom_builder.zig     programmatic document construction
+src/local_arena.zig     single-threaded bump allocator
 src/validation.zig      optional DTD validity checking
 src/writer.zig          XML serializer
 src/c14n.zig            Canonical XML 1.0/1.1 and exclusive C14N
 src/xinclude.zig        XInclude 1.0 processing
 src/xmlbase.zig         XML Base resolution and xml:id normalization
 src/xpath/              XPath 1.0 lexer, parser, AST, evaluator
-src/xslt/               XSLT 1.0 stylesheet compiler and transformer
+src/xslt/               XSLT 1.0 compiler, transformer, HTML output
 src/xsd/                XML Schema datatypes, regex, compiler, validator
 src/rng/                RELAX NG schema parser and validator
 src/schematron/         ISO Schematron compiler and validator
 src/catalog.zig         OASIS XML Catalogs resolution
 src/namespace.zig       Namespaces in XML 1.0 resolver
-src/root.zig            public API surface
+src/svg_scan.zig        permissive SVG-fragment tag/attribute scanners
+src/fuzz_tests.zig      deterministic mutation smoke tests
+src/root.zig            public API surface (module re-exports)
 tools/conformance.zig   W3C suite harness
 bench/                  reproducible benchmarks
 tools/gen_xmlconf_manifest.py
 testdata/xmlconf        W3C XML conformance suite + generated manifest
 ```
+
+Submodule roots (`src/*/root.zig`) are thin facades; their conformance tests
+live in a sibling `tests.zig`. See `docs/architecture.md` for the module
+layout and layer contracts.
 
 ## Architecture
 
