@@ -139,17 +139,17 @@ const Processor = struct {
                     source.ns(node.ns),
                 ) catch |err| return mapBuilderError(err);
                 for (source.attributesOf(id)) |attribute| {
-                    if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+                    if (namespace.Resolver.isNamespaceDeclaration(attribute.name())) {
                         self.builder.setAttribute(
                             new_id,
-                            attribute.name,
-                            attribute.value,
+                            attribute.name(),
+                            attribute.value(),
                         ) catch |err| return mapBuilderError(err);
                     } else if (source.ns(attribute.ns).len == 0) {
                         self.builder.setAttribute(
                             new_id,
-                            attribute.name,
-                            attribute.value,
+                            attribute.name(),
+                            attribute.value(),
                         ) catch |err| return mapBuilderError(err);
                     } else {
                         self.builder.setAttributeNs(
@@ -157,20 +157,21 @@ const Processor = struct {
                             attribute.prefixName(),
                             attribute.localName(),
                             source.ns(attribute.ns),
-                            attribute.value,
+                            attribute.value(),
                         ) catch |err| return mapBuilderError(err);
                     }
                 }
                 if (inherited_root) |root_id| {
                     for (source.attributesOf(root_id)) |attribute| {
-                        if (!namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+                        const attribute_name = attribute.name();
+                        if (!namespace.Resolver.isNamespaceDeclaration(attribute_name)) {
                             continue;
                         }
-                        if (findAttribute(source.attributesOf(id), attribute.name) == null) {
+                        if (findAttribute(source.attributesOf(id), attribute_name) == null) {
                             self.builder.setAttribute(
                                 new_id,
-                                attribute.name,
-                                attribute.value,
+                                attribute_name,
+                                attribute.value(),
                             ) catch |err| return mapBuilderError(err);
                         }
                     }
@@ -662,7 +663,7 @@ fn findAttribute(
     name: []const u8,
 ) ?dom.Attribute {
     for (attributes) |attribute| {
-        if (std.mem.eql(u8, attribute.name, name)) return attribute;
+        if (std.mem.eql(u8, attribute.name(), name)) return attribute;
     }
     return null;
 }

@@ -1620,7 +1620,7 @@ const Compiler = struct {
                 }
                 var tokens = std.mem.tokenizeAny(
                     u8,
-                    attr.value,
+                    attr.value(),
                     " \t\r\n",
                 );
                 while (tokens.next()) |token| {
@@ -1723,7 +1723,7 @@ const Compiler = struct {
             );
         }
         for (self.document.attributesOf(id)) |attr| {
-            if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
+            if (namespace.Resolver.isNamespaceDeclaration(attr.name())) continue;
             if (attr.ns != 0 and
                 std.mem.eql(u8, self.document.ns(attr.ns), xsl_namespace))
             {
@@ -1751,14 +1751,14 @@ const Compiler = struct {
 
         var attributes: std.ArrayList(LiteralAttribute) = .empty;
         for (self.document.attributesOf(id)) |attr| {
-            if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
+            if (namespace.Resolver.isNamespaceDeclaration(attr.name())) continue;
             if (attr.ns != 0 and
                 std.mem.eql(u8, self.document.ns(attr.ns), xsl_namespace))
             {
                 continue;
             }
             const alias = self.findAlias(self.document.ns(attr.ns));
-            var attr_name = attr.name;
+            var attr_name = attr.name();
             var attr_prefix = attr.prefixName();
             var attr_ns = self.document.ns(attr.ns);
             if (alias) |found| {
@@ -1778,7 +1778,7 @@ const Compiler = struct {
                 .prefix = attr_prefix,
                 .local = attr.localName(),
                 .ns = attr_ns,
-                .value = try self.compileAvt(id, attr.value),
+                .value = try self.compileAvt(id, attr.value()),
             });
         }
         element.attributes = try attributes.toOwnedSlice(self.arena);
@@ -1815,7 +1815,7 @@ const Compiler = struct {
                 {
                     continue;
                 }
-                var tokens = std.mem.tokenizeAny(u8, attr.value, " \t\r\n");
+                var tokens = std.mem.tokenizeAny(u8, attr.value(), " \t\r\n");
                 while (tokens.next()) |token| {
                     if (std.mem.eql(u8, token, "#default")) {
                         try out.append(self.arena, "");

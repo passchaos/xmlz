@@ -33,9 +33,11 @@ experiments that were already rejected with evidence.
   that chain and the one-line node records set the scan floor. Sorted report
   scans touch ~20 MB per transform and are within ~30% of the memory-bandwidth
   floor (~1.0 ms of the 1.28 ms spent in child scans).
-- `dom.Attribute` is 40 bytes (two slices plus namespace and flags), the
-  minimum for borrowed names and values. A full SVG parse writes ~60 MB of
-  attribute records; that write traffic is the DOM floor.
+- `dom.Attribute` is 32 bytes: two pointer/32-bit-length pairs plus the
+  namespace index and flags. The parser rejects inputs above `maxInt(u32)`
+  bytes and entity decoding is capped at 8 MiB, so the 32-bit lengths cannot
+  truncate a parsed value. A full SVG parse writes ~48 MB of attribute
+  records instead of ~60 MB; that write traffic is the DOM floor.
 - `parser.Attribute` is 72 bytes but lives in a small per-element scratch
   array that stays in L1, so its size does not affect memory traffic.
 
@@ -70,6 +72,16 @@ experiments that were already rejected with evidence.
   `dom.Builder.run`): best-case SVG DOM 526 MB/s with the hint versus
   372 MB/s without it under the same load. The hint is applied only when the
   reservation is at least 2 MiB.
+- **32-byte attribute records**: storing names and values as pointer plus
+  32-bit length instead of two 16-byte slices cut the record from 40 to
+  32 bytes. On the 16 MiB SVG the DOM peak RSS fell from 85 MiB to
+  76-78 MiB and the validating DOM rows were unchanged in instructions. An
+  isolated writer run (one parse, sixty serializations, pinned P-core) moved
+  from 6.74 G to 6.42 G retired instructions (−4.6%) and from 3.08-3.10 GB/s
+  to 3.17-3.22 GB/s. Splitting the writer's raw-adjacent branch from the
+  general attribute path kept the pointer/length fields live only where they
+  are used; the first attempt that hoisted both slices for every attribute
+  added spills and was reverted.
 
 ## Rejected with evidence
 
@@ -121,9 +133,11 @@ The local optimizations are exhausted. The remaining levers are structural:
   halving scan line traffic. This rewrites every node access in the parser,
   DOM, writer, XPath, and XSLT; document order must stay depth-first.
 - **Borrow names and values as offsets** into the input buffer to shrink
-  `dom.Attribute` below 40 bytes. Result trees copy into arena slabs, so the
-  representation would need a tag; attribute names are always input-borrowed
-  today, which makes a 32-byte record possible but changes the public type.
+  `dom.Attribute` below 32 bytes. The pointer/32-bit-length form already cut
+  the record to 32; a 24-byte offset form needs a document base pointer for
+  every access, and result trees copy values into arena slabs, so the
+  representation would need a tag. Attribute names are always input-borrowed
+  today, which makes a 24-byte record possible but changes the public type.
 - **Cross-application caches** (document analysis reused across repeated
   transforms) need an API change; they only pay off for batch callers and add
   pure overhead to single-shot transforms, so they are not pursued without a

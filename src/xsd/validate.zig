@@ -294,7 +294,7 @@ const Validator = struct {
         @memset(matched, false);
 
         for (self.document.attributesOf(id)) |attr| {
-            if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
+            if (namespace.Resolver.isNamespaceDeclaration(attr.name())) continue;
             if (attr.ns != 0 and
                 std.mem.eql(u8, self.document.ns(attr.ns), schema.xsi_namespace))
             {
@@ -311,7 +311,7 @@ const Validator = struct {
                 found = true;
                 matched[index] = true;
                 if (use.use == .prohibited) {
-                    try self.addAttributeError(id, attr.name, "attribute is prohibited");
+                    try self.addAttributeError(id, attr.name(), "attribute is prohibited");
                     break;
                 }
                 try self.validateAttributeValue(id, attr, use.decl);
@@ -326,7 +326,7 @@ const Validator = struct {
                         } else if (wildcard.process == .strict) {
                             try self.addAttributeError(
                                 id,
-                                attr.name,
+                                attr.name(),
                                 "no declaration for wildcard attribute",
                             );
                         }
@@ -334,7 +334,7 @@ const Validator = struct {
                     continue;
                 }
             }
-            try self.addAttributeError(id, attr.name, "attribute is not allowed");
+            try self.addAttributeError(id, attr.name(), "attribute is not allowed");
         }
 
         for (complex.attributes, 0..) |use, index| {
@@ -356,19 +356,19 @@ const Validator = struct {
     ) Error!void {
         switch (decl.type_info) {
             .simple => |simple| {
-                if (!try self.validateSimpleValue(simple, attr.value)) {
+                if (!try self.validateSimpleValue(simple, attr.value())) {
                     try self.addAttributeError(
                         id,
-                        attr.name,
+                        attr.name(),
                         "attribute value does not satisfy its type",
                     );
                 } else if (simple.variety == .atomic and
                     simple.kind == .notation)
                 {
-                    if (!try self.validateNotationValue(id, attr.value)) {
+                    if (!try self.validateNotationValue(id, attr.value())) {
                         try self.addAttributeError(
                             id,
-                            attr.name,
+                            attr.name(),
                             "notation is not declared",
                         );
                     }
@@ -377,15 +377,15 @@ const Validator = struct {
             .any_simple, .any_type => {},
             else => try self.addAttributeError(
                 id,
-                attr.name,
+                attr.name(),
                 "attribute type must be simple",
             ),
         }
         if (decl.fixed_value) |fixed| {
-            if (!try self.valuesEqual(decl.type_info, attr.value, fixed)) {
+            if (!try self.valuesEqual(decl.type_info, attr.value(), fixed)) {
                 try self.addAttributeError(
                     id,
-                    attr.name,
+                    attr.name(),
                     "attribute value does not match the fixed value",
                 );
             }
@@ -394,13 +394,13 @@ const Validator = struct {
 
     fn validateSimpleAttributes(self: *Validator, id: dom.NodeId) Error!void {
         for (self.document.attributesOf(id)) |attr| {
-            if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
+            if (namespace.Resolver.isNamespaceDeclaration(attr.name())) continue;
             if (attr.ns != 0 and
                 std.mem.eql(u8, self.document.ns(attr.ns), schema.xsi_namespace))
             {
                 continue;
             }
-            try self.addAttributeError(id, attr.name, "attribute is not allowed");
+            try self.addAttributeError(id, attr.name(), "attribute is not allowed");
         }
     }
 
@@ -698,7 +698,7 @@ const Validator = struct {
     ) Error![]const u8 {
         switch (node) {
             .attribute => |attr| return self.document
-                .attributesOf(attr.element)[attr.index].value,
+                .attributesOf(attr.element)[attr.index].value(),
             .namespace_node => |ns| return ns.uri,
             .node => |id| {
                 const node_value = self.document.node(id);

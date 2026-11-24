@@ -37,11 +37,20 @@ const attr_flag_whitespace_char_ref: u32 = 1 << 17;
 const attr_flag_plain: u32 = 1 << 18;
 const attr_flag_raw_adjacent: u32 = 1 << 19;
 
+/// One parsed attribute. Names and values are stored as pointer/length pairs
+/// with 32-bit lengths so the record is 32 bytes instead of 40: a full SVG
+/// parse writes tens of megabytes of attribute records, and this is the DOM's
+/// dominant store stream.
+///
+/// The parser rejects inputs above `maxInt(u32)` bytes and entity decoding is
+/// capped at 8 MiB, so 32-bit lengths cannot truncate a parsed attribute.
 pub const Attribute = struct {
     /// Raw qualified name as authored.
-    name: []const u8,
+    name_ptr: [*]const u8,
+    name_len: u32,
     /// Decoded and normalized value.
-    value: []const u8,
+    value_ptr: [*]const u8,
+    value_len: u32,
     /// Index into `Document.namespaces`; zero when the attribute has no
     /// namespace.
     ns: NamespaceId = 0,
@@ -50,56 +59,85 @@ pub const Attribute = struct {
     /// serializer flags.
     flags: u32 = 0xFFFF,
 
-    pub inline fn colon(self: Attribute) u16 {
+    pub inline fn init(raw_name: []const u8, raw_value: []const u8) Attribute {
+        return .{
+            .name_ptr = raw_name.ptr,
+            .name_len = @intCast(raw_name.len),
+            .value_ptr = raw_value.ptr,
+            .value_len = @intCast(raw_value.len),
+        };
+    }
+
+    /// Raw qualified name as authored.
+    pub inline fn name(self: *const Attribute) []const u8 {
+        return self.name_ptr[0..@as(usize, self.name_len)];
+    }
+
+    /// Decoded and normalized value.
+    pub inline fn value(self: *const Attribute) []const u8 {
+        return self.value_ptr[0..@as(usize, self.value_len)];
+    }
+
+    pub inline fn setName(self: *Attribute, raw_name: []const u8) void {
+        self.name_ptr = raw_name.ptr;
+        self.name_len = @intCast(raw_name.len);
+    }
+
+    pub inline fn setValue(self: *Attribute, new_value: []const u8) void {
+        self.value_ptr = new_value.ptr;
+        self.value_len = @intCast(new_value.len);
+    }
+
+    pub inline fn colon(self: *const Attribute) u16 {
         return @truncate(self.flags);
     }
 
     /// True when tokenized normalization changed the decoded value.
-    pub inline fn normalizationChanged(self: Attribute) bool {
+    pub inline fn normalizationChanged(self: *const Attribute) bool {
         return self.flags & attr_flag_normalization_changed != 0;
     }
 
     /// True when a character reference produced tab, LF, or CR.
-    pub inline fn whitespaceCharRef(self: Attribute) bool {
+    pub inline fn whitespaceCharRef(self: *const Attribute) bool {
         return self.flags & attr_flag_whitespace_char_ref != 0;
     }
 
     /// True when the parser proved the value needs no serialization
     /// escaping: no references, markup, quotes, or line ends.
-    pub inline fn isPlain(self: Attribute) bool {
+    pub inline fn isPlain(self: *const Attribute) bool {
         return self.flags & attr_flag_plain != 0;
     }
 
     /// True when the source span from the name through the value is already
     /// the serialized form `name="value"`.
-    pub inline fn isRawAdjacent(self: Attribute) bool {
+    pub inline fn isRawAdjacent(self: *const Attribute) bool {
         return self.flags & attr_flag_raw_adjacent != 0;
     }
 
-    pub inline fn setPlain(self: *Attribute, value: bool) void {
-        if (value) {
+    pub inline fn setPlain(self: *Attribute, enabled: bool) void {
+        if (enabled) {
             self.flags |= attr_flag_plain;
         } else {
             self.flags &= ~attr_flag_plain;
         }
     }
 
-    pub inline fn setNormalizationChanged(self: *Attribute, value: bool) void {
-        if (value) {
+    pub inline fn setNormalizationChanged(self: *Attribute, enabled: bool) void {
+        if (enabled) {
             self.flags |= attr_flag_normalization_changed;
         } else {
             self.flags &= ~attr_flag_normalization_changed;
         }
     }
 
-    pub fn localName(self: Attribute) []const u8 {
+    pub fn localName(self: *const Attribute) []const u8 {
         const index = self.colon();
-        return if (index == 0xFFFF) self.name else self.name[index + 1 ..];
+        return if (index == 0xFFFF) self.name() else self.name()[index + 1 ..];
     }
 
-    pub fn prefixName(self: Attribute) []const u8 {
+    pub fn prefixName(self: *const Attribute) []const u8 {
         const index = self.colon();
-        return if (index == 0xFFFF) "" else self.name[0..index];
+        return if (index == 0xFFFF) "" else self.name()[0..index];
     }
 };
 
@@ -335,7 +373,7 @@ pub const Document = struct {
 
     pub fn attribute(self: *const Document, id: NodeId, name: []const u8) ?[]const u8 {
         for (self.attributesOf(id)) |attr| {
-            if (std.mem.eql(u8, attr.name, name)) return attr.value;
+            if (std.mem.eql(u8, attr.name(), name)) return attr.value();
         }
         return null;
     }
@@ -350,7 +388,7 @@ pub const Document = struct {
             if (std.mem.eql(u8, self.ns(attr.ns), uri) and
                 std.mem.eql(u8, attr.localName(), local))
             {
-                return attr.value;
+                return attr.value();
             }
         }
         return null;
@@ -446,13 +484,14 @@ pub const Document = struct {
         var current = id;
         while (true) {
             for (self.attributesOf(current)) |attr| {
-                if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                const attr_name = attr.name();
+                if (!namespace.Resolver.isNamespaceDeclaration(attr_name)) {
                     continue;
                 }
-                const prefix = if (attr.name.len == 5)
+                const prefix = if (attr_name.len == 5)
                     ""
                 else
-                    attr.name["xmlns:".len..];
+                    attr_name["xmlns:".len..];
                 var shadowed = false;
                 for (seen.items) |seen_prefix| {
                     if (std.mem.eql(u8, seen_prefix, prefix)) {
@@ -463,10 +502,10 @@ pub const Document = struct {
                 if (shadowed) continue;
                 try seen.append(allocator, prefix);
                 // An empty URI undeclares the prefix, so it binds no namespace.
-                if (attr.value.len == 0) continue;
+                if (attr.value().len == 0) continue;
                 try out.append(allocator, .{
                     .prefix = prefix,
-                    .uri = attr.value,
+                    .uri = attr.value(),
                 });
             }
             const parent = self.nodes[current].parent;
@@ -739,8 +778,10 @@ const Builder = struct {
                 if (attr.raw_adjacent) flags |= attr_flag_raw_adjacent;
             }
             dest[0] = .{
-                .name = attr.name,
-                .value = attr.value,
+                .name_ptr = attr.name.ptr,
+                .name_len = @intCast(attr.name.len),
+                .value_ptr = attr.value.ptr,
+                .value_len = @intCast(attr.value.len),
                 .ns = if (attr.namespace_uri.len == 0)
                     0
                 else
@@ -769,7 +810,7 @@ const Builder = struct {
                         ));
                         value = normalized;
                     }
-                    dst.value = value;
+                    dst.setValue(value);
                 }
             }
         }
@@ -1016,6 +1057,14 @@ fn normalizeTokenized(
 
 const testing = std.testing;
 
+test "Attribute keeps a 32-byte record" {
+    try testing.expectEqual(@as(usize, 32), @sizeOf(Attribute));
+    const attr = Attribute.init("id", "value");
+    try testing.expectEqualStrings("id", attr.name());
+    try testing.expectEqualStrings("value", attr.value());
+    try testing.expectEqual(@as(u16, 0xFFFF), attr.colon());
+}
+
 test "DOM parses elements attributes text and namespaces" {
     const input =
         \\<?xml version="1.0"?>
@@ -1055,7 +1104,7 @@ test "DOM resolves prefixes and keeps namespace declarations" {
     try testing.expectEqualStrings("v", doc.attributeNs(root, "urn:p", "attr").?);
     var found_prefixed = false;
     for (doc.attributesOf(root)) |attr| {
-        if (std.mem.eql(u8, attr.name, "p:attr")) {
+        if (std.mem.eql(u8, attr.name(), "p:attr")) {
             found_prefixed = true;
             try testing.expectEqualStrings("urn:p", doc.ns(attr.ns));
             try testing.expectEqualStrings("attr", attr.localName());
@@ -1212,7 +1261,7 @@ test "parser applies DTD namespace and ID declarations" {
     try testing.expectEqualStrings("urn:p", doc.attribute(root, "xmlns:p").?);
     try testing.expectEqualStrings("k", doc.attribute(root, "p:kind").?);
     for (doc.attributesOf(root)) |attr| {
-        if (std.mem.eql(u8, attr.name, "p:kind")) {
+        if (std.mem.eql(u8, attr.name(), "p:kind")) {
             try testing.expectEqualStrings("urn:p", doc.ns(attr.ns));
         }
     }

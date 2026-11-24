@@ -281,22 +281,35 @@ inline fn xmlnsPrefix(name: []const u8) ?[]const u8 {
 
 /// Namespace declarations that repeat an inherited binding are dropped so the
 /// output does not carry redundant `xmlns` attributes.
+/// Pointer-receiver accessors for the writer's hot loops. `dom.Attribute`
+/// stores names and values as pointer/length pairs; taking the record by
+/// value in the accessor would copy all 32 bytes before extracting a slice.
+inline fn attrName(attr: *const dom.Attribute) []const u8 {
+    return attr.name_ptr[0..@as(usize, attr.name_len)];
+}
+
+inline fn attrValue(attr: *const dom.Attribute) []const u8 {
+    return attr.value_ptr[0..@as(usize, attr.value_len)];
+}
+
 inline fn shouldSkipAttribute(
     doc: *const dom.Document,
     id: dom.NodeId,
     attr: *const dom.Attribute,
     default_ns: []const u8,
 ) bool {
-    if (isXmlnsAttribute(attr.name)) {
-        return std.mem.eql(u8, attr.value, default_ns);
+    const name = attrName(attr);
+    const value = attrValue(attr);
+    if (isXmlnsAttribute(name)) {
+        return std.mem.eql(u8, value, default_ns);
     }
-    const prefix = xmlnsPrefix(attr.name) orelse return false;
+    const prefix = xmlnsPrefix(name) orelse return false;
     if (std.mem.eql(u8, prefix, "xml") and
-        std.mem.eql(u8, attr.value, "http://www.w3.org/XML/1998/namespace"))
+        std.mem.eql(u8, value, "http://www.w3.org/XML/1998/namespace"))
     {
         return true;
     }
-    return ancestorBindsPrefix(doc, id, prefix, attr.value);
+    return ancestorBindsPrefix(doc, id, prefix, value);
 }
 
 /// Write `<name ...>` (or `<name .../>`) into the writer.
@@ -362,23 +375,33 @@ fn writeStartTag(
                     if (skip_decls and
                         shouldSkipAttribute(doc, id, attr, default_ns)) continue;
                     // The raw source span is already `name="value"`; copy it
-                    // once instead of assembling the pieces.
-                    const raw: ?[]const u8 = if (attr.isRawAdjacent())
-                        attr.name.ptr[0 .. @intFromPtr(attr.value.ptr) +
-                            attr.value.len + 1 - @intFromPtr(attr.name.ptr)]
-                    else
-                        null;
-                    if (raw == null and
-                        !attr.isPlain() and !shortPlainAttribute(attr.value) and
+                    // once instead of assembling the pieces. Keeping this
+                    // branch separate keeps the pointer/length fields live
+                    // only on the path that needs them.
+                    if (attr.isRawAdjacent()) {
+                        const raw = attr.name_ptr[0 .. @intFromPtr(attr.value_ptr) +
+                            @as(usize, attr.value_len) + 1 - @intFromPtr(attr.name_ptr)];
+                        const needed = 1 + raw.len;
+                        if (used + needed > out.len) {
+                            writer.advance(used);
+                            out = writer.unusedCapacitySlice();
+                            used = 0;
+                            if (out.len < needed) break;
+                        }
+                        out[used] = ' ';
+                        used += 1;
+                        copyShort(out[used..], raw);
+                        used += raw.len;
+                        continue;
+                    }
+                    const name = attrName(attr);
+                    const value = attrValue(attr);
+                    if (!attr.isPlain() and !shortPlainAttribute(value) and
                         (if (validated)
-                            try scanAttributeTrusted(attr.value, 0)
+                            try scanAttributeTrusted(value, 0)
                         else
-                            try scanAttribute(attr.value, 0)) !=
-                            attr.value.len) break;
-                    const needed = if (raw) |bytes|
-                        1 + bytes.len
-                    else
-                        4 + attr.name.len + attr.value.len;
+                            try scanAttribute(value, 0)) != value.len) break;
+                    const needed = 4 + name.len + value.len;
                     if (used + needed > out.len) {
                         writer.advance(used);
                         out = writer.unusedCapacitySlice();
@@ -387,20 +410,15 @@ fn writeStartTag(
                     }
                     out[used] = ' ';
                     used += 1;
-                    if (raw) |bytes| {
-                        copyShort(out[used..], bytes);
-                        used += bytes.len;
-                    } else {
-                        @memcpy(out[used..][0..attr.name.len], attr.name);
-                        used += attr.name.len;
-                        out[used] = '=';
-                        out[used + 1] = '"';
-                        used += 2;
-                        @memcpy(out[used..][0..attr.value.len], attr.value);
-                        used += attr.value.len;
-                        out[used] = '"';
-                        used += 1;
-                    }
+                    @memcpy(out[used..][0..name.len], name);
+                    used += name.len;
+                    out[used] = '=';
+                    out[used + 1] = '"';
+                    used += 2;
+                    @memcpy(out[used..][0..value.len], value);
+                    used += value.len;
+                    out[used] = '"';
+                    used += 1;
                 }
                 if (index == attrs.len) {
                     if (out.len - used < 2) {
@@ -429,19 +447,19 @@ fn writeStartTag(
                     try writer.writeByte(' ');
                     if (attr.isRawAdjacent()) {
                         try writer.writeAll(
-                            attr.name.ptr[0 .. @intFromPtr(attr.value.ptr) +
-                                attr.value.len + 1 - @intFromPtr(attr.name.ptr)],
+                            attrName(attr).ptr[0 .. @intFromPtr(attrValue(attr).ptr) +
+                                attrValue(attr).len + 1 - @intFromPtr(attrName(attr).ptr)],
                         );
                         continue;
                     }
-                    try writer.writeAll(attr.name);
+                    try writer.writeAll(attrName(attr));
                     try writer.writeAll("=\"");
                     if (attr.isPlain()) {
-                        try writer.writeAll(attr.value);
+                        try writer.writeAll(attrValue(attr));
                     } else {
                         try escapeAttributeVersionChecked(
                             writer,
-                            attr.value,
+                            attrValue(attr),
                             version,
                             validated,
                         );
@@ -467,9 +485,9 @@ fn writeStartTag(
     for (attrs) |*attr| {
         if (skip_decls and shouldSkipAttribute(doc, id, attr, default_ns)) continue;
         try writer.writeByte(' ');
-        try writer.writeAll(attr.name);
+        try writer.writeAll(attrName(attr));
         try writer.writeAll("=\"");
-        try escapeAttributeVersionChecked(writer, attr.value, version, validated);
+        try escapeAttributeVersionChecked(writer, attrValue(attr), version, validated);
         try writer.writeByte('"');
     }
     try writer.writeAll(if (empty) "/>" else ">");
@@ -494,7 +512,7 @@ fn writeElement(
     var declared_default: ?[]const u8 = null;
     if (node.hasNsDecls()) {
         for (doc.attributesOf(id)) |attr| {
-            if (isXmlnsAttribute(attr.name)) declared_default = attr.value;
+            if (isXmlnsAttribute(attr.name())) declared_default = attr.value();
         }
     }
     // An unprefixed element outside the inherited default namespace needs a
@@ -622,9 +640,10 @@ fn writeEndTag(writer: *std.Io.Writer, name: []const u8) Error!void {
 }
 
 fn hasNamespaceDeclaration(doc: *const dom.Document, id: dom.NodeId) bool {
-    for (doc.attributesOf(id)) |attr| {
-        if (std.mem.eql(u8, attr.name, "xmlns") or
-            std.mem.startsWith(u8, attr.name, "xmlns:"))
+    for (doc.attributesOf(id)) |*attr| {
+        const name = attrName(attr);
+        if (std.mem.eql(u8, name, "xmlns") or
+            std.mem.startsWith(u8, name, "xmlns:"))
         {
             return true;
         }
@@ -642,11 +661,12 @@ fn ancestorBindsPrefix(
     while (current != dom.null_node) {
         const node = doc.node(current);
         if (node.kind != .element) break;
-        for (doc.attributesOf(current)) |attr| {
-            if (attr.name.len != "xmlns:".len + prefix.len) continue;
-            if (!std.mem.startsWith(u8, attr.name, "xmlns:")) continue;
-            if (!std.mem.eql(u8, attr.name["xmlns:".len..], prefix)) continue;
-            return std.mem.eql(u8, attr.value, uri);
+        for (doc.attributesOf(current)) |*attr| {
+            const name = attrName(attr);
+            if (name.len != "xmlns:".len + prefix.len) continue;
+            if (!std.mem.startsWith(u8, name, "xmlns:")) continue;
+            if (!std.mem.eql(u8, name["xmlns:".len..], prefix)) continue;
+            return std.mem.eql(u8, attrValue(attr), uri);
         }
         current = node.parent;
     }

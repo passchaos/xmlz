@@ -105,7 +105,7 @@ fn writeNodeLocation(
             try writeElementPath(out, document, attribute.element);
             try out.writeAll("/@");
             try out.writeAll(
-                document.attributesOf(attribute.element)[attribute.index].name,
+                document.attributesOf(attribute.element)[attribute.index].name(),
             );
         },
         .namespace_node => |namespace_node| {

@@ -337,17 +337,17 @@ const Canonicalizer = struct {
         var entries: std.ArrayList(AttributeEntry) = .empty;
         defer entries.deinit(self.allocator);
         for (self.document.attributesOf(id), 0..) |attribute, index| {
-            if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+            if (namespace.Resolver.isNamespaceDeclaration(attribute.name())) {
                 continue;
             }
             if (self.subset) |*subset| {
                 if (!subset.hasAttribute(id, index)) continue;
             }
             try entries.append(self.allocator, .{
-                .name = attribute.name,
+                .name = attribute.name(),
                 .local = attribute.localName(),
                 .ns = self.document.ns(attribute.ns),
-                .value = attribute.value,
+                .value = attribute.value(),
             });
         }
         var owned: std.ArrayList([]u8) = .empty;
@@ -391,7 +391,7 @@ const Canonicalizer = struct {
                 continue;
             }
             if (!self.selectedAttribute(id, index)) return null;
-            return attribute.value;
+            return attribute.value();
         }
         return null;
     }
@@ -424,7 +424,7 @@ const Canonicalizer = struct {
                     }
                     const rendered = self.subset.?.hasNode(current) and
                         self.selectedAttribute(current, index);
-                    if (!rendered) found = attribute.value;
+                    if (!rendered) found = attribute.value();
                     break;
                 }
                 if (found != null) break;
@@ -579,7 +579,7 @@ const Canonicalizer = struct {
         prefix: []const u8,
     ) bool {
         for (self.document.attributesOf(id), 0..) |attribute, index| {
-            if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+            if (namespace.Resolver.isNamespaceDeclaration(attribute.name())) {
                 continue;
             }
             if (self.subset) |*subset| {

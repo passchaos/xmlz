@@ -501,7 +501,7 @@ const Evaluator = struct {
                     }
                     for (attributes, 0..) |attribute, index| {
                         if (namespace.Resolver.isNamespaceDeclaration(
-                            attribute.name,
+                            attribute.name(),
                         )) continue;
                         if (check_namespace) {
                             if (expected_uri.len == 0) {
@@ -521,7 +521,7 @@ const Evaluator = struct {
                 }
                 for (attributes, 0..) |attribute, index| {
                     if (namespace.Resolver.isNamespaceDeclaration(
-                        attribute.name,
+                        attribute.name(),
                     )) continue;
                     const candidate: value.NodeRef = .{ .attribute = .{
                         .element = id,
@@ -903,7 +903,7 @@ const Evaluator = struct {
         if (context.document.node(id).kind != .element) return;
         const attributes = context.document.attributesOf(id);
         for (attributes, 0..) |attribute, index| {
-            if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) continue;
+            if (namespace.Resolver.isNamespaceDeclaration(attribute.name())) continue;
             try out.append(self.allocator, .{ .attribute = .{
                 .element = id,
                 .index = @intCast(index),
@@ -1308,7 +1308,7 @@ const Evaluator = struct {
                 attribute.uri,
                 attribute.local,
             )) continue;
-            if (std.mem.eql(u8, candidate.value, expected) == equal) {
+            if (std.mem.eql(u8, candidate.value(), expected) == equal) {
                 return true;
             }
         }
@@ -1502,7 +1502,7 @@ const Evaluator = struct {
         _ = self;
         return switch (node) {
             .attribute => |attribute| context.document
-                .attributesOf(attribute.element)[attribute.index].name,
+                .attributesOf(attribute.element)[attribute.index].name(),
             .namespace_node => |namespace_node| namespace_node.prefix,
             .node => |id| blk: {
                 const node_value = context.document.node(id);
@@ -1522,7 +1522,7 @@ const Evaluator = struct {
         switch (node) {
             .attribute => |attribute| {
                 return context.document
-                    .attributesOf(attribute.element)[attribute.index].value;
+                    .attributesOf(attribute.element)[attribute.index].value();
             },
             .namespace_node => |namespace_node| {
                 return namespace_node.uri;
@@ -2998,7 +2998,7 @@ fn attributeNameMatches(
     expected_uri: []const u8,
     local: []const u8,
 ) bool {
-    if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) return false;
+    if (namespace.Resolver.isNamespaceDeclaration(attribute.name())) return false;
     if (expected_uri.len == 0) {
         if (document.ns(attribute.ns).len != 0) return false;
     } else if (!std.mem.eql(u8, document.ns(attribute.ns), expected_uri)) return false;

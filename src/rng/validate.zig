@@ -177,7 +177,7 @@ const Matcher = struct {
     ) Error!bool {
         var attributes: std.ArrayList(dom.Attribute) = .empty;
         for (self.document.attributesOf(id)) |attr| {
-            if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
+            if (namespace.Resolver.isNamespaceDeclaration(attr.name())) continue;
             try attributes.append(self.allocator, attr);
         }
         var residuals: std.ArrayList(*const schema.Pattern) = .empty;
@@ -290,7 +290,7 @@ const Matcher = struct {
                 if (!try self.valuePatternMatches(
                     attribute.content,
                     element_id,
-                    attr.value,
+                    attr.value(),
                 )) {
                     return &.{};
                 }

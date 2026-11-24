@@ -397,11 +397,11 @@ fn validateAttributes(
     }
 
     for (attributes) |attribute| {
-        if (findAttributeDecl(dtd, element.name, attribute.name) == null) {
+        if (findAttributeDecl(dtd, element.name, attribute.name()) == null) {
             try issues.append(issue_allocator, .{
                 .kind = .undeclared_attribute,
                 .node = id,
-                .attribute = attribute.name,
+                .attribute = attribute.name(),
             });
         }
     }
@@ -603,7 +603,7 @@ fn findAttribute(
     name: []const u8,
 ) ?dom.Attribute {
     for (attributes) |attribute| {
-        if (std.mem.eql(u8, attribute.name, name)) return attribute;
+        if (std.mem.eql(u8, attribute.name(), name)) return attribute;
     }
     return null;
 }
@@ -767,7 +767,7 @@ fn validateAttributeValue(
     issues: *std.ArrayList(Issue),
     issue_allocator: std.mem.Allocator,
 ) !void {
-    const value = attribute.value;
+    const value = attribute.value();
     switch (decl.attr_type) {
         .cdata => {},
         .id => {

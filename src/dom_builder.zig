@@ -496,24 +496,22 @@ pub const Builder = struct {
         const start = node.attr_start;
         const count = node.attr_count;
         for (self.attributes.items[start..][0..count]) |*attribute| {
-            if (attributeNameEqual(attribute.name, owned_name)) {
-                attribute.value = try self.dupe(value);
+            if (attributeNameEqual(attribute.name(), owned_name)) {
+                attribute.setValue(try self.dupe(value));
                 if (is_ns_decl) node.setNsDecls(true);
                 return;
             }
         }
-        try self.appendAttribute(element, .{
-            .name = owned_name,
-            .ns = if (is_ns_decl)
-                try self.internNamespace(namespace.xmlns_uri)
-            else
-                0,
-            .value = try self.dupe(value),
-            .flags = if (qname.prefix.len == 0)
-                0xFFFF
-            else
-                @intCast(qname.prefix.len),
-        });
+        var attribute = dom.Attribute.init(owned_name, try self.dupe(value));
+        attribute.ns = if (is_ns_decl)
+            try self.internNamespace(namespace.xmlns_uri)
+        else
+            0;
+        attribute.flags = if (qname.prefix.len == 0)
+            0xFFFF
+        else
+            @intCast(qname.prefix.len);
+        try self.appendAttribute(element, attribute);
         if (is_ns_decl) node.setNsDecls(true);
     }
 
@@ -531,11 +529,10 @@ pub const Builder = struct {
         {
             return error.InvalidTree;
         }
-        try self.appendAttribute(element, .{
-            .name = try self.copyString(name),
-            .value = try self.dupe(value),
-            .flags = 0xFFFF,
-        });
+        try self.appendAttribute(element, dom.Attribute.init(
+            try self.copyString(name),
+            try self.dupe(value),
+        ));
     }
 
     /// Namespace-aware variant of `setAttributeLiteral`; `colon` is the
@@ -553,12 +550,13 @@ pub const Builder = struct {
         {
             return error.InvalidTree;
         }
-        try self.appendAttribute(element, .{
-            .name = try self.copyString(name),
-            .ns = try self.internNamespace(uri),
-            .value = try self.dupe(value),
-            .flags = colon,
-        });
+        var attribute = dom.Attribute.init(
+            try self.copyString(name),
+            try self.dupe(value),
+        );
+        attribute.ns = try self.internNamespace(uri);
+        attribute.flags = colon;
+        try self.appendAttribute(element, attribute);
     }
 
     /// Set an attribute whose qualified name, colon offset, and namespace
@@ -604,8 +602,8 @@ pub const Builder = struct {
         const start = node.attr_start;
         const count = node.attr_count;
         for (self.attributes.items[start..][0..count]) |*attribute| {
-            if (attributeNameEqual(attribute.name, owned_name)) {
-                attribute.value = try self.dupe(value);
+            if (attributeNameEqual(attribute.name(), owned_name)) {
+                attribute.setValue(try self.dupe(value));
                 if (is_ns_decl) node.setNsDecls(true);
                 return;
             }
@@ -616,12 +614,10 @@ pub const Builder = struct {
             try self.internNamespace(namespace.xmlns_uri)
         else
             0;
-        try self.appendAttribute(element, .{
-            .name = owned_name,
-            .ns = ns,
-            .value = try self.dupe(value),
-            .flags = colon,
-        });
+        var attribute = dom.Attribute.init(owned_name, try self.dupe(value));
+        attribute.ns = ns;
+        attribute.flags = colon;
+        try self.appendAttribute(element, attribute);
         if (is_ns_decl) node.setNsDecls(true);
     }
 
@@ -655,19 +651,17 @@ pub const Builder = struct {
         const start = node.attr_start;
         const count = node.attr_count;
         for (self.attributes.items[start..][0..count]) |*attribute| {
-            if (std.mem.eql(u8, attribute.name, raw)) {
-                attribute.value = try self.dupe(value);
+            if (std.mem.eql(u8, attribute.name(), raw)) {
+                attribute.setValue(try self.dupe(value));
                 attribute.ns = try self.internNamespace(uri);
                 if (is_ns_decl) node.setNsDecls(true);
                 return;
             }
         }
-        try self.appendAttribute(element, .{
-            .name = raw,
-            .ns = if (uri.len == 0) 0 else try self.internNamespace(uri),
-            .value = try self.dupe(value),
-            .flags = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len),
-        });
+        var attribute = dom.Attribute.init(raw, try self.dupe(value));
+        attribute.ns = if (uri.len == 0) 0 else try self.internNamespace(uri);
+        attribute.flags = if (prefix.len == 0) 0xFFFF else @intCast(prefix.len);
+        try self.appendAttribute(element, attribute);
         if (is_ns_decl) node.setNsDecls(true);
     }
 
@@ -681,7 +675,7 @@ pub const Builder = struct {
         const start = node.attr_start;
         const count = node.attr_count;
         for (self.attributes.items[start..][0..count], 0..) |attribute, index| {
-            if (std.mem.eql(u8, attribute.name, name)) {
+            if (std.mem.eql(u8, attribute.name(), name)) {
                 const absolute = start + index;
                 const end = start + count;
                 if (absolute + 1 < end) {

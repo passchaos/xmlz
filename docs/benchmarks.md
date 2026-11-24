@@ -72,11 +72,13 @@ the best row kept, because the host was shared during measurement.
   records hold a 32-bit table index instead of a slice and pack their
   boolean state into flag words. Nodes also store the colon offset of the
   qualified name instead of a local-name slice, deriving the local part on
-  demand. An attribute record shrank from 56 to 40 bytes and a node from
-  96 to 64, cutting DOM memory by about 25% (84 MiB versus 113 MiB in the
-  table above) and lifting the validating DOM rows by roughly 10%. The
-  parser enters a namespace scope only for elements that declare bindings,
-  so declaration-free elements share their parent's scope.
+  demand. An attribute record shrank from 56 to 32 bytes (interning took it
+  to 40, and pointer/32-bit-length pairs took it to 32) and a node from 96
+  to 64, cutting DOM memory by about 32% (76 MiB in current runs versus
+  113 MiB before interning; the table above predates the final attribute
+  shrink and shows 85 MiB). The parser enters a namespace scope only for
+  elements that declare bindings, so declaration-free elements share their
+  parent's scope.
 - The text scanner also records whether a span contains a reference or a
   carriage return, so the DOM builder borrows plain spans instead of rescanning
   them for entity decoding. On a 16 MB single-text-node document that lifts DOM
@@ -84,8 +86,19 @@ the best row kept, because the host was shared during measurement.
 - Large node and attribute arrays request transparent huge pages on Linux
   (`MADV_HUGEPAGE`, best-effort) to cut first-touch page-fault overhead.
 - xmlz's peak RSS includes the input buffer, the tree, decoded text, and
-  namespace state. It is within 5% of pugixml on this attribute-heavy
-  document and about **4x lower** than libxml2.
+  namespace state. Current runs use about 76 MiB for the validating DOM,
+  about 12% less than pugixml's 87 MiB and **4.7x lower** than libxml2.
+
+### Attribute record shrink (2026-11-24)
+
+`dom.Attribute` now stores names and values as pointer/32-bit-length pairs,
+so a record is 32 bytes instead of 40. On the 16 MiB SVG the validating DOM
+peak RSS fell from 85 MiB to 76-78 MiB with no change in retired
+instructions. An isolated writer run (one parse, sixty serializations,
+pinned P-core) moved from 6.74 G to 6.42 G retired instructions (−4.6%) and
+from 3.08-3.10 GB/s to 3.17-3.22 GB/s. The cross-engine table above was
+measured before the shrink; its xmlz RSS rows are correspondingly higher
+than current runs.
 
 ## Input shape
 

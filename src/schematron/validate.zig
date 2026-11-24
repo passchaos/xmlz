@@ -417,7 +417,7 @@ const Validator = struct {
             .attribute => |attribute| {
                 const value = self.document.attributesOf(
                     attribute.element,
-                )[attribute.index].value;
+                )[attribute.index].value();
                 try out.appendSlice(self.allocator, value);
             },
             .namespace_node => |namespace_node| try out.appendSlice(
@@ -454,7 +454,7 @@ const Validator = struct {
         switch (node) {
             .attribute => |attribute| try out.appendSlice(
                 self.allocator,
-                self.document.attributesOf(attribute.element)[attribute.index].name,
+                self.document.attributesOf(attribute.element)[attribute.index].name(),
             ),
             .namespace_node => |namespace_node| try out.appendSlice(
                 self.allocator,

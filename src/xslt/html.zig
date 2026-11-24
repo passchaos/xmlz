@@ -83,8 +83,8 @@ fn writeHtmlElement(
     const prefixed = std.mem.indexOfScalar(u8, node_value.name, ':') != null;
     var declared_default: ?[]const u8 = null;
     for (document.attributesOf(id)) |attr| {
-        if (std.mem.eql(u8, attr.name, "xmlns")) {
-            declared_default = attr.value;
+        if (std.mem.eql(u8, attr.name(), "xmlns")) {
+            declared_default = attr.value();
         }
     }
     var child_default = default_ns;
@@ -106,15 +106,16 @@ fn writeHtmlElement(
     }
     for (document.attributesOf(id)) |attr| {
         try out.writeByte(' ');
-        try out.writeAll(attr.name);
-        if (document.ns(attr.ns).len == 0 and isHtmlBooleanAttribute(attr.name)) {
+        const name = attr.name();
+        try out.writeAll(name);
+        if (document.ns(attr.ns).len == 0 and isHtmlBooleanAttribute(name)) {
             continue;
         }
         try out.writeAll("=\"");
-        if (isHtmlUriAttribute(attr.name)) {
-            try writeHtmlUriAttribute(out, attr.value);
+        if (isHtmlUriAttribute(name)) {
+            try writeHtmlUriAttribute(out, attr.value());
         } else {
-            try writeHtmlAttribute(out, attr.value);
+            try writeHtmlAttribute(out, attr.value());
         }
         try out.writeByte('"');
     }

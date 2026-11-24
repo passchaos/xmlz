@@ -2215,7 +2215,7 @@ const Runtime = struct {
             var count: usize = 0;
             var overflow = false;
             for (attributes, 0..) |attribute, index| {
-                if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+                if (namespace.Resolver.isNamespaceDeclaration(attribute.name())) {
                     continue;
                 }
                 if (check_namespace and
@@ -2249,7 +2249,7 @@ const Runtime = struct {
             // Rare: more matches than the stack buffer; rescan exactly.
             count = 0;
             for (attributes) |attribute| {
-                if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+                if (namespace.Resolver.isNamespaceDeclaration(attribute.name())) {
                     continue;
                 }
                 if (check_namespace and
@@ -2268,7 +2268,7 @@ const Runtime = struct {
             const out = try self.allocator.alloc(xpath.NodeRef, count);
             var write: usize = 0;
             for (attributes, 0..) |attribute, index| {
-                if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+                if (namespace.Resolver.isNamespaceDeclaration(attribute.name())) {
                     continue;
                 }
                 if (check_namespace and !std.mem.eql(u8, self.source.ns(attribute.ns), uri)) {
@@ -2799,7 +2799,7 @@ const Runtime = struct {
         switch (node) {
             .attribute => |attr| {
                 try self.appendText(
-                    self.source.attributesOf(attr.element)[attr.index].value,
+                    self.source.attributesOf(attr.element)[attr.index].value(),
                 );
             },
             .namespace_node => {},
@@ -3620,7 +3620,7 @@ const Runtime = struct {
         };
         if (self.source.node(id).kind != .element) return null;
         for (self.source.attributesOf(id)) |attribute| {
-            if (namespace.Resolver.isNamespaceDeclaration(attribute.name)) {
+            if (namespace.Resolver.isNamespaceDeclaration(attribute.name())) {
                 continue;
             }
             if (name.check_namespace and
@@ -3628,7 +3628,7 @@ const Runtime = struct {
             if (name.local) |local| {
                 if (!name_match.equal(attribute.localName(), local)) continue;
             }
-            return attribute.value;
+            return attribute.value();
         }
         return null;
     }
@@ -3931,7 +3931,7 @@ const Runtime = struct {
         if (self.stylesheet.uses_last) {
             if (value.kind == .element) {
                 for (self.source.attributesOf(id)) |attr| {
-                    if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                    if (namespace.Resolver.isNamespaceDeclaration(attr.name())) {
                         continue;
                     }
                     size += 1;
@@ -3960,7 +3960,7 @@ const Runtime = struct {
         var position: usize = 0;
         if (value.kind == .element) {
             for (self.source.attributesOf(id), 0..) |attr, index| {
-                if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                if (namespace.Resolver.isNamespaceDeclaration(attr.name())) {
                     continue;
                 }
                 position += 1;
@@ -5442,18 +5442,18 @@ const Runtime = struct {
         if (uri.len == 0) {
             self.builder.setAttributeRaw(
                 self.parent,
-                attr.name,
+                attr.name(),
                 attr.colon(),
-                attr.value,
+                attr.value(),
             ) catch |err| return mapBuilderError(err);
         } else {
             try self.addNamespaceDecl(self.parent, attr.prefixName(), uri);
             self.builder.setAttributeNsRaw(
                 self.parent,
-                attr.name,
+                attr.name(),
                 attr.colon(),
                 uri,
-                attr.value,
+                attr.value(),
             ) catch |err| return mapBuilderError(err);
         }
     }
@@ -5488,12 +5488,13 @@ const Runtime = struct {
             const node = self.builder.nodeAt(current);
             if (node.kind != .element) break;
             for (self.builder.attributesOf(current)) |attr| {
-                if (attr.name.len != "xmlns:".len + prefix.len) continue;
-                if (!std.mem.startsWith(u8, attr.name, "xmlns:")) continue;
-                if (!std.mem.eql(u8, attr.name["xmlns:".len..], prefix)) {
+                const name = attr.name();
+                if (name.len != "xmlns:".len + prefix.len) continue;
+                if (!std.mem.startsWith(u8, name, "xmlns:")) continue;
+                if (!std.mem.eql(u8, name["xmlns:".len..], prefix)) {
                     continue;
                 }
-                return attr.value;
+                return attr.value();
             }
             current = node.parent;
         }
@@ -5530,17 +5531,19 @@ const Runtime = struct {
         id: dom.NodeId,
     ) Error!void {
         for (self.source.attributesOf(id)) |attr| {
-            if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+            const name = attr.name();
+            if (!namespace.Resolver.isNamespaceDeclaration(name)) {
                 continue;
             }
-            const prefix = if (attr.name.len == 5)
+            const prefix = if (name.len == 5)
                 ""
             else
-                attr.name["xmlns:".len..];
+                name["xmlns:".len..];
             if (std.mem.eql(u8, prefix, "xml")) continue;
             // An empty URI undeclares the prefix, so it binds no namespace.
-            if (attr.value.len == 0) continue;
-            try self.addNamespaceDecl(new_id, prefix, attr.value);
+            const value = attr.value();
+            if (value.len == 0) continue;
+            try self.addNamespaceDecl(new_id, prefix, value);
         }
     }
 
@@ -5557,13 +5560,14 @@ const Runtime = struct {
             const node = self.builder.nodeAt(current);
             if (node.kind == .element) {
                 for (self.builder.attributesOf(current)) |attr| {
+                    const name = attr.name();
                     const matches = if (prefix.len == 0)
-                        std.mem.eql(u8, attr.name, "xmlns")
+                        std.mem.eql(u8, name, "xmlns")
                     else
-                        attr.name.len == prefix.len + 6 and
-                            std.mem.startsWith(u8, attr.name, "xmlns:") and
-                            std.mem.eql(u8, attr.name[6..], prefix);
-                    if (matches) return std.mem.eql(u8, attr.value, uri);
+                        name.len == prefix.len + 6 and
+                            std.mem.startsWith(u8, name, "xmlns:") and
+                            std.mem.eql(u8, name[6..], prefix);
+                    if (matches) return std.mem.eql(u8, attr.value(), uri);
                 }
             }
             current = node.parent;
@@ -5630,14 +5634,14 @@ const Runtime = struct {
                     return mapBuilderError(err);
                 try self.copyElementNamespacesFrom(source, id, new_id);
                 for (source.attributesOf(id)) |attr| {
-                    if (namespace.Resolver.isNamespaceDeclaration(attr.name)) {
+                    if (namespace.Resolver.isNamespaceDeclaration(attr.name())) {
                         continue;
                     }
                     if (source.ns(attr.ns).len == 0) {
                         self.builder.setAttribute(
                             new_id,
-                            attr.name,
-                            attr.value,
+                            attr.name(),
+                            attr.value(),
                         ) catch |err| return mapBuilderError(err);
                     } else {
                         self.builder.setAttributeNs(
@@ -5645,7 +5649,7 @@ const Runtime = struct {
                             attr.prefixName(),
                             attr.localName(),
                             source.ns(attr.ns),
-                            attr.value,
+                            attr.value(),
                         ) catch |err| return mapBuilderError(err);
                     }
                 }
@@ -5677,12 +5681,13 @@ const Runtime = struct {
         var has_default = false;
         var has_prefix = false;
         for (source.attributesOf(id)) |attr| {
-            if (!namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
-            self.builder.setAttribute(new_id, attr.name, attr.value) catch |err|
+            const name = attr.name();
+            if (!namespace.Resolver.isNamespaceDeclaration(name)) continue;
+            self.builder.setAttribute(new_id, name, attr.value()) catch |err|
                 return mapBuilderError(err);
-            if (attr.name.len == 5) {
+            if (name.len == 5) {
                 has_default = true;
-            } else if (std.mem.eql(u8, attr.name["xmlns:".len..], prefix)) {
+            } else if (std.mem.eql(u8, name["xmlns:".len..], prefix)) {
                 has_prefix = true;
             }
         }
@@ -5702,17 +5707,19 @@ const Runtime = struct {
         }
         // Attributes may use prefixes declared on an ancestor.
         for (source.attributesOf(id)) |attr| {
-            if (namespace.Resolver.isNamespaceDeclaration(attr.name)) continue;
+            const attr_name = attr.name();
+            if (namespace.Resolver.isNamespaceDeclaration(attr_name)) continue;
             const attr_prefix = attr.prefixName();
             if (attr_prefix.len == 0 or std.mem.eql(u8, attr_prefix, "xml")) {
                 continue;
             }
             var declared = false;
             for (self.source.attributesOf(id)) |decl| {
-                if (std.mem.eql(u8, decl.name, attr.name)) continue;
-                if (namespace.Resolver.isNamespaceDeclaration(decl.name) and
-                    decl.name.len > "xmlns:".len and
-                    std.mem.eql(u8, decl.name["xmlns:".len..], attr_prefix))
+                const decl_name = decl.name();
+                if (std.mem.eql(u8, decl_name, attr_name)) continue;
+                if (namespace.Resolver.isNamespaceDeclaration(decl_name) and
+                    decl_name.len > "xmlns:".len and
+                    std.mem.eql(u8, decl_name["xmlns:".len..], attr_prefix))
                 {
                     declared = true;
                     break;
@@ -5928,7 +5935,7 @@ const Runtime = struct {
     fn stringValue(self: *Runtime, node: xpath.NodeRef) Error![]const u8 {
         return switch (node) {
             .attribute => |attr| self.source
-                .attributesOf(attr.element)[attr.index].value,
+                .attributesOf(attr.element)[attr.index].value(),
             .namespace_node => |ns| ns.uri,
             .node => |id| blk: {
                 const node_value = self.source.node(id);
@@ -6077,7 +6084,7 @@ fn lookupId(
 
 fn documentHasNamespaces(document: *const dom.Document) bool {
     for (document.attributes) |attr| {
-        if (namespace.Resolver.isNamespaceDeclaration(attr.name)) return true;
+        if (namespace.Resolver.isNamespaceDeclaration(attr.name())) return true;
     }
     return false;
 }
