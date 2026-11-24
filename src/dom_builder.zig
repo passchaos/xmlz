@@ -138,7 +138,7 @@ pub const Builder = struct {
 
     pub fn attributesOf(self: *const Builder, id: dom.NodeId) []const dom.Attribute {
         if (id >= self.nodes.items.len) return &.{};
-        const node = self.nodes.items[id];
+        const node = &self.nodes.items[id];
         return self.attributes.items[node.attr_start..][0..node.attr_count];
     }
 
@@ -371,8 +371,10 @@ pub const Builder = struct {
         }
         if (parent == child) return error.InvalidTree;
         // A freshly created child cannot be an ancestor of anything, which is
-        // the common case when building a tree bottom-up.
-        const child_node = self.nodes.items[child];
+        // the common case when building a tree bottom-up. Read the fields
+        // through a pointer: copying the 64-byte node just for these two
+        // checks showed up in the identity transform.
+        const child_node = &self.nodes.items[child];
         if ((child_node.parent != dom.null_node or
             child_node.first_child != dom.null_node) and
             self.isAncestor(child, parent))
@@ -380,7 +382,7 @@ pub const Builder = struct {
             return error.InvalidTree;
         }
         if (!self.allow_multiple_roots and parent == 0 and
-            self.nodes.items[child].kind == .element)
+            child_node.kind == .element)
         {
             if (self.firstElementChild(0) != dom.null_node) {
                 return error.MultipleRoots;

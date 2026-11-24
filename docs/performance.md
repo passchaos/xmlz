@@ -89,6 +89,11 @@ experiments that were already rejected with evidence.
   688-696 MB/s with a reusable arena; retired instructions fell about 0.3%
   and cycles about 7%. The result builder already used this pattern; the
   source DOM builder now matches it for elements and text.
+- **Avoid by-value node copies in builder hot paths**: `appendChild` read
+  `parent` and `first_child` through a 64-byte `Node` copy just to validate
+  the child, and `Builder.attributesOf` copied the node to read its attribute
+  range. Reading through pointers cut identity-transform cycles 3-4% and wall
+  time about 5% in interleaved runs; the sorted report was unchanged.
 
 ## Rejected with evidence
 
