@@ -94,6 +94,10 @@ experiments that were already rejected with evidence.
   the child, and `Builder.attributesOf` copied the node to read its attribute
   range. Reading through pointers cut identity-transform cycles 3-4% and wall
   time about 5% in interleaved runs; the sorted report was unchanged.
+- **Copy short plain text with `copyShort`**: the writer's plain-text path
+  used `@memcpy` even for one-to-eight-byte text nodes. Using the same
+  overlapping-load helper as attribute spans cut writer instructions about
+  1.9% in an isolated sixty-serialization run.
 
 ## Rejected with evidence
 

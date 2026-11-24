@@ -233,7 +233,7 @@ fn writeNode(
             if (node.isRawText() or node.isTextPlain()) {
                 const out = writer.unusedCapacitySlice();
                 if (out.len >= node.value.len) {
-                    @memcpy(out[0..node.value.len], node.value);
+                    copyShort(out[0..node.value.len], node.value);
                     writer.advance(node.value.len);
                 } else {
                     try writer.writeAll(node.value);
