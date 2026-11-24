@@ -132,14 +132,14 @@ then exposes them through a pull parser and reusable lexical primitives.
   standalone declaration effects, and PE nesting are checked over the DOM. The
   validation pass is separate from the non-validating pull parser.
 - **Measured performance.** On a 16 MiB SVG-like document the pull parser
-  reaches 969 MB/s (917 MB/s with namespaces) and 1141 MB/s in opt-in trusted
+  reaches 974 MB/s (924 MB/s with namespaces) and 1132 MB/s in opt-in trusted
   mode, 5.9x faster than expat, 6.8x faster than libxml2's reader, and faster
   than quick-xml's lenient reader (1.5-1.7x faster than its namespace-aware
   reader); see `docs/benchmarks.md`. The
-  validating DOM reaches 521 MB/s one-shot, 663 MB/s with a reusable arena
-  (`dom.Document.parseIn`), and 610 MB/s in trusted mode — 7.2x faster than
-  libxml2's DOM and faster than pugixml; trusted mode with a reusable arena
-  reaches 805 MB/s on the same input (1369 MB/s on the non-ASCII input,
+  validating DOM reaches 556 MB/s one-shot, 696 MB/s with a reusable arena
+  (`dom.Document.parseIn`), and 625 MB/s in trusted mode — about 6x faster
+  than libxml2's DOM and faster than pugixml; trusted mode with a reusable
+  arena reaches 828 MB/s on the same input (1369 MB/s on the non-ASCII input,
   1.15x faster than pugixml's non-validating DOM); see `docs/benchmarks.md`.
   The
   measurement method, performance model, and the optimization experiments

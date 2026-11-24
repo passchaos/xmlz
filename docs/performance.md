@@ -82,6 +82,13 @@ experiments that were already rejected with evidence.
   general attribute path kept the pointer/length fields live only where they
   are used; the first attempt that hoisted both slices for every attribute
   added spills and was reverted.
+- **Build source DOM nodes in place**: reserve the next node slot with
+  `addOneAssumeCapacity` and fill it directly instead of appending a
+  64-byte stack temporary. On the 16 MiB SVG the validating DOM rows moved
+  from 519-526 MB/s to 548-556 MB/s one-shot and from 626-643 MB/s to
+  688-696 MB/s with a reusable arena; retired instructions fell about 0.3%
+  and cycles about 7%. The result builder already used this pattern; the
+  source DOM builder now matches it for elements and text.
 
 ## Rejected with evidence
 
@@ -123,15 +130,24 @@ uop-cache slot.
   dropped 16% but wall time rose 8–30% (the arena is reused, so there are no
   repeated faults to save, and huge-page zeroing plus `khugepaged` work
   dominate). The hint belongs to one-shot parse arrays only.
+- Software prefetch of the next sibling in the XSLT child loops: identity
+  +3.0% instructions and +2% cycles, sorted report +3.9% and +2-5%, wall
+  neutral to 4% slower. The loops are instruction-bound, so the extra
+  prefetch instruction costs more than the hidden load latency.
 
 ## Remaining architectural options
 
-The local optimizations are exhausted. The remaining levers are structural:
+The remaining large levers are structural:
 
 - **Split the node record** into a scan-hot 32-byte array and an auxiliary
-  32-byte array. Scans would touch two nodes per cache line instead of one,
-  halving scan line traffic. This rewrites every node access in the parser,
-  DOM, writer, XPath, and XSLT; document order must stay depth-first.
+  array. Scans would touch two nodes per cache line instead of one. The
+  measured XSLT workloads run at IPC ~4 with negligible LLC misses, so they
+  are instruction-bound; the split adds a second stream and address
+  computations without removing instructions. A synthetic chain scan shows
+  the density gain only on memory-bound scans. Not pursued without a
+  memory-bound workload to justify it. This would rewrite every node access
+  in the parser, DOM, writer, XPath, and XSLT; document order must stay
+  depth-first.
 - **Borrow names and values as offsets** into the input buffer to shrink
   `dom.Attribute` below 32 bytes. The pointer/32-bit-length form already cut
   the record to 32; a 24-byte offset form needs a document base pointer for

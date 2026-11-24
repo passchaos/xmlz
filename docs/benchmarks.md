@@ -100,6 +100,15 @@ from 3.08-3.10 GB/s to 3.17-3.22 GB/s. The cross-engine table above was
 measured before the shrink; its xmlz RSS rows are correspondingly higher
 than current runs.
 
+### Source DOM node writes in place (2026-11-24)
+
+The source DOM builder now reserves each node slot and fills it directly
+instead of appending a 64-byte stack temporary. On the 16 MiB SVG the
+validating DOM rows moved from 519-526 MB/s to 548-556 MB/s one-shot and
+from 626-643 MB/s to 688-696 MB/s with a reusable arena; retired
+instructions fell about 0.3% and cycles about 7%. Fast mode is unchanged
+within run noise.
+
 ## Input shape
 
 The generated document contains namespaces, nested groups, many short

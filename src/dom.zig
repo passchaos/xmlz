@@ -823,7 +823,8 @@ const Builder = struct {
             }
         }
 
-        const id = try self.addNode(.{
+        const node = try self.addNodeSlot();
+        node.slot.* = .{
             .kind = .element,
             .name = element.name,
             .colon = element.colon,
@@ -831,11 +832,11 @@ const Builder = struct {
             .attr_start = attr_start,
             .attr_count = @intCast(self.attributes.items.len - attr_start),
             .flags = if (has_ns_decls) node_flag_ns_decls else 0,
-        });
-        try self.appendChild(parent, id);
+        };
+        try self.appendChild(parent, node.id);
 
         if (!element.self_closing) {
-            self.stack[self.stack_len] = id;
+            self.stack[self.stack_len] = node.id;
             self.stack_len += 1;
         }
     }
@@ -892,11 +893,13 @@ const Builder = struct {
                 plain = std.mem.indexOfScalar(u8, decoded, '>') == null;
             }
         }
-        _ = try self.addChildNode(parent, .{
+        const node = try self.addNodeSlot();
+        node.slot.* = .{
             .kind = .text,
             .value = decoded,
             .flags = if (plain) node_flag_text_plain else 0,
-        });
+        };
+        try self.appendChild(parent, node.id);
         if (self.parser.text_whitespace_char_ref) {
             self.nodes.items[parent].setWhitespaceCharRefText(true);
         }
@@ -917,6 +920,14 @@ const Builder = struct {
     }
 
     fn addNode(self: *Builder, node: Node) Error!NodeId {
+        const slot = try self.addNodeSlot();
+        slot.slot.* = node;
+        return slot.id;
+    }
+
+    /// Reserve the next node slot and return it so callers can fill the
+    /// record in place instead of copying a stack temporary into the array.
+    fn addNodeSlot(self: *Builder) Error!struct { id: NodeId, slot: *Node } {
         const id: NodeId = @intCast(self.nodes.items.len);
         // `append` calls `ensureTotalCapacity` even when capacity remains,
         // and that function is not inlined; keep the common case a branch.
@@ -926,8 +937,8 @@ const Builder = struct {
                 self.nodes.items.len + 1,
             );
         }
-        self.nodes.appendAssumeCapacity(node);
-        return id;
+        const slot = self.nodes.addOneAssumeCapacity();
+        return .{ .id = id, .slot = slot };
     }
 
     fn appendChild(self: *Builder, parent: NodeId, child: NodeId) Error!void {
