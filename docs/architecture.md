@@ -19,11 +19,6 @@ chars / encoding / markup / character_data
                             xslt / xsd
 ```
 
-`svg_scan` is a separate permissive tag/attribute scanner for already
-sanitized SVG fragments (extracted from `zsvg`). It shares the `markup` and
-`chars` helpers with the conforming parser but accepts a looser syntax and is
-not part of the XML conformance path.
-
 ## Module layout
 
 - Every submodule (`xpath`, `xslt`, `xsd`, `rng`, `schematron`) exposes a thin
@@ -33,10 +28,9 @@ not part of the XML conformance path.
   (`xslt/compile.zig`, `xslt/transform.zig`, `xslt/html.zig`,
   `xpath/eval.zig`, `xsd/schema.zig`, and so on).
 - Top-level modules (`parser`, `dom`, `dom_builder`, `writer`, `c14n`,
-  `xinclude`, `catalog`, `validation`, `svg_scan`) are single files with their
-  tests inline at the end.
-- `root.zig` re-exports every module; it also re-exports the `svg_scan`
-  helpers under their original names for callers that predate the split.
+  `xinclude`, `catalog`, `validation`) are single files with their tests
+  inline at the end.
+- `root.zig` re-exports every module and nothing else.
 
 ## Pull parser
 

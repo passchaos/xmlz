@@ -131,9 +131,6 @@ then exposes them through a pull parser and reusable lexical primitives.
   required/fixed values, ID/IDREF rules, entity/notation references, root type,
   standalone declaration effects, and PE nesting are checked over the DOM. The
   validation pass is separate from the non-validating pull parser.
-- **Legacy primitives preserved.** The allocation-free tag/attribute scanners
-  extracted from `zsvg` remain available and are used by the pull parser's
-  fast paths.
 - **Measured performance.** On a 16 MiB SVG-like document the pull parser
   reaches 969 MB/s (917 MB/s with namespaces) and 1141 MB/s in opt-in trusted
   mode, 5.9x faster than expat, 6.8x faster than libxml2's reader, and faster
@@ -287,7 +284,6 @@ src/rng/                RELAX NG schema parser and validator
 src/schematron/         ISO Schematron compiler and validator
 src/catalog.zig         OASIS XML Catalogs resolution
 src/namespace.zig       Namespaces in XML 1.0 resolver
-src/svg_scan.zig        permissive SVG-fragment tag/attribute scanners
 src/fuzz_tests.zig      deterministic mutation smoke tests
 src/root.zig            public API surface (module re-exports)
 tools/conformance.zig   W3C suite harness
