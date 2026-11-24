@@ -151,6 +151,8 @@ uop-cache slot.
 - Inlining the XSLT `appendAttributeRaw` wrapper: +1% instructions and no
   wall gain; the out-of-line call is cheaper than duplicating the attribute
   dispatch at each copy site.
+- By-pointer iteration in the DTD validation node walks: neutral; LLVM
+  already reduces the 64-byte `Node` copy to the fields each loop reads.
 
 ## Remaining architectural options
 
